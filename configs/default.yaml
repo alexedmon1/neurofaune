@@ -1,0 +1,334 @@
+# Neurofaune Default Configuration
+# This file contains default parameters for rodent MRI preprocessing
+# Study-specific configurations should override these values
+
+# Study information
+study:
+  name: "Rodent MRI Study"
+  code: "STUDY001"
+  species: "rat"  # or "mouse"
+  strain: ""      # e.g., "Sprague-Dawley", "Wistar", "C57BL/6"
+
+# Directory structure (neurovrai-compatible)
+paths:
+  study_root: "/path/to/study"
+  raw: "${paths.study_root}/raw"
+  bruker: "${paths.raw}/bruker"
+  bids: "${paths.raw}/bids"
+  derivatives: "${paths.study_root}/derivatives"
+  transforms: "${paths.study_root}/transforms"
+  qc: "${paths.study_root}/qc"
+  work: "${paths.study_root}/work"
+
+# Atlas configuration
+atlas:
+  name: "SIGMA"
+  base_path: "/path/to/SIGMA"
+
+  # Modality-specific slice extraction
+  slice_definitions:
+    # DTI: Hippocampal region only (11 slices)
+    dwi:
+      start: 15
+      end: 25
+      description: "Hippocampus-centered for DTI analysis"
+
+    # fMRI: Broader cortical coverage
+    func:
+      start: 10
+      end: 35
+      description: "Cortical and subcortical regions"
+
+    # Anatomical: Full atlas
+    anat:
+      start: 0
+      end: -1  # -1 means all slices
+      description: "Complete brain atlas"
+
+    # MSME: Custom range
+    msme:
+      start: 12
+      end: 30
+      description: "Region-specific T2 mapping"
+
+    # MTR: Same as anatomical
+    mtr:
+      start: 0
+      end: -1
+      description: "Whole-brain MTR"
+
+# Age cohort definitions (for developmental studies)
+cohorts:
+  p30:
+    age_days: 30
+    description: "Postnatal day 30 (juvenile)"
+  p60:
+    age_days: 60
+    description: "Postnatal day 60 (young adult)"
+  p90:
+    age_days: 90
+    description: "Postnatal day 90 (adult)"
+
+# Execution settings
+execution:
+  plugin: "MultiProc"
+  n_procs: 6
+  stop_on_first_crash: false
+  crashdump_dir: "${paths.work}/crash"
+
+# ANTs configuration (rodent-optimized parameters)
+ants:
+  num_threads: 4
+  dimension: 3
+
+  # N4 bias correction
+  n4:
+    bspline_fitting_distance: 50  # Smaller for rodent brains
+    shrink_factor: 2
+    convergence_threshold: 0.0001
+    n_iterations: [50, 50, 50, 50]
+
+  # Registration parameters
+  registration:
+    # Rodent brains are smaller, need adjusted parameters
+    initial_moving_transform: "Rigid"
+    metric: "MI"  # Mutual Information
+    metric_weight: 1.0
+    radius_or_number_of_bins: 32
+    sampling_strategy: "Regular"
+    sampling_percentage: 0.25
+    convergence_threshold: 1e-6
+    convergence_window_size: 10
+    shrink_factors: [8, 4, 2, 1]
+    smoothing_sigmas: [3, 2, 1, 0]
+    transforms: ["Rigid", "Affine", "SyN"]
+    transform_parameters:
+      Rigid: [0.1]
+      Affine: [0.1]
+      SyN: [0.1, 3, 0]  # [gradient_step, update_field_sigma, total_field_sigma]
+
+  # Atropos segmentation
+  atropos:
+    n_classes: 3  # CSF, GM, WM
+    prior_probability: 0.0
+    iterations: 5
+    mrf_smoothing_factor: 0.1
+    mrf_radius: [1, 1, 1]
+
+# Anatomical preprocessing (T2w for rodents)
+anatomical:
+  # Primary modality (T2w is standard for rodents)
+  primary_contrast: "T2w"
+
+  # BET skull stripping (rodent-specific parameters)
+  bet:
+    frac: 0.3  # Lower threshold for rodent brains
+    vertical_gradient: 0.0  # Rodent brains have less vertical bias
+    robust: true
+    reduce_bias: true
+    remove_eyes: false  # Less relevant for rodents
+
+  # Registration to atlas
+  registration:
+    method: "ants"  # Use ANTs for all registrations
+    output_warped_image: true
+    output_inverse_warped_image: true
+
+  # QC settings
+  run_qc: true
+
+# Diffusion preprocessing
+diffusion:
+  # Denoising
+  denoise_method: "dwidenoise"  # MP-PCA denoising
+
+  # BET for DWI
+  bet:
+    frac: 0.25  # More conservative for DWI
+    robust: true
+
+  # TOPUP distortion correction (if reverse PE images available)
+  topup:
+    readout_time: 0.05  # Study-specific, check protocol
+    pe_direction: "AP"  # or "PA", "LR", "RL"
+    config: "b02b0.cnf"  # FSL config file
+
+  # Eddy current and motion correction
+  eddy:
+    use_cuda: true  # GPU acceleration (10-50x faster)
+    flm: "linear"
+    slm: "linear"
+    fwhm: 0
+    niter: 5
+    s2v_lambda: 1
+    s2v_niter: 5
+    repol: true  # Outlier replacement
+
+  # DTI fitting
+  dti:
+    fit_method: "WLS"  # Weighted least squares
+    min_bval: 5  # Treat as b0 if below this
+
+  # Advanced models
+  advanced:
+    # DKI (requires multi-shell)
+    dki:
+      enabled: false
+      min_shells: 2
+
+    # NODDI (requires multi-shell)
+    noddi:
+      enabled: false
+      use_amico: true  # 100x faster than DIPY
+      min_shells: 2
+
+  # BEDPOSTX (for tractography)
+  bedpostx:
+    enabled: false
+    use_gpu: true
+    n_fibres: 2
+    model: 2  # Ball-and-sticks model
+
+  # Spatial normalization to atlas
+  normalization:
+    enabled: true
+    target_space: "SIGMA"
+    reference_image: "FA"  # Use FA for registration
+
+  # QC settings
+  run_qc: true
+
+# Functional preprocessing
+functional:
+  # Acquisition parameters
+  tr: 1.0  # Repetition time (seconds) - study-specific
+  te: 30.0  # Echo time (ms) - study-specific, or list for multi-echo
+
+  # BET for functional data
+  bet:
+    frac: 0.3
+    functional: true  # Optimized for BOLD
+
+  # Motion correction
+  motion_correction:
+    method: "mcflirt"  # or "ants"
+    reference: "middle"  # Use middle volume as reference
+
+  # Spatial smoothing
+  smoothing:
+    fwhm: 0.5  # mm (rodent brains need smaller kernel)
+
+  # Temporal filtering
+  filtering:
+    highpass: 0.01  # Hz
+    lowpass: 0.1    # Hz
+
+  # Denoising strategy
+  denoising:
+    # ICA-AROMA (single-echo)
+    ica_aroma:
+      enabled: true
+      dim: "auto"  # Automatic dimensionality estimation
+
+    # ACompCor (nuisance regression)
+    acompcor:
+      enabled: true
+      num_components: 5
+      variance_threshold: 0.5
+
+    # GLM confound regression
+    glm:
+      enabled: true
+
+  # Registration
+  registration:
+    method: "ants"
+    cost_function: "corratio"  # Correlation ratio (faster than BBR)
+    dof: 6  # Rigid registration to anatomical
+
+  # Spatial normalization
+  normalization:
+    enabled: true
+    target_space: "SIGMA"
+    reuse_transforms: true  # Reuse anatomical transforms
+
+  # QC settings
+  run_qc: true
+
+# Spectroscopy (FSL-MRS)
+spectroscopy:
+  # Basis set
+  basis_set: "7T_rat"  # Study-specific
+
+  # Preprocessing
+  preprocess:
+    frequency_correction: true
+    phase_correction: true
+    eddy_correction: true
+    water_suppression: true
+
+  # Quantification
+  quantification:
+    method: "Newton"  # or "MH" (Metropolis-Hastings)
+    baseline_order: 2
+    metab_groups: []  # Metabolite groups for fitting
+
+  # QC settings
+  run_qc: true
+
+# MSME (Multi-Slice Multi-Echo) T2 mapping
+msme:
+  # T2 fitting
+  fitting:
+    method: "nonlinear"  # or "linear" (log-linear)
+    bounds: [10, 500]  # T2 value bounds (ms)
+
+  # Registration
+  registration:
+    method: "ants"
+    target_space: "SIGMA"
+
+  # QC settings
+  run_qc: true
+
+# MTR (Magnetization Transfer Ratio)
+mtr:
+  # MTR calculation
+  calculation:
+    # MTR = (M0 - Msat) / M0 * 100
+    threshold: 0.0  # Minimum signal threshold
+
+  # Registration
+  registration:
+    method: "ants"
+    target_space: "SIGMA"
+
+  # QC settings
+  run_qc: true
+
+# Quality control settings
+qc:
+  # Output format
+  format: "html"  # HTML reports with interactive plots
+
+  # Figure settings
+  figures:
+    dpi: 150
+    format: "png"
+    colormap: "viridis"
+
+  # Thresholds for automatic flagging
+  thresholds:
+    # Motion (mm)
+    max_framewise_displacement: 0.5
+    max_mean_displacement: 0.3
+
+    # Registration quality
+    min_registration_correlation: 0.7
+
+    # Signal quality
+    min_tsnr: 50
+
+    # DTI metrics (reasonable ranges for rodents)
+    fa_range: [0, 1]
+    md_range: [0, 0.003]  # mm²/s
