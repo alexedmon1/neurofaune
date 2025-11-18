@@ -22,8 +22,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Documentation**: README, CLAUDE.md, ARCHITECTURE.md
 - **Package setup**: `pyproject.toml` with all dependencies
 
-**🔄 In Progress**:
-- **Phase 2**: Atlas management module (SIGMA integration, slice extraction)
+**✅ Phase 2 Completed (Atlas Management)**:
+- **AtlasManager class**: Unified interface for SIGMA atlas components (`neurofaune/atlas/manager.py`)
+- **Slice extraction**: Modality-specific slice extraction utilities (`neurofaune/atlas/slice_extraction.py`)
+- **Template access**: InVivo/ExVivo templates, tissue masks, parcellations
+- **ROI operations**: Label loading, ROI mask creation, metadata access
+- **Comprehensive tests**: 28 unit and integration tests (all passing)
+- **Documentation**: Complete atlas guide (`docs/ATLAS_GUIDE.md`)
 
 **📋 Planned**:
 - **Phase 3**: Anatomical preprocessing (T2w)
@@ -47,8 +52,29 @@ This repository contains a rodent-specific MRI preprocessing pipeline built with
 ## Development Environment
 
 **Python Version**: 3.10+
-**Package Manager**: pip (standard installation)
-**Virtual Environment**: Recommended (venv or conda)
+**Package Manager**: uv (REQUIRED - all Python package operations must use uv)
+**Virtual Environment**: Managed by uv
+
+### IMPORTANT: Use UV for All Python Operations
+
+**ALL** Python package management must be done using `uv`. Never use `pip` directly.
+
+```bash
+# Install packages
+uv pip install <package>
+
+# Install project in development mode
+uv pip install -e .
+
+# Install with optional dependencies
+uv pip install -e ".[dev]"
+
+# Run Python
+uv run python <script>
+
+# Run tests
+uv run pytest
+```
 
 ### Key Dependencies
 - **nipype** (1.10.0+): Workflow engine for FSL/ANTs interfaces
@@ -65,11 +91,11 @@ This repository contains a rodent-specific MRI preprocessing pipeline built with
 git clone <repo_url>
 cd neurofaune
 
-# Install in development mode
-pip install -e .
+# Install in development mode with uv
+uv pip install -e ".[dev]"
 
-# Install with optional dependencies
-pip install -e ".[all]"
+# Install with all optional dependencies
+uv pip install -e ".[all]"
 ```
 
 ---
