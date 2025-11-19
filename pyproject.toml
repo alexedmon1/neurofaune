@@ -60,7 +60,9 @@ dev = [
 ]
 
 fslmrs = [
-    "fsl-mrs>=2.0",  # FSL-MRS for spectroscopy
+    # "fsl-mrs>=2.0",  # FSL-MRS for spectroscopy
+    # NOTE: fsl-mrs currently not available via pip/uv, available via conda
+    # TODO: Address installation method for spectroscopy preprocessing
 ]
 
 bruker = [

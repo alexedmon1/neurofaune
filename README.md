@@ -2,18 +2,34 @@
 
 **Rodent-specific MRI preprocessing, analysis, and connectivity package**
 
-Neurofaune is a comprehensive neuroimaging pipeline designed specifically for rodent (rat and mouse) brain MRI data. Built on the architecture of [neurovrai](https://github.com/yourusername/neurovrai), it adapts advanced preprocessing techniques for the unique challenges of rodent neuroimaging.
+Neurofaune is a comprehensive neuroimaging pipeline designed specifically for rodent (rat and mouse) brain MRI data. Built on the architecture of [neurovrai](https://github.com/yourusername/neurovrai), it provides Bruker data conversion and advanced preprocessing for multiple MRI modalities.
+
+**Current test study**: BPA-Rat (Bisphenol A rat cohort study) - 141 subjects, 189 sessions across 7 cohorts
 
 ---
 
 ## Features
 
-### Current Status: Phase 1 (Foundation) ✅
+### Current Status
 
-- **Configuration System**: YAML-based configuration with variable substitution
-- **Transform Registry**: Centralized storage for spatial transformations with slice-specific support
-- **Neurovrai-compatible Output**: Same directory hierarchy (derivatives/, transforms/, qc/)
-- **Rodent-optimized Parameters**: Atlas slice extraction, age cohort support
+**✅ Phase 1 (Foundation) - Complete**
+- Configuration System: YAML-based configuration with variable substitution
+- Transform Registry: Centralized storage for spatial transformations with slice-specific support
+- Neurovrai-compatible Output: Same directory hierarchy (derivatives/, transforms/, qc/)
+- Rodent-optimized Parameters: Atlas slice extraction, age cohort support
+
+**✅ Phase 2 (Atlas Management) - Complete**
+- AtlasManager: Unified interface for SIGMA rat brain atlas
+- Slice Extraction: Modality-specific slice extraction utilities
+- Template Access: InVivo/ExVivo templates, tissue masks, parcellations
+- ROI Operations: Label loading, ROI mask creation, metadata access
+
+**✅ Bruker to BIDS Conversion - Complete**
+- 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)
+- 189 sessions (54 p30, 50 p60, 79 p90, 6 unknown)
+- 2,256 NIfTI files with JSON metadata sidecars
+- Modalities: T2w anatomical, DTI/DWI, fMRI, MSME, MTR, FLASH, field maps
+- See [`docs/BRUKER_CONVERSION_SUMMARY.md`](docs/BRUKER_CONVERSION_SUMMARY.md) for details
 
 ### Planned Preprocessing Capabilities
 
@@ -29,6 +45,27 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - **Age Cohort Support**: Developmental studies (p30, p60, p90)
 - **Transform Reuse**: Compute once, reuse across modalities
 - **Comprehensive QC**: Automated quality control reports for all preprocessing steps
+
+---
+
+## BPA-Rat Study Data
+
+### Study Organization
+The BPA-Rat study folder serves as a test dataset for neurofaune development:
+
+- **Study root**: `/mnt/arborea/bpa-rat/`
+- **Source Bruker data**: `/mnt/arborea/bruker/` (permanent archive)
+- **Converted BIDS data**: `/mnt/arborea/bpa-rat/raw/bids/`
+  - 141 subjects: `sub-Rat001` through `sub-Rat298`
+  - Sessions: `ses-p30`, `ses-p60`, `ses-p90`
+  - Modalities: `anat/`, `dwi/`, `func/`, `msme/`, `mtr/`, `flash/`, `fmap/`
+
+### Atlas Location
+- **SIGMA rat brain atlas**: `/mnt/arborea/atlases/SIGMA/`
+
+**Note**: Bruker data in temporary Cohort folders has been deleted after successful conversion. The original data is preserved in `/mnt/arborea/bruker/`.
+
+See [`docs/BRUKER_CONVERSION_SUMMARY.md`](docs/BRUKER_CONVERSION_SUMMARY.md) for complete conversion details.
 
 ---
 

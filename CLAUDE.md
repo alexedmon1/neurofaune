@@ -82,7 +82,7 @@ uv run pytest
 - **pydicom** (3.0.1+): DICOM reading/parsing
 - **ANTs** (2.3+): Required system dependency for registration and segmentation
 - **FSL** (6.0+): Required for BET, eddy, ICA-AROMA
-- **FSL-MRS** (optional): Spectroscopy processing
+- **FSL-MRS** (optional): Spectroscopy processing (NOTE: currently only available via conda, not pip/uv - installation method TBD for Phase 6. fsl-mrs will handle both Bruker conversion and preprocessing for spectroscopy data)
 - **pandas**, **numpy**, **scipy**: Data analysis and numerical operations
 
 ### Installation
