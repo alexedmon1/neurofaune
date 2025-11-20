@@ -30,8 +30,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Comprehensive tests**: 28 unit and integration tests (all passing)
 - **Documentation**: Complete atlas guide (`docs/ATLAS_GUIDE.md`)
 
+**🚧 Phase 3 In Progress (Anatomical Preprocessing)**:
+- **Image validation**: Pre-pipeline validation module (`neurofaune/preprocess/utils/validation.py`)
+- **Orientation matching**: Automatic orientation detection and correction (`neurofaune/preprocess/utils/orientation.py`)
+- **Skull stripping**: Two-pass approach (ANTs Atropos + FSL BET) optimized for rodent brains
+- **Bias correction**: N4 bias field correction
+- **Registration**: ANTs SyN registration to SIGMA atlas with automatic orientation matching
+- **Anatomical workflow**: Complete T2w preprocessing pipeline (`neurofaune/preprocess/workflows/anat_preprocess.py`)
+- **Testing**: Validated on BPA-Rat study (p60 cohort)
+
 **📋 Planned**:
-- **Phase 3**: Anatomical preprocessing (T2w)
 - **Phase 4**: Diffusion preprocessing (DWI/DTI)
 - **Phase 5**: Functional preprocessing (fMRI)
 - **Phase 6**: Advanced modalities (MSME, MTR, MRS)
