@@ -2,7 +2,10 @@
 DTI/DWI preprocessing workflow.
 
 This module provides a complete preprocessing pipeline for diffusion MRI data,
-including eddy correction, DTI fitting, and slice-specific atlas registration.
+including eddy correction and DTI fitting.
+
+NOTE: Registration to study-specific FA template and SIGMA atlas will be added
+separately in template building/registration modules.
 """
 
 import nibabel as nib
@@ -48,10 +51,15 @@ def run_dwi_preprocessing(
     1. Image validation and 5D→4D conversion (if needed)
     2. Gradient table validation
     3. GPU-accelerated eddy correction (motion + distortion)
-    4. Brain masking
+    4. Brain masking from b0 volume
     5. DTI fitting (FA, MD, AD, RD)
-    6. Slice-specific registration to SIGMA atlas
-    7. Transform registry integration
+    6. Save preprocessed outputs
+
+    NOTE: This workflow NO LONGER performs registration to SIGMA atlas.
+    Registration will be done separately:
+    - First to age-matched study FA template
+    - Within-subject T2w ↔ FA registration (for label propagation)
+    - T2w template → SIGMA (for parcellation access)
 
     Parameters
     ----------
@@ -82,12 +90,12 @@ def run_dwi_preprocessing(
         Dictionary with output file paths and processing info:
         - 'dwi_preproc': Path to preprocessed DWI
         - 'dwi_mask': Path to brain mask
+        - 'bval': Path to output bval file
+        - 'bvec': Path to eddy-corrected bvec file
         - 'fa': Path to FA map
         - 'md': Path to MD map
         - 'ad': Path to AD map
         - 'rd': Path to RD map
-        - 'fa_registered': Path to FA in SIGMA space
-        - 'transforms': Dict with transform info
         - 'qc_metrics': Dict with QC metrics
 
     Examples
@@ -146,9 +154,6 @@ def run_dwi_preprocessing(
     md_file = derivatives_dir / f'{subject}_{session}_MD.nii.gz'
     ad_file = derivatives_dir / f'{subject}_{session}_AD.nii.gz'
     rd_file = derivatives_dir / f'{subject}_{session}_RD.nii.gz'
-
-    # Registered outputs
-    fa_sigma_file = derivatives_dir / f'{subject}_{session}_space-SIGMA_FA.nii.gz'
 
     # ==========================================================================
     # Step 1: Image validation and 5D→4D conversion
@@ -310,83 +315,13 @@ def run_dwi_preprocessing(
     print(f"  AD: {ad_file}")
     print(f"  RD: {rd_file}")
 
-    # ==========================================================================
-    # Step 6: Slice-specific registration to SIGMA atlas
-    # ==========================================================================
-    print("\n" + "="*80)
-    print("Step 6: Slice-Specific Registration to SIGMA Atlas")
-    print("="*80)
-
-    # Initialize atlas manager
-    atlas_base_path = Path(config['atlas']['base_path'])
-    atlas_mgr = AtlasManager(atlas_base_path)
-
-    # Get slice range for DTI (hippocampus to frontal cortex)
-    slice_def = config['atlas'].get('slice_definitions', {}).get('dwi', {})
-    slice_start = slice_def.get('start', 15)
-    slice_end = slice_def.get('end', 25)
-
-    print(f"\nExtracting SIGMA atlas slices {slice_start}-{slice_end} for DTI...")
-
-    # Extract slice-specific template
-    template_slice_file = work_dir / 'SIGMA_InVivo_template_slices.nii.gz'
-    atlas_mgr.extract_slices(
-        template_type='InVivo',
-        slice_start=slice_start,
-        slice_end=slice_end,
-        output_file=template_slice_file,
-        orientation='coronal'
-    )
-
-    # Check orientation match and reorient atlas if needed
-    fa_img = nib.load(fa_file)
-    atlas_img = nib.load(template_slice_file)
-
-    print("\nChecking orientation match...")
-    print_orientation_info(fa_img, "FA map")
-    print_orientation_info(atlas_img, "SIGMA atlas slices")
-
-    from neurofaune.preprocess.utils.orientation import check_orientation_match
-    match, flip_axes = check_orientation_match(fa_img, atlas_img)
-
-    if not match:
-        print(f"\nOrientation mismatch detected - reorienting atlas...")
-        atlas_reoriented = work_dir / 'SIGMA_template_slices_reoriented.nii.gz'
-        match_orientation_to_reference(atlas_img, fa_img, atlas_reoriented)
-        template_for_reg = atlas_reoriented
-    else:
-        print("\nOrientations match - proceeding with registration")
-        template_for_reg = template_slice_file
-
-    # Run ANTs registration (FA → SIGMA slices)
-    print(f"\nRegistering FA map to SIGMA atlas slices...")
-    register_to_atlas_slices(
-        moving_image=fa_file,
-        fixed_image=template_for_reg,
-        output_prefix=work_dir / f'{subject}_{session}_fa_to_sigma',
-        output_warped=fa_sigma_file
-    )
-
-    # Save transform to registry
-    composite_transform = work_dir / f'{subject}_{session}_fa_to_sigma_Composite.h5'
-    transform_registry.save_ants_composite_transform(
-        composite_file=composite_transform,
-        source_space='FA',
-        target_space='SIGMA',
-        reference=template_for_reg,
-        source_image=fa_file,
-        modality='dwi',
-        slice_range=(slice_start, slice_end)
-    )
-
-    print(f"\nRegistered FA saved to: {fa_sigma_file}")
-    print(f"Transform saved to registry")
+    # NOTE: SIGMA registration removed - will be done separately in template registration module
 
     # ==========================================================================
-    # Step 7: Quality control
+    # Step 6: Quality control
     # ==========================================================================
     print("\n" + "="*80)
-    print("Step 7: Quality Control")
+    print("Step 6: Quality Control")
     print("="*80)
 
     qc_metrics = check_dwi_data_quality(dwi_eddy_file, brain_mask_file)
@@ -410,6 +345,14 @@ def run_dwi_preprocessing(
     print("\n" + "="*80)
     print("DTI/DWI Preprocessing Complete!")
     print("="*80)
+    print(f"\nPreprocessed DWI: {dwi_eddy_file}")
+    print(f"Brain mask: {brain_mask_file}")
+    print(f"FA map: {fa_file}")
+    print(f"MD map: {md_file}")
+    print(f"AD map: {ad_file}")
+    print(f"RD map: {rd_file}")
+    print("\nNOTE: Registration to study FA template and SIGMA will be done separately.")
+    print("="*80 + "\n")
 
     return {
         'dwi_preproc': dwi_eddy_file,
@@ -420,10 +363,6 @@ def run_dwi_preprocessing(
         'md': md_file,
         'ad': ad_file,
         'rd': rd_file,
-        'fa_registered': fa_sigma_file,
-        'transforms': {
-            'fa_to_sigma': composite_transform
-        },
         'qc_metrics': qc_metrics
     }
 

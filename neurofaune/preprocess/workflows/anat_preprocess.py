@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Anatomical T2w preprocessing workflow with ANTs registration.
+Anatomical T2w preprocessing workflow.
 
 This workflow implements:
-1. Slice extraction (modality-specific coverage)
-2. Skull stripping (age-cohort specific parameters)
+1. Image validation and preprocessing
+2. Skull stripping (two-pass: Atropos + BET)
 3. Bias field correction (N4)
-4. Registration to SIGMA atlas (ANTs affine + SyN)
-5. Transform registry integration
-6. QC generation
+4. Intensity normalization
+
+NOTE: Registration to study-specific template and SIGMA atlas will be added
+separately in template building/registration modules.
 """
 
 from pathlib import Path
@@ -506,18 +507,20 @@ def run_anatomical_preprocessing(
     prefer_orientation: str = 'axial'
 ) -> Dict[str, Any]:
     """
-    Run anatomical T2w preprocessing workflow with ANTs registration.
+    Run anatomical T2w preprocessing workflow.
 
     This workflow:
     0. Selects best T2w scan if subject_dir provided (automatic selection)
-    1. Checks and scales voxel sizes if needed (FSL/ANTs compatibility)
-    2. Extracts slices if slice_range specified
-    3. Applies bias field correction (N4)
-    4. Performs skull stripping with age-specific parameters
-    5. Normalizes intensity (×1000)
-    6. Registers to SIGMA atlas using ANTs
-    7. Saves transforms to registry
-    8. Generates QC reports
+    1. Image validation (voxel size, orientation, data quality)
+    2. Bias field correction (N4)
+    3. Skull stripping (two-pass: Atropos 5-component + BET refinement)
+    4. Intensity normalization (×1000)
+    5. Save preprocessed outputs
+
+    NOTE: This workflow NO LONGER performs registration to SIGMA atlas.
+    Registration will be done separately:
+    - First to age-matched study template (T2w template)
+    - Template auto-registers to SIGMA (for parcellation access)
 
     Parameters
     ----------
@@ -687,70 +690,7 @@ def run_anatomical_preprocessing(
             atlas_mask_file, atlas_mask_scaled, min_voxel_size=1.0, scale_factor=scale_factor
         )
 
-    # Get atlas template (and scale it if needed)
-    if slice_range:
-        # Extract slices from atlas
-        atlas_img = atlas_mgr.get_template(
-            modality=None, masked=True, coronal=True
-        )
-        # Save atlas to work directory
-        atlas_template = work_dir / 'SIGMA_template.nii.gz'
-        nib.save(atlas_img, atlas_template)
-
-        # Match atlas orientation to subject orientation
-        from neurofaune.preprocess.utils.orientation import match_orientation_to_reference, print_orientation_info
-        print("Checking atlas orientation...")
-        print_orientation_info(atlas_img, "SIGMA Atlas")
-        subject_img = nib.load(t2w_file)  # Load subject for orientation reference
-        print_orientation_info(subject_img, "Subject T2w")
-
-        atlas_reoriented = work_dir / 'SIGMA_template_reoriented.nii.gz'
-        atlas_template = match_orientation_to_reference(
-            source_img=atlas_img,
-            reference_img=subject_img,
-            output_file=atlas_reoriented
-        )
-
-        # Scale atlas if subject was scaled
-        if was_scaled:
-            atlas_scaled = work_dir / 'SIGMA_template_scaled.nii.gz'
-            atlas_template, _, _ = check_and_scale_voxel_size(
-                atlas_template, atlas_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-            )
-        atlas_sliced = work_dir / f'SIGMA_template_slices_{slice_range[0]}_{slice_range[1]}.nii.gz'
-        slice_indices = list(range(slice_range[0], slice_range[1]))
-        extract_slices_from_volume(atlas_template, slice_indices, atlas_sliced)
-        atlas_reference = atlas_sliced
-    else:
-        atlas_img = atlas_mgr.get_template(
-            modality=None, masked=True, coronal=True
-        )
-        # Save atlas to work directory (ANTs needs file path, not nibabel Image)
-        atlas_template = work_dir / 'SIGMA_template.nii.gz'
-        nib.save(atlas_img, atlas_template)
-
-        # Match atlas orientation to subject orientation
-        from neurofaune.preprocess.utils.orientation import match_orientation_to_reference, print_orientation_info
-        print("Checking atlas orientation...")
-        print_orientation_info(atlas_img, "SIGMA Atlas")
-        subject_img = nib.load(t2w_file)  # Load subject for orientation reference
-        print_orientation_info(subject_img, "Subject T2w")
-
-        atlas_reoriented = work_dir / 'SIGMA_template_reoriented.nii.gz'
-        atlas_template = match_orientation_to_reference(
-            source_img=atlas_img,
-            reference_img=subject_img,
-            output_file=atlas_reoriented
-        )
-
-        # Scale atlas if subject was scaled
-        if was_scaled:
-            atlas_scaled = work_dir / 'SIGMA_template_scaled.nii.gz'
-            atlas_reference, _, _ = check_and_scale_voxel_size(
-                atlas_template, atlas_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-            )
-        else:
-            atlas_reference = atlas_template
+    # NOTE: Atlas registration removed - will be done separately in template registration module
 
     # Step 1: Extract slices from subject if needed
     if slice_range:
@@ -786,49 +726,30 @@ def run_anatomical_preprocessing(
     brain_norm_file = work_dir / f'{subject}_{session}_brain_norm.nii.gz'
     nib.save(img_norm, brain_norm_file)
 
-    # Step 5: Register to SIGMA atlas
-    print(f"Registering to SIGMA atlas using ANTs...")
-    reg_prefix = work_dir / f'{subject}_{session}_to_SIGMA'
-    reg_results = register_to_atlas_ants(
-        moving_image=brain_norm_file,
-        fixed_image=atlas_reference,
-        output_prefix=reg_prefix,
-        cohort=cohort
-    )
-
-    # Step 6: Save outputs to derivatives
+    # Step 5: Save outputs to derivatives
+    print("Saving preprocessed outputs...")
     final_brain = derivatives_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
     final_mask = derivatives_dir / f'{subject}_{session}_desc-brain_mask.nii.gz'
-    final_warped = derivatives_dir / f'{subject}_{session}_space-SIGMA_T2w.nii.gz'
 
     import shutil
-    shutil.copy(brain_file, final_brain)  # Bias-corrected + skull-stripped
+    shutil.copy(brain_norm_file, final_brain)  # Normalized, bias-corrected, skull-stripped
     shutil.copy(mask_file, final_mask)
-    shutil.copy(reg_results['warped_image'], final_warped)
 
-    # Step 7: Save transforms to registry
-    print("Saving transforms to registry...")
-    transform_registry.save_ants_composite_transform(
-        composite_file=reg_results['composite_transform'],
-        source_space='T2w',
-        target_space='SIGMA',
-        modality=modality if slice_range else None,
-        slice_range=slice_range,
-        reference=atlas_reference,
-        source_image=t2w_input
-    )
-
-    # Step 8: Generate QC (placeholder for now)
+    # Step 6: Generate QC (placeholder for now)
     print("Generating QC reports...")
     # TODO: Implement QC generation
+
+    print("\n" + "="*80)
+    print("Anatomical preprocessing complete!")
+    print("="*80)
+    print(f"Preprocessed brain: {final_brain}")
+    print(f"Brain mask: {final_mask}")
+    print("\nNOTE: Registration to study template and SIGMA will be done separately.")
+    print("="*80 + "\n")
 
     return {
         'brain': final_brain,
         'mask': final_mask,
-        'warped': final_warped,
-        'composite_transform': reg_results['composite_transform'],
-        'inverse_composite_transform': reg_results['inverse_composite_transform'],
-        'atlas_reference': atlas_reference,
         'was_scaled': was_scaled,
         'scale_factor': scale_factor,
         'qc_reports': []
