@@ -20,6 +20,12 @@ import nibabel as nib
 import numpy as np
 from datetime import datetime
 
+# Import voxel size correction utilities
+from neurofaune.utils.fix_bruker_voxel_sizes import (
+    parse_bruker_method,
+    update_nifti_header
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -438,6 +444,22 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
         nib.save(nifti_img, output_file)
 
         logger.info(f"Converted {scan_dir.name} → {output_file.name} (shape: {data.shape})")
+
+        # Fix voxel sizes using Bruker method file
+        method_file = scan_dir / 'method'
+        if method_file.exists():
+            try:
+                params = parse_bruker_method(method_file)
+                if 'voxel_size' in params:
+                    logger.debug(f"Fixing voxel sizes: {params['voxel_size']} → scaled 10x")
+                    update_nifti_header(output_file, params['voxel_size'], scale_factor=10.0)
+                else:
+                    logger.warning(f"Could not extract voxel size from {method_file}")
+            except Exception as e:
+                logger.warning(f"Failed to fix voxel sizes for {output_file.name}: {e}")
+        else:
+            logger.warning(f"Method file not found: {method_file}")
+
         return True
 
     except Exception as e:

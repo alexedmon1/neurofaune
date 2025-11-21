@@ -48,6 +48,7 @@ dependencies = [
 
     # Utilities
     "tqdm>=4.65.0",
+    "natsort>=8.0.0",
 ]
 
 [project.optional-dependencies]
