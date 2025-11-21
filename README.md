@@ -24,6 +24,22 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Template Access: InVivo/ExVivo templates, tissue masks, parcellations
 - ROI Operations: Label loading, ROI mask creation, metadata access
 
+**✅ Phase 3 (Anatomical Preprocessing) - Complete**
+- Image Validation: Pre-pipeline validation (voxel size, orientation, dimensions, data type)
+- Orientation Matching: Automatic orientation detection and correction between images
+- Skull Stripping: Two-pass approach (ANTs Atropos + FSL BET) optimized for rodent brains
+- N4 Bias Correction: Intensity inhomogeneity correction
+- ANTs Registration: SyN registration to SIGMA atlas with automatic orientation matching
+- Transform Registry: Save and reuse transforms across modalities
+- Tested on BPA-Rat data: Validated on sub-Rat207, ses-p60
+
+**🚧 Phase 4 (Diffusion Preprocessing) - In Progress**
+- 5D→4D Conversion: Handle Bruker multi-average DTI acquisitions
+- Gradient Table Validation: Verify bval/bvec consistency
+- GPU-Accelerated Eddy: FSL eddy_cuda support for motion/distortion correction
+- DTI Fitting: Compute FA, MD, AD, RD maps (in development)
+- Slice-Specific Registration: Hippocampus to frontal cortex coverage (in development)
+
 **✅ Bruker to BIDS Conversion - Complete**
 - 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)
 - 189 sessions (54 p30, 50 p60, 79 p90, 6 unknown)
