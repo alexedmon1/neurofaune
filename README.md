@@ -29,16 +29,29 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Orientation Matching: Automatic orientation detection and correction between images
 - Skull Stripping: Two-pass approach (ANTs Atropos + FSL BET) optimized for rodent brains
 - N4 Bias Correction: Intensity inhomogeneity correction
-- ANTs Registration: SyN registration to SIGMA atlas with automatic orientation matching
-- Transform Registry: Save and reuse transforms across modalities
+- Intensity Normalization: Scale-invariant preprocessing
+- Preprocessing Only: SIGMA registration removed for template-based approach
 - Tested on BPA-Rat data: Validated on sub-Rat207, ses-p60
 
-**🚧 Phase 4 (Diffusion Preprocessing) - In Progress**
+**✅ Phase 4 (DTI Preprocessing Foundation) - Complete**
 - 5D→4D Conversion: Handle Bruker multi-average DTI acquisitions
-- Gradient Table Validation: Verify bval/bvec consistency
-- GPU-Accelerated Eddy: FSL eddy_cuda support for motion/distortion correction
-- DTI Fitting: Compute FA, MD, AD, RD maps (in development)
-- Slice-Specific Registration: Hippocampus to frontal cortex coverage (in development)
+- Gradient Table Validation: Verify bval/bvec consistency with automatic normalization
+- GPU-Accelerated Eddy: FSL eddy_cuda support (with CPU fallback)
+- Brain Masking: BET-based masking from b0 volume
+- DTI Fitting: Compute FA, MD, AD, RD maps using dipy TensorModel
+- QC Metrics: Data quality checks (NaN/Inf detection, SNR estimation)
+- Preprocessing Only: SIGMA registration removed for template-based approach
+
+**🚧 Phase 5 (Multi-Modal Template Architecture) - In Progress**
+- Architecture Design: Independent T2w and FA template spaces (documented)
+- Workflow Refactoring: Removed direct SIGMA registration from preprocessing pipelines
+- Next Steps:
+  - Template building module (ANTs multivariate construction)
+  - Age-specific templates (p30, p60, p90 cohorts)
+  - Template-to-SIGMA auto-registration (T2w only)
+  - Within-subject T2w ↔ FA registration
+  - Label propagation utilities (SIGMA → FA via transform composition)
+- Documentation: See [`docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md`](docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md)
 
 **✅ Bruker to BIDS Conversion - Complete**
 - 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)
