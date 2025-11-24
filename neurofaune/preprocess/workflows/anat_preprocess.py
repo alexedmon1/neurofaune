@@ -688,6 +688,28 @@ def run_anatomical_preprocessing(
     ...     transform_registry=registry
     ... )
     """
+    # Check for existing exclusion marker
+    from neurofaune.utils.exclusion import check_exclusion_marker
+
+    marker_exists, marker_data = check_exclusion_marker(subject, session, output_dir)
+    if marker_exists:
+        print(f"\n{'='*60}")
+        print(f"⚠ SUBJECT EXCLUDED - Preprocessing previously failed")
+        print(f"{'='*60}")
+        print(f"Subject: {subject}")
+        print(f"Session: {session}")
+        print(f"Reason: {marker_data.get('reason', 'Unknown')}")
+        if 'timestamp' in marker_data:
+            print(f"Failed at: {marker_data['timestamp']}")
+        print(f"\nSkipping preprocessing for this subject/session.")
+        print(f"To retry, use: neurofaune.utils.exclusion.remove_exclusion_marker()")
+        print(f"{'='*60}\n")
+        return {
+            'status': 'excluded',
+            'reason': marker_data.get('reason', 'Unknown'),
+            'marker_file': output_dir / 'derivatives' / subject / session / 'anat' / '.preprocessing_failed'
+        }
+
     # Step 0: Select best T2w scan if subject_dir provided
     if t2w_file is None and subject_dir is None:
         raise ValueError("Either t2w_file or subject_dir must be provided")
