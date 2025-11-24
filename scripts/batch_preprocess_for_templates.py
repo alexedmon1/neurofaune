@@ -141,12 +141,16 @@ def main():
                 # Create transform registry for this subject
                 registry = create_transform_registry(config, subject, cohort)
 
+                # Get subject directory from BIDS
+                subject_bids_dir = bids_dir / subject
+
                 results = run_anatomical_preprocessing(
                     config=config,
                     subject=subject,
                     session=session,
                     output_dir=output_dir,
-                    transform_registry=registry
+                    transform_registry=registry,
+                    subject_dir=subject_bids_dir
                 )
 
                 if results.get('status') == 'excluded':
