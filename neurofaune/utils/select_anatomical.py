@@ -116,7 +116,16 @@ def score_anatomical_scan(
     if any(kw in scan_name for kw in targeted_keywords):
         score -= 2.0
 
-    # 5. Bonus for "high res" or "125um" scans (weight: 1.0)
+    # 5. STRONGLY penalize 3D T2w scans (weight: -10.0)
+    # 3D TurboRARE scans from Cohorts 1-2 have skull stripping issues
+    # Prefer 2D RARE scans for better preprocessing results
+    if '3d' in scan_name or 'turborare_3d' in scan_name:
+        score -= 10.0
+        info['is_3d'] = True
+    else:
+        info['is_3d'] = False
+
+    # 6. Bonus for "high res" or "125um" scans (weight: 1.0)
     if '125um' in scan_name or 'highres' in scan_name or 'hires' in scan_name:
         score += 1.0
 
