@@ -1,0 +1,239 @@
+# BPA-Rat Study Configuration
+# Example configuration for the BPA-Rat developmental study
+
+# Study information
+study:
+  name: "BPA-Rat Developmental MRI Study"
+  code: "BPA-RAT"
+  species: "rat"
+  strain: "Sprague-Dawley"
+  description: "Multi-modal MRI study of BPA exposure effects across development"
+
+# Directory structure (neurovrai-compatible)
+paths:
+  study_root: "/mnt/arborea/bpa-rat"
+  raw: "${paths.study_root}/raw"
+  bruker: "${paths.study_root}/raw/bruker"  # Archived original Bruker data
+  bids: "${paths.study_root}/raw/bids"       # Converted BIDS data
+  derivatives: "${paths.study_root}/derivatives"
+  templates: "${paths.study_root}/templates"  # Age-specific templates
+  transforms: "${paths.study_root}/transforms"  # Subject transforms
+  qc: "${paths.study_root}/qc"
+  work: "${paths.study_root}/work"
+
+# Atlas configuration
+atlas:
+  name: "SIGMA"
+  base_path: "/mnt/arborea/atlases/SIGMA"
+  version: "v1.0"
+
+  # Slice definitions for different modalities
+  # (relative to coronal orientation)
+  slice_definitions:
+    # DTI: 11 slices covering hippocampus → frontal cortex
+    dwi:
+      start: 15
+      end: 26  # Inclusive: slices 15-25 (11 total)
+      description: "Hippocampal to frontal cortex coverage"
+
+    # fMRI: Broader coverage for functional connectivity
+    func:
+      start: 10
+      end: 36  # 26 slices
+      description: "Broader cortical and subcortical coverage"
+
+    # Anatomical: Full brain
+    anat:
+      start: 0
+      end: -1  # All slices
+      description: "Whole brain"
+
+# Age cohorts (developmental timepoints)
+cohorts:
+  p30:
+    age_days: 30
+    description: "Early adolescence"
+    n_subjects: 54
+
+  p60:
+    age_days: 60
+    description: "Late adolescence"
+    n_subjects: 50
+
+  p90:
+    age_days: 90
+    description: "Early adulthood"
+    n_subjects: 79
+
+# Template building configuration
+templates:
+  # Subject selection for template building
+  selection:
+    method: "qc_based"  # or "random"
+    top_percent: 0.25   # Use top 25% of subjects
+    min_subjects: 10    # Minimum required per cohort
+
+  # ANTs template construction parameters
+  construction:
+    n_iterations: 4
+    gradient_step: 0.2
+    dimension: 3
+    use_float: true
+
+  # Automatic SIGMA registration (T2w only)
+  sigma_registration:
+    enabled: true
+    transform_type: "SyN"
+
+# Execution settings
+execution:
+  plugin: "MultiProc"
+  n_procs: 8
+  stop_on_first_crash: false
+  keep_unnecessary_outputs: false
+
+# Memory and resource limits
+resources:
+  # Per-process memory limits (GB)
+  memory_gb: 16
+
+  # GPU settings
+  gpu:
+    enabled: true
+    device: 0  # CUDA device ID
+
+# Anatomical preprocessing parameters
+anatomical:
+  # Skull stripping
+  skull_strip:
+    method: "atropos"  # or "ants" or "bet"
+    bet_frac: 0.3      # Rodent-optimized
+
+  # Bias field correction
+  bias_correction:
+    n_iterations: [50, 50, 30, 20]
+    shrink_factor: 3
+    convergence_threshold: 1e-6
+
+  # Intensity normalization
+  normalization:
+    method: "scale"
+    scale_factor: 1000.0
+
+  # Registration to template
+  registration:
+    enabled: true
+    method: "ants"
+    transform_type: "SyN"
+
+# Diffusion preprocessing parameters
+diffusion:
+  # Brain extraction
+  bet:
+    frac: 0.3
+    robust: true
+
+  # Eddy correction
+  eddy:
+    use_cuda: true      # Use GPU acceleration
+    cuda_device: 0
+    repol: true         # Replace outliers
+    estimate_move_by_susceptibility: false  # Disable for speed
+
+  # DTI fitting
+  fitting:
+    method: "dipy"      # Use dipy TensorModel
+    fit_method: "WLS"   # Weighted least squares
+
+  # Normalization to template
+  normalization:
+    target_space: "template"  # Register to age-matched FA template
+    transform_type: "SyN"
+
+# Functional preprocessing parameters
+functional:
+  # Motion correction
+  motion_correction:
+    ref_vol: "median"   # Use median volume as reference
+    cost: "normcorr"    # Normalized correlation
+
+  # Slice timing correction
+  slice_timing:
+    enabled: true
+    ref_slice: "middle"
+
+  # Spatial smoothing
+  smoothing:
+    fwhm: 0.5          # Smaller for rodent brains (mm)
+
+  # Temporal filtering
+  temporal_filter:
+    highpass: 0.01     # Hz
+    lowpass: 0.1       # Hz
+
+  # ICA-AROMA denoising
+  aroma:
+    enabled: true
+    denoise_type: "nonaggr"  # Non-aggressive
+
+  # CompCor
+  compcor:
+    n_components: 6
+    method: "aCompCor"  # Anatomical CompCor
+
+  # Normalization
+  normalization:
+    target_space: "template"  # Register to age-matched BOLD template
+    transform_type: "SyN"
+
+# MSME (T2 relaxometry) parameters
+msme:
+  # Multi-echo fitting
+  fitting:
+    method: "monoexponential"
+    min_te: 10   # ms
+    max_te: 100  # ms
+
+  # Registration
+  registration:
+    target_space: "T2w"  # Register to anatomical
+    transform_type: "Affine"
+
+# MTR (Magnetization Transfer Ratio) parameters
+mtr:
+  # MTR calculation
+  calculation:
+    formula: "100 * (MT_off - MT_on) / MT_off"
+
+  # Registration
+  registration:
+    target_space: "T2w"  # Register to anatomical
+    transform_type: "Affine"
+
+# Quality control settings
+qc:
+  # Anatomical QC
+  anat:
+    skull_strip_overlay: true
+    registration_overlay: true
+    tissue_segmentation: true
+
+  # DTI QC
+  dwi:
+    motion_plots: true
+    eddy_qc: true
+    fa_histogram: true
+    registration_overlay: true
+
+  # fMRI QC
+  func:
+    motion_plots: true
+    carpet_plot: true
+    confounds_correlation: true
+    registration_overlay: true
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "${paths.study_root}/neurofaune.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

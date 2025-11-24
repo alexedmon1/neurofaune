@@ -28,6 +28,7 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Image Validation: Pre-pipeline validation (voxel size, orientation, dimensions, data type)
 - Orientation Matching: Automatic orientation detection and correction between images
 - Skull Stripping: Two-pass approach (ANTs Atropos + FSL BET) optimized for rodent brains
+- Tissue Segmentation: Atropos 3-component segmentation (GM, WM, CSF probability maps)
 - N4 Bias Correction: Intensity inhomogeneity correction
 - Intensity Normalization: Scale-invariant preprocessing
 - Preprocessing Only: SIGMA registration removed for template-based approach
@@ -42,16 +43,26 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - QC Metrics: Data quality checks (NaN/Inf detection, SNR estimation)
 - Preprocessing Only: SIGMA registration removed for template-based approach
 
-**🚧 Phase 5 (Multi-Modal Template Architecture) - In Progress**
+**✅ Phase 5 (Multi-Modal Template Architecture) - Complete**
 - Architecture Design: Independent T2w and FA template spaces (documented)
 - Workflow Refactoring: Removed direct SIGMA registration from preprocessing pipelines
-- Next Steps:
-  - Template building module (ANTs multivariate construction)
-  - Age-specific templates (p30, p60, p90 cohorts)
-  - Template-to-SIGMA auto-registration (T2w only)
-  - Within-subject T2w ↔ FA registration
-  - Label propagation utilities (SIGMA → FA via transform composition)
+- Template Building Module: ANTs multivariate template construction wrapper
+- Subject Selection: QC-based selection of top 25% subjects per cohort
+- Tissue-Specific Templates: GM, WM, CSF probability templates for each cohort
+- Automatic T2w Template → SIGMA Registration
+- Subject-to-Template Registration: Register individuals to age-matched templates
+- Within-Subject Registration: Cross-modal registration (T2w ↔ FA, T2w ↔ BOLD)
+- Label Propagation: Transform composition utilities for SIGMA → subject space
+- Naming Convention: Underscore-separated cohorts (e.g., `tpl-BPARat_p60_T2w.nii.gz`)
+- CLI: `scripts/build_templates.py` for end-to-end template building
+- Example Config: `configs/bpa_rat_example.yaml` with all parameters
 - Documentation: See [`docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md`](docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md)
+
+**🚧 Phase 6 (Additional Modality Workflows) - Next**
+- Functional (fMRI): Motion correction, ICA-AROMA, confound regression
+- MSME: T2 relaxometry mapping
+- MTR: Magnetization transfer ratio calculation
+- All workflows to use template-based normalization
 
 **✅ Bruker to BIDS Conversion - Complete**
 - 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)
@@ -211,6 +222,10 @@ study_root/
 │       ├── anat/
 │       │   ├── sub-001_desc-preproc_T2w.nii.gz
 │       │   ├── sub-001_desc-brain_mask.nii.gz
+│       │   ├── sub-001_dseg.nii.gz                    # Tissue segmentation
+│       │   ├── sub-001_label-GM_probseg.nii.gz       # GM probability
+│       │   ├── sub-001_label-WM_probseg.nii.gz       # WM probability
+│       │   ├── sub-001_label-CSF_probseg.nii.gz      # CSF probability
 │       │   └── sub-001_space-SIGMA_T2w.nii.gz
 │       ├── dwi/
 │       │   ├── sub-001_desc-preproc_dwi.nii.gz
@@ -218,10 +233,21 @@ study_root/
 │       │   └── sub-001_space-SIGMA_FA.nii.gz
 │       └── func/
 │           └── sub-001_desc-preproc_bold.nii.gz
+├── templates/               # Age-specific templates
+│   ├── p30/
+│   │   ├── tpl-BPARat_p30_T2w.nii.gz
+│   │   ├── tpl-BPARat_p30_label-GM_probseg.nii.gz
+│   │   ├── tpl-BPARat_p30_label-WM_probseg.nii.gz
+│   │   ├── tpl-BPARat_p30_label-CSF_probseg.nii.gz
+│   │   ├── tpl-BPARat_p30_FA.nii.gz
+│   │   ├── tpl-BPARat_p30_bold.nii.gz
+│   │   └── transforms/
+│   ├── p60/ (same structure)
+│   └── p90/ (same structure)
 ├── transforms/              # Transform registry
 │   └── sub-001/
-│       ├── T2w_to_SIGMA_composite.h5
-│       ├── FA_to_SIGMA_dwi_composite.h5
+│       ├── T2w_to_template_Composite.h5
+│       ├── FA_to_template_Composite.h5
 │       └── transforms.json
 ├── qc/                      # Quality control reports
 │   └── sub-001/

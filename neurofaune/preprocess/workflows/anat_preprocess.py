@@ -330,6 +330,110 @@ def skull_strip_rodent(
         raise NotImplementedError(f"Method {method} not yet implemented")
 
 
+def segment_brain_tissue(
+    input_file: Path,
+    mask_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str
+) -> Dict[str, Path]:
+    """
+    Segment brain tissue into GM, WM, CSF using Atropos.
+
+    This runs a 3-component Atropos segmentation on the brain-extracted
+    image to obtain tissue probability maps.
+
+    Parameters
+    ----------
+    input_file : Path
+        Brain-extracted T2w image
+    mask_file : Path
+        Brain mask
+    output_dir : Path
+        Output directory for segmentation results
+    subject : str
+        Subject identifier
+    session : str
+        Session identifier
+
+    Returns
+    -------
+    dict
+        Dictionary with paths to:
+        - 'segmentation': Hard segmentation (discrete labels)
+        - 'gm_prob': Grey matter probability map
+        - 'wm_prob': White matter probability map
+        - 'csf_prob': CSF probability map
+    """
+    from nipype.interfaces.ants import Atropos
+    import os
+
+    print("\n" + "="*60)
+    print("TISSUE SEGMENTATION (GM, WM, CSF)")
+    print("="*60)
+
+    # Change to output directory for Atropos
+    original_dir = os.getcwd()
+    os.chdir(output_dir)
+
+    try:
+        atropos = Atropos()
+        atropos.inputs.dimension = 3
+        atropos.inputs.intensity_images = [str(input_file)]
+        atropos.inputs.mask_image = str(mask_file)
+        atropos.inputs.number_of_tissue_classes = 3  # GM, WM, CSF
+        atropos.inputs.n_iterations = 5
+        atropos.inputs.convergence_threshold = 0.0
+        atropos.inputs.mrf_smoothing_factor = 0.1
+        atropos.inputs.mrf_radius = [1, 1, 1]
+        atropos.inputs.initialization = 'KMeans'
+        atropos.inputs.save_posteriors = True
+        atropos.inputs.out_classified_image_name = f'{subject}_{session}_segmentation.nii.gz'
+
+        print("Running Atropos 3-component tissue segmentation...")
+        print(f"  Input: {input_file.name}")
+        print(f"  Mask: {mask_file.name}")
+        print(f"  Components: GM, WM, CSF")
+
+        result = atropos.run()
+
+        # Get posteriors (probability maps)
+        posteriors = [Path(p) for p in result.outputs.posteriors]
+        segmentation = Path(result.outputs.classified_image)
+
+        # On T2w images, typical ordering by intensity:
+        # Posterior 1 (darkest): White matter
+        # Posterior 2 (intermediate): Grey matter
+        # Posterior 3 (brightest): CSF
+
+        # Rename to standard names
+        wm_prob = output_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
+        gm_prob = output_dir / f'{subject}_{session}_label-GM_probseg.nii.gz'
+        csf_prob = output_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
+        seg_final = output_dir / f'{subject}_{session}_dseg.nii.gz'
+
+        posteriors[0].rename(wm_prob)   # Darkest = WM on T2w
+        posteriors[1].rename(gm_prob)   # Intermediate = GM
+        posteriors[2].rename(csf_prob)  # Brightest = CSF
+        segmentation.rename(seg_final)
+
+        print(f"\nTissue segmentation complete!")
+        print(f"  Segmentation: {seg_final.name}")
+        print(f"  GM probability: {gm_prob.name}")
+        print(f"  WM probability: {wm_prob.name}")
+        print(f"  CSF probability: {csf_prob.name}")
+
+        return {
+            'segmentation': seg_final,
+            'gm_prob': gm_prob,
+            'wm_prob': wm_prob,
+            'csf_prob': csf_prob
+        }
+
+    finally:
+        os.chdir(original_dir)
+
+
 def bias_field_correction(
     input_file: Path,
     output_file: Path,
@@ -717,39 +821,85 @@ def run_anatomical_preprocessing(
         method='atropos'
     )
 
-    # Step 4: Intensity normalization (multiply by 1000, similar to your approach)
-    print("Intensity normalization...")
+    # Step 4: Tissue segmentation (GM, WM, CSF)
+    print("\n" + "="*60)
+    print("STEP 4: Tissue Segmentation")
+    print("="*60)
+
+    tissue_results = segment_brain_tissue(
+        input_file=brain_file,
+        mask_file=mask_file,
+        output_dir=work_dir,
+        subject=subject,
+        session=session
+    )
+
+    # Step 5: Intensity normalization (multiply by 1000)
+    print("\n" + "="*60)
+    print("STEP 5: Intensity Normalization")
+    print("="*60)
+    print("Normalizing intensity...")
     img = nib.load(brain_file)
     data = img.get_fdata()
     data_norm = data * 1000.0
     img_norm = nib.Nifti1Image(data_norm, img.affine, img.header)
     brain_norm_file = work_dir / f'{subject}_{session}_brain_norm.nii.gz'
     nib.save(img_norm, brain_norm_file)
+    print(f"  Saved normalized brain: {brain_norm_file.name}")
 
-    # Step 5: Save outputs to derivatives
-    print("Saving preprocessed outputs...")
+    # Step 6: Save outputs to derivatives
+    print("\n" + "="*60)
+    print("STEP 6: Saving Outputs")
+    print("="*60)
+    print("Copying files to derivatives directory...")
+
     final_brain = derivatives_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
     final_mask = derivatives_dir / f'{subject}_{session}_desc-brain_mask.nii.gz'
+    final_seg = derivatives_dir / f'{subject}_{session}_dseg.nii.gz'
+    final_gm = derivatives_dir / f'{subject}_{session}_label-GM_probseg.nii.gz'
+    final_wm = derivatives_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
+    final_csf = derivatives_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
 
     import shutil
-    shutil.copy(brain_norm_file, final_brain)  # Normalized, bias-corrected, skull-stripped
+    shutil.copy(brain_norm_file, final_brain)
     shutil.copy(mask_file, final_mask)
+    shutil.copy(tissue_results['segmentation'], final_seg)
+    shutil.copy(tissue_results['gm_prob'], final_gm)
+    shutil.copy(tissue_results['wm_prob'], final_wm)
+    shutil.copy(tissue_results['csf_prob'], final_csf)
 
-    # Step 6: Generate QC (placeholder for now)
-    print("Generating QC reports...")
+    print(f"  ✓ Preprocessed T2w: {final_brain.name}")
+    print(f"  ✓ Brain mask: {final_mask.name}")
+    print(f"  ✓ Tissue segmentation: {final_seg.name}")
+    print(f"  ✓ GM probability: {final_gm.name}")
+    print(f"  ✓ WM probability: {final_wm.name}")
+    print(f"  ✓ CSF probability: {final_csf.name}")
+
+    # Step 7: Generate QC (placeholder for now)
+    print("\n" + "="*60)
+    print("STEP 7: Quality Control")
+    print("="*60)
+    print("QC report generation: TODO")
     # TODO: Implement QC generation
 
     print("\n" + "="*80)
     print("Anatomical preprocessing complete!")
     print("="*80)
-    print(f"Preprocessed brain: {final_brain}")
-    print(f"Brain mask: {final_mask}")
+    print(f"\nOutputs:")
+    print(f"  Preprocessed T2w: {final_brain}")
+    print(f"  Brain mask: {final_mask}")
+    print(f"  Tissue segmentation: {final_seg}")
+    print(f"  GM/WM/CSF probabilities: {derivatives_dir}")
     print("\nNOTE: Registration to study template and SIGMA will be done separately.")
     print("="*80 + "\n")
 
     return {
         'brain': final_brain,
         'mask': final_mask,
+        'segmentation': final_seg,
+        'gm_prob': final_gm,
+        'wm_prob': final_wm,
+        'csf_prob': final_csf,
         'was_scaled': was_scaled,
         'scale_factor': scale_factor,
         'qc_reports': []
