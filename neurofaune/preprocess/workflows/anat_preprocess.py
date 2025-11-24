@@ -13,7 +13,7 @@ separately in template building/registration modules.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import nibabel as nib
 import numpy as np
 from nipype.interfaces import fsl, ants
@@ -207,7 +207,8 @@ def skull_strip_rodent(
         expected_mask = output_file.parent / output_file.name.replace('.nii.gz', '_mask.nii.gz')
         shutil.move(mask_file, expected_mask)
 
-        return output_file, expected_mask
+        # ANTs BrainExtraction doesn't provide posteriors
+        return output_file, expected_mask, None
 
     elif method == 'atropos':
         # Use Atropos 5-component segmentation to separate brain from skull
@@ -299,7 +300,8 @@ def skull_strip_rodent(
             # Get the refined mask
             mask_file = Path(bet_result.outputs.mask_file)
 
-            return output_file, mask_file
+            # Return brain, mask, and atropos posteriors for tissue segmentation reuse
+            return output_file, mask_file, posteriors
         finally:
             # Always change back to original directory
             os.chdir(original_dir)
@@ -325,32 +327,40 @@ def skull_strip_rodent(
 
         mask_file = output_file.parent / output_file.name.replace('.nii.gz', '_mask.nii.gz')
 
-        return output_file, mask_file
+        # BET method doesn't provide posteriors
+        return output_file, mask_file, None
     else:
         raise NotImplementedError(f"Method {method} not yet implemented")
 
 
 def segment_brain_tissue(
-    input_file: Path,
     mask_file: Path,
+    atropos_posteriors: List[Path],
     output_dir: Path,
     subject: str,
     session: str
 ) -> Dict[str, Path]:
     """
-    Segment brain tissue into GM, WM, CSF using Atropos.
+    Extract tissue probability maps from Atropos skull stripping posteriors.
 
-    This runs a 3-component Atropos segmentation on the brain-extracted
-    image to obtain tissue probability maps.
+    This function reuses the 5-component Atropos segmentation from skull stripping
+    and applies the refined BET brain mask to extract GM, WM, CSF probability maps.
+
+    The 5 Atropos posteriors from skull stripping are:
+    - Index 0 (Posterior 1): Background/scalp (darkest)
+    - Index 1 (Posterior 2): White matter (dark on T2w)
+    - Index 2 (Posterior 3): Grey matter (intermediate)
+    - Index 3 (Posterior 4): CSF within brain (bright)
+    - Index 4 (Posterior 5): Very bright CSF/eyes/scalp (excluded)
 
     Parameters
     ----------
-    input_file : Path
-        Brain-extracted T2w image
     mask_file : Path
-        Brain mask
+        Refined brain mask from BET
+    atropos_posteriors : List[Path]
+        List of 5 posterior probability maps from Atropos skull stripping
     output_dir : Path
-        Output directory for segmentation results
+        Output directory for tissue maps
     subject : str
         Subject identifier
     session : str
@@ -365,73 +375,51 @@ def segment_brain_tissue(
         - 'wm_prob': White matter probability map
         - 'csf_prob': CSF probability map
     """
-    from nipype.interfaces.ants import Atropos
-    import os
-
     print("\n" + "="*60)
     print("TISSUE SEGMENTATION (GM, WM, CSF)")
     print("="*60)
+    print("Extracting tissue maps from Atropos 5-component segmentation...")
+    print("Using posteriors from skull stripping step (no redundant Atropos run)")
 
-    # Change to output directory for Atropos
-    original_dir = os.getcwd()
-    os.chdir(output_dir)
+    # Load brain mask
+    mask_img = nib.load(mask_file)
+    mask_data = mask_img.get_fdata()
 
-    try:
-        atropos = Atropos()
-        atropos.inputs.dimension = 3
-        atropos.inputs.intensity_images = [str(input_file)]
-        atropos.inputs.mask_image = str(mask_file)
-        atropos.inputs.number_of_tissue_classes = 3  # GM, WM, CSF
-        atropos.inputs.n_iterations = 5
-        atropos.inputs.convergence_threshold = 0.0
-        atropos.inputs.mrf_smoothing_factor = 0.1
-        atropos.inputs.mrf_radius = [1, 1, 1]
-        atropos.inputs.initialization = 'KMeans'
-        atropos.inputs.save_posteriors = True
-        atropos.inputs.out_classified_image_name = f'{subject}_{session}_segmentation.nii.gz'
+    # Load brain tissue posteriors (indices 1-3) and apply brain mask
+    # Index 1 = WM, Index 2 = GM, Index 3 = CSF
+    wm_data = nib.load(atropos_posteriors[1]).get_fdata() * mask_data
+    gm_data = nib.load(atropos_posteriors[2]).get_fdata() * mask_data
+    csf_data = nib.load(atropos_posteriors[3]).get_fdata() * mask_data
 
-        print("Running Atropos 3-component tissue segmentation...")
-        print(f"  Input: {input_file.name}")
-        print(f"  Mask: {mask_file.name}")
-        print(f"  Components: GM, WM, CSF")
+    # Create hard segmentation (argmax of tissue probabilities)
+    # Label 1 = WM, Label 2 = GM, Label 3 = CSF
+    tissue_stack = np.stack([wm_data, gm_data, csf_data], axis=-1)
+    segmentation_data = np.argmax(tissue_stack, axis=-1) + 1  # Add 1 so labels are 1,2,3
+    segmentation_data = segmentation_data * mask_data  # Apply brain mask
 
-        result = atropos.run()
+    # Save tissue probability maps
+    wm_prob = output_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
+    gm_prob = output_dir / f'{subject}_{session}_label-GM_probseg.nii.gz'
+    csf_prob = output_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
+    seg_final = output_dir / f'{subject}_{session}_dseg.nii.gz'
 
-        # Get posteriors (probability maps)
-        posteriors = [Path(p) for p in result.outputs.posteriors]
-        segmentation = Path(result.outputs.classified_image)
+    nib.save(nib.Nifti1Image(wm_data, mask_img.affine, mask_img.header), wm_prob)
+    nib.save(nib.Nifti1Image(gm_data, mask_img.affine, mask_img.header), gm_prob)
+    nib.save(nib.Nifti1Image(csf_data, mask_img.affine, mask_img.header), csf_prob)
+    nib.save(nib.Nifti1Image(segmentation_data, mask_img.affine, mask_img.header), seg_final)
 
-        # On T2w images, typical ordering by intensity:
-        # Posterior 1 (darkest): White matter
-        # Posterior 2 (intermediate): Grey matter
-        # Posterior 3 (brightest): CSF
+    print(f"\nTissue segmentation complete!")
+    print(f"  Segmentation: {seg_final.name}")
+    print(f"  GM probability: {gm_prob.name}")
+    print(f"  WM probability: {wm_prob.name}")
+    print(f"  CSF probability: {csf_prob.name}")
 
-        # Rename to standard names
-        wm_prob = output_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
-        gm_prob = output_dir / f'{subject}_{session}_label-GM_probseg.nii.gz'
-        csf_prob = output_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
-        seg_final = output_dir / f'{subject}_{session}_dseg.nii.gz'
-
-        posteriors[0].rename(wm_prob)   # Darkest = WM on T2w
-        posteriors[1].rename(gm_prob)   # Intermediate = GM
-        posteriors[2].rename(csf_prob)  # Brightest = CSF
-        segmentation.rename(seg_final)
-
-        print(f"\nTissue segmentation complete!")
-        print(f"  Segmentation: {seg_final.name}")
-        print(f"  GM probability: {gm_prob.name}")
-        print(f"  WM probability: {wm_prob.name}")
-        print(f"  CSF probability: {csf_prob.name}")
-
-        return {
-            'segmentation': seg_final,
-            'gm_prob': gm_prob,
-            'wm_prob': wm_prob,
-            'csf_prob': csf_prob
-        }
-
-    finally:
-        os.chdir(original_dir)
+    return {
+        'segmentation': seg_final,
+        'gm_prob': gm_prob,
+        'wm_prob': wm_prob,
+        'csf_prob': csf_prob
+    }
 
 
 def bias_field_correction(
@@ -836,12 +824,19 @@ def run_anatomical_preprocessing(
     # Step 3: Skull stripping (after bias correction)
     print(f"Skull stripping with cohort={cohort} using Atropos 5-component segmentation...")
     brain_file = work_dir / f'{subject}_{session}_brain.nii.gz'
-    brain_file, mask_file = skull_strip_rodent(
+    brain_file, mask_file, atropos_posteriors = skull_strip_rodent(
         input_file=t2w_n4_file,
         output_file=brain_file,
         cohort=cohort,
         method='atropos'
     )
+
+    # Check if posteriors are available
+    if atropos_posteriors is None:
+        raise ValueError(
+            "Atropos posteriors not available. "
+            "Tissue segmentation currently requires method='atropos' for skull stripping."
+        )
 
     # Step 4: Tissue segmentation (GM, WM, CSF)
     print("\n" + "="*60)
@@ -849,8 +844,8 @@ def run_anatomical_preprocessing(
     print("="*60)
 
     tissue_results = segment_brain_tissue(
-        input_file=brain_file,
         mask_file=mask_file,
+        atropos_posteriors=atropos_posteriors,
         output_dir=work_dir,
         subject=subject,
         session=session
