@@ -8,6 +8,36 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 ---
 
+## Current Implementation Status
+
+### ✅ **Completed Workflows**
+
+1. **Anatomical T2w Preprocessing**
+   - Automatic T2w scan selection (excludes problematic 3D scans)
+   - Two-pass skull stripping (Atropos 5-component + BET)
+   - N4 bias field correction
+   - Tissue segmentation (GM, WM, CSF)
+   - Batch processing support
+
+2. **DWI/DTI Preprocessing**
+   - 5D→4D conversion for Bruker data
+   - GPU-accelerated eddy correction
+   - FSL dtifit for tensor fitting (FA, MD, AD, RD)
+   - Comprehensive QC (motion, eddy, DTI metrics)
+   - Multi-shell ready (currently tested on 6-direction DTI)
+
+3. **MSME T2 Mapping**
+   - Multi-echo T2 mapping
+   - Myelin Water Fraction (MWF) calculation via NNLS
+   - T2 compartment analysis (myelin, intra/extra-cellular, CSF)
+   - QC with T2 decay curves and NNLS spectra visualization
+
+### 🚧 **In Progress**
+
+- **Resting-state fMRI:** Workflow design complete, implementation pending
+- **Template building:** ANTs-based age-specific template creation
+- **Registration to atlas:** SIGMA atlas integration
+
 ## Features
 
 ### Current Status
@@ -44,8 +74,8 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Gradient Table Validation: Verify bval/bvec consistency with automatic normalization
 - GPU-Accelerated Eddy: FSL eddy_cuda support (with CPU fallback)
 - Brain Masking: BET-based masking from b0 volume
-- DTI Fitting: Compute FA, MD, AD, RD maps using dipy TensorModel
-- QC Metrics: Data quality checks (NaN/Inf detection, SNR estimation)
+- DTI Fitting: Compute FA, MD, AD, RD maps using FSL dtifit
+- Comprehensive QC: Motion/eddy QC with framewise displacement, DTI metric QC with histograms and montages
 - Preprocessing Only: SIGMA registration removed for template-based approach
 
 **✅ Phase 5 (Multi-Modal Template Architecture) - Complete**
@@ -63,9 +93,15 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Example Config: `configs/bpa_rat_example.yaml` with all parameters
 - Documentation: See [`docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md`](docs/MULTIMODAL_TEMPLATE_ARCHITECTURE.md)
 
-**🚧 Phase 6 (Additional Modality Workflows) - Next**
+**✅ Phase 6 (MSME T2 Mapping) - Complete**
+- Multi-echo T2 relaxometry mapping
+- Myelin Water Fraction (MWF) calculation via NNLS with regularization
+- T2 compartment analysis (myelin <25ms, intra/extra-cellular 25-40ms, CSF 41-2000ms)
+- Comprehensive QC with T2 decay curves and NNLS spectra visualization
+- Template-based normalization ready
+
+**🚧 Phase 7 (Additional Modality Workflows) - In Progress**
 - Functional (fMRI): Motion correction, ICA-AROMA, confound regression
-- MSME: T2 relaxometry mapping
 - MTR: Magnetization transfer ratio calculation
 - All workflows to use template-based normalization
 
@@ -138,6 +174,20 @@ pip install -e ".[all]"  # Includes FSL-MRS, Bruker conversion tools
 ```
 
 ---
+
+## Batch Processing
+
+Process all subjects with automatic 3D scan exclusion:
+
+```bash
+# Anatomical preprocessing for all subjects
+python batch_anatomical_preprocessing.py /path/to/bids /path/to/output
+
+# Build age-specific templates
+python build_templates.py /path/to/output
+```
+
+See [BATCH_PROCESSING_GUIDE.md](BATCH_PROCESSING_GUIDE.md) for details.
 
 ## Quick Start
 

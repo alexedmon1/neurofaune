@@ -30,6 +30,7 @@ from neurofaune.preprocess.utils.orientation import (
 )
 from neurofaune.atlas.manager import AtlasManager
 from neurofaune.utils.transforms import TransformRegistry
+from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_qc_report
 
 
 def run_dwi_preprocessing(
@@ -324,20 +325,46 @@ def run_dwi_preprocessing(
     print("Step 6: Quality Control")
     print("="*80)
 
-    qc_metrics = check_dwi_data_quality(dwi_eddy_file, brain_mask_file)
+    qc_results = {}
 
-    # Save QC metrics
-    qc_json = qc_dir / f'{subject}_{session}_dwi_qc.json'
+    # Eddy QC (motion, signal quality)
+    eddy_params_file = work_dir / 'eddy_corrected.eddy_parameters'
+    if eddy_params_file.exists():
+        eddy_qc = generate_eddy_qc_report(
+            subject=subject,
+            session=session,
+            dwi_preproc=dwi_eddy_file,
+            eddy_params=eddy_params_file,
+            output_dir=qc_dir
+        )
+        qc_results['eddy_qc'] = eddy_qc
+    else:
+        print("Warning: Eddy parameters file not found, skipping motion QC")
+
+    # DTI metrics QC
+    dti_qc = generate_dti_qc_report(
+        subject=subject,
+        session=session,
+        fa_file=fa_file,
+        md_file=md_file,
+        ad_file=ad_file,
+        rd_file=rd_file,
+        brain_mask=brain_mask_file,
+        output_dir=qc_dir
+    )
+    qc_results['dti_qc'] = dti_qc
+
+    # Basic data quality metrics
+    qc_metrics = check_dwi_data_quality(dwi_eddy_file, brain_mask_file)
+    qc_json = qc_dir / f'{subject}_{session}_dwi_basic_qc.json'
     with open(qc_json, 'w') as f:
         json.dump(qc_metrics, f, indent=2)
 
-    print(f"\nQC metrics saved to: {qc_json}")
-    print(f"\nQC Summary:")
-    print(f"  Shape: {qc_metrics['shape']}")
-    print(f"  Voxel size: {qc_metrics['voxel_size']}")
-    print(f"  Number of volumes: {qc_metrics['n_volumes']}")
-    if 'snr_estimate' in qc_metrics:
-        print(f"  SNR estimate: {qc_metrics['snr_estimate']:.2f}")
+    print(f"\n✓ QC reports generated:")
+    if 'eddy_qc' in qc_results:
+        print(f"  - Eddy/Motion QC: {qc_results['eddy_qc']['html_report']}")
+    print(f"  - DTI Metrics QC: {qc_results['dti_qc']['html_report']}")
+    print(f"  - Basic metrics: {qc_json}")
 
     # ==========================================================================
     # Workflow complete
@@ -363,6 +390,7 @@ def run_dwi_preprocessing(
         'md': md_file,
         'ad': ad_file,
         'rd': rd_file,
+        'qc_results': qc_results,
         'qc_metrics': qc_metrics
     }
 
@@ -375,7 +403,7 @@ def fit_dti(
     output_prefix: Path
 ) -> Tuple[Path, Path, Path, Path]:
     """
-    Fit DTI model and compute FA, MD, AD, RD maps using dipy.
+    Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit.
 
     Parameters
     ----------
@@ -395,59 +423,77 @@ def fit_dti(
     tuple
         Paths to (FA, MD, AD, RD) files
     """
-    print("\nFitting DTI model...")
+    print("\nFitting DTI model with FSL dtifit...")
 
-    # Import dipy modules
-    from dipy.io import read_bvals_bvecs
-    from dipy.core.gradients import gradient_table
-    from dipy.reconst.dti import TensorModel
+    # Use FSL's dtifit
+    cmd = [
+        'dtifit',
+        f'--data={dwi_file}',
+        f'--mask={mask_file}',
+        f'--bvecs={bvec_file}',
+        f'--bvals={bval_file}',
+        f'--out={output_prefix}',
+        '--sse',  # Save sum of squared errors
+        '--save_tensor'  # Save tensor
+    ]
 
-    # Load data
-    img = nib.load(dwi_file)
-    data = img.get_fdata()
+    print(f"  Running: {' '.join(cmd)}")
 
-    mask_img = nib.load(mask_file)
-    mask = mask_img.get_fdata() > 0
+    result = subprocess.run(cmd,
+                           stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE,
+                           text=True)
 
-    # Load gradient table
-    bvals, bvecs = read_bvals_bvecs(str(bval_file), str(bvec_file))
-    gtab = gradient_table(bvals, bvecs)
+    if result.returncode != 0:
+        print(f"DTI fitting failed!")
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+        raise RuntimeError("FSL dtifit failed")
 
-    print(f"  Data shape: {data.shape}")
-    print(f"  Mask shape: {mask.shape}")
-    print(f"  Gradient table: {len(bvals)} volumes")
+    print("  DTI fitting completed successfully")
 
-    # Fit DTI model
-    print("  Fitting tensor model...")
-    tenmodel = TensorModel(gtab)
-    tenfit = tenmodel.fit(data, mask=mask)
-
-    # Compute scalar maps
-    print("  Computing scalar maps...")
-    fa = tenfit.fa
-    md = tenfit.md
-    ad = tenfit.ad
-    rd = tenfit.rd
-
-    # Replace NaN with 0
-    fa[np.isnan(fa)] = 0
-    md[np.isnan(md)] = 0
-    ad[np.isnan(ad)] = 0
-    rd[np.isnan(rd)] = 0
-
-    # Save maps
+    # Define output file paths (dtifit naming convention)
     fa_file = Path(str(output_prefix) + '_FA.nii.gz')
     md_file = Path(str(output_prefix) + '_MD.nii.gz')
+    l1_file = Path(str(output_prefix) + '_L1.nii.gz')
+    l2_file = Path(str(output_prefix) + '_L2.nii.gz')
+    l3_file = Path(str(output_prefix) + '_L3.nii.gz')
+
+    # Calculate AD and RD from eigenvalues
+    # AD = L1 (axial diffusivity)
+    # RD = (L2 + L3) / 2 (radial diffusivity)
+    print("  Computing AD and RD from eigenvalues...")
+
+    l1_img = nib.load(l1_file)
+    l1_data = l1_img.get_fdata()
+
+    l2_img = nib.load(l2_file)
+    l2_data = l2_img.get_fdata()
+
+    l3_img = nib.load(l3_file)
+    l3_data = l3_img.get_fdata()
+
+    # AD = L1
+    ad_data = l1_data
     ad_file = Path(str(output_prefix) + '_AD.nii.gz')
+    nib.save(nib.Nifti1Image(ad_data, l1_img.affine, l1_img.header), ad_file)
+
+    # RD = (L2 + L3) / 2
+    rd_data = (l2_data + l3_data) / 2.0
     rd_file = Path(str(output_prefix) + '_RD.nii.gz')
+    nib.save(nib.Nifti1Image(rd_data, l1_img.affine, l1_img.header), rd_file)
 
-    nib.save(nib.Nifti1Image(fa, img.affine, img.header), fa_file)
-    nib.save(nib.Nifti1Image(md, img.affine, img.header), md_file)
-    nib.save(nib.Nifti1Image(ad, img.affine, img.header), ad_file)
-    nib.save(nib.Nifti1Image(rd, img.affine, img.header), rd_file)
+    # Load FA and MD to check ranges
+    fa_img = nib.load(fa_file)
+    fa_data = fa_img.get_fdata()
 
-    print(f"  FA range: [{fa.min():.3f}, {fa.max():.3f}]")
-    print(f"  MD range: [{md.min():.6f}, {md.max():.6f}]")
+    md_img = nib.load(md_file)
+    md_data = md_img.get_fdata()
+
+    print(f"  FA range: [{fa_data.min():.3f}, {fa_data.max():.3f}]")
+    print(f"  MD range: [{md_data.min():.6f}, {md_data.max():.6f}]")
+    print(f"  AD range: [{ad_data.min():.6f}, {ad_data.max():.6f}]")
+    print(f"  RD range: [{rd_data.min():.6f}, {rd_data.max():.6f}]")
 
     return fa_file, md_file, ad_file, rd_file
 
