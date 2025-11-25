@@ -14,10 +14,12 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 1. **Anatomical T2w Preprocessing**
    - Automatic T2w scan selection (excludes problematic 3D scans)
-   - Two-pass skull stripping (Atropos 5-component + BET)
+   - Adaptive skull stripping (Atropos 5-component + adaptive BET)
+     - Subject-specific BET frac calculation based on contrast-to-noise ratio
+     - Conservative parameters (frac 0.1-0.4) to minimize over-stripping
    - N4 bias field correction
    - Tissue segmentation (GM, WM, CSF)
-   - Batch processing support
+   - Batch processing support with --force flag for reprocessing
 
 2. **DWI/DTI Preprocessing**
    - 5D→4D conversion for Bruker data
@@ -57,7 +59,10 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 **✅ Phase 3 (Anatomical Preprocessing) - Complete**
 - Image Validation: Pre-pipeline validation (voxel size, orientation, dimensions, data type)
 - Orientation Matching: Automatic orientation detection and correction between images
-- Skull Stripping: Two-pass approach (ANTs Atropos 5-component + FSL BET refinement)
+- Adaptive Skull Stripping: Two-pass approach with subject-specific parameters
+  - ANTs Atropos 5-component segmentation for rough brain mask
+  - FSL BET refinement with adaptive frac calculation (CNR-based, range 0.1-0.4)
+  - Conservative parameters to minimize over-stripping across variable image quality
 - Tissue Segmentation: Reuses Atropos posteriors from skull stripping (30-40% faster, no redundant execution)
   - Extracts GM, WM, CSF probability maps from skull stripping posteriors
   - Applies refined BET mask for accurate tissue classification
@@ -67,7 +72,8 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Automatic T2w Scan Selection: Score-based selection with 3D scan penalty
 - Exclusion Marker System: Automatic tracking of preprocessing failures
 - Preprocessing Only: SIGMA registration removed for template-based approach
-- Tested on BPA-Rat data: Validated on multiple subjects across all cohorts
+- Batch Processing: Support for --force flag to reprocess all subjects
+- Tested on BPA-Rat data: Validated on 189 subject/session combinations across all cohorts
 
 **✅ Phase 4 (DTI Preprocessing Foundation) - Complete**
 - 5D→4D Conversion: Handle Bruker multi-average DTI acquisitions

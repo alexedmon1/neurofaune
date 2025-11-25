@@ -145,6 +145,91 @@ def extract_slices_from_volume(
     return output_file
 
 
+def calculate_adaptive_bet_frac(
+    input_file: Path,
+    atropos_mask: np.ndarray,
+    default_frac: float = 0.25,
+    min_frac: float = 0.1,
+    max_frac: float = 0.4
+) -> float:
+    """
+    Calculate adaptive BET fractional intensity parameter based on image statistics.
+
+    The frac parameter controls where BET cuts between brain and non-brain.
+    This function adapts frac based on:
+    - Brain tissue intensity distribution
+    - Contrast between brain and background
+    - Contrast-to-noise ratio (CNR)
+
+    Parameters
+    ----------
+    input_file : Path
+        Input T2w image
+    atropos_mask : np.ndarray
+        Rough brain mask from Atropos
+    default_frac : float
+        Default frac if calculation fails
+    min_frac : float
+        Minimum allowed frac (more conservative)
+    max_frac : float
+        Maximum allowed frac (more aggressive)
+
+    Returns
+    -------
+    float
+        Calculated frac parameter
+    """
+    img = nib.load(input_file)
+    img_data = img.get_fdata()
+
+    # Get brain intensities from Atropos mask region
+    brain_intensities = img_data[atropos_mask > 0]
+
+    # Get background intensities (everything outside Atropos mask but > 0)
+    # This includes skull, eyes, scalp, etc.
+    background_mask = (atropos_mask == 0) & (img_data > 0)
+    if background_mask.sum() > 0:
+        background_intensities = img_data[background_mask]
+    else:
+        # Fallback if no background (shouldn't happen)
+        print(f"  Warning: No background found, using default frac={default_frac}")
+        return default_frac
+
+    # Calculate statistics
+    brain_median = np.median(brain_intensities)
+    brain_std = np.std(brain_intensities)
+    background_median = np.median(background_intensities)
+    background_std = np.std(background_intensities)
+
+    # Calculate contrast-to-noise ratio (CNR)
+    # Higher CNR = easier to separate brain from skull = can use higher frac
+    # Lower CNR = harder to separate = need lower frac (more conservative)
+    cnr = abs(brain_median - background_median) / (brain_std + background_std + 1e-6)
+
+    # Map CNR to frac based on empirical rodent T2w ranges:
+    # CNR < 1.5: Poor contrast (similar intensities) -> frac 0.15-0.20 (very conservative)
+    # CNR 1.5-3.0: Good contrast -> frac 0.25-0.30 (moderate)
+    # CNR > 3.0: Excellent contrast -> frac 0.35-0.40 (still conservative)
+
+    if cnr < 1.5:
+        frac = 0.20  # Very conservative for low contrast
+    elif cnr < 3.0:
+        frac = 0.28  # Moderate for good contrast
+    else:
+        frac = 0.38  # More aggressive for excellent contrast
+
+    # Clamp to allowed range
+    frac = np.clip(frac, min_frac, max_frac)
+
+    print(f"  Adaptive BET parameter calculation:")
+    print(f"    Brain median intensity: {brain_median:.1f}")
+    print(f"    Background median intensity: {background_median:.1f}")
+    print(f"    Contrast-to-noise ratio (CNR): {cnr:.2f}")
+    print(f"    -> Selected frac: {frac:.2f}")
+
+    return frac
+
+
 def skull_strip_rodent(
     input_file: Path,
     output_file: Path,
@@ -169,7 +254,7 @@ def skull_strip_rodent(
     cohort : str
         Age cohort ('p30', 'p60', 'p90')
     method : str
-        Skull stripping method ('ants' or 'bet')
+        Skull stripping method ('ants', 'atropos', or 'bet')
 
     Returns
     -------
@@ -278,7 +363,10 @@ def skull_strip_rodent(
             center_of_gravity = brain_coords.mean(axis=0)
             print(f"Atropos brain mask center of gravity: [{center_of_gravity[0]:.1f}, {center_of_gravity[1]:.1f}, {center_of_gravity[2]:.1f}]")
 
-            # Refine with BET using Atropos mask as prior
+            # Calculate adaptive BET frac parameter based on image contrast
+            adaptive_frac = calculate_adaptive_bet_frac(input_file, atropos_mask)
+
+            # Refine with BET using Atropos mask as prior and adaptive frac
             print(f"Refining brain extraction with BET...")
             from nipype.interfaces import fsl
 
@@ -286,7 +374,7 @@ def skull_strip_rodent(
             bet.inputs.in_file = str(input_file)
             bet.inputs.out_file = str(output_file)
             bet.inputs.mask = True
-            bet.inputs.frac = 0.3  # Lower frac = less aggressive, preserves more brain tissue
+            bet.inputs.frac = adaptive_frac  # Adaptive frac based on image contrast
             bet.inputs.center = [int(center_of_gravity[0]), int(center_of_gravity[1]), int(center_of_gravity[2])]
 
             # Apply Atropos mask by masking the input first
