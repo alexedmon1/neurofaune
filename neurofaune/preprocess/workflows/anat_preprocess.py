@@ -337,17 +337,37 @@ def skull_strip_rodent(
             print(f"  Working directory: {output_file.parent}")
             result = atropos.run()
 
-            # Combine posteriors 2-4 as rough brain mask, exclude posterior 5 (brightest = CSF)
-            # Posterior 1 (darkest): Background
-            # Posteriors 2-4 (intermediate intensities): Brain tissues (WM, GM, etc)
-            # Posterior 5 (brightest on T2w): CSF, which includes eyes, scalp, etc
+            # DYNAMIC POSTERIOR CLASSIFICATION
+            # Atropos with KMeans has non-deterministic ordering
+            # Original code excluded both extremes: darkest (background) and brightest (CSF/eyes/scalp)
+            # Exclude both LARGEST and SMALLEST posteriors by volume
             posteriors = [Path(p) for p in result.outputs.posteriors]
 
-            # Load and combine brain tissue posteriors (exclude background and bright CSF)
+            print(f"\nAnalyzing Atropos posteriors...")
+
+            # Calculate volume for each posterior
+            post_volumes = []
+            for idx, post_path in enumerate(posteriors):
+                post_data = nib.load(post_path).get_fdata()
+                volume = (post_data > 0.5).sum()
+                post_volumes.append((idx, volume))
+                print(f"  Posterior {idx+1}: {volume:,} voxels")
+
+            # Exclude both largest and smallest (like original code excluded extremes)
+            smallest_idx = min(post_volumes, key=lambda x: x[1])[0]
+            largest_idx = max(post_volumes, key=lambda x: x[1])[0]
+            brain_indices = [idx for idx, _ in post_volumes
+                           if idx != smallest_idx and idx != largest_idx]
+
+            print(f"\n  Excluding largest: Posterior {largest_idx+1} (likely background/CSF)")
+            print(f"  Excluding smallest: Posterior {smallest_idx+1} (likely peripheral tissue)")
+            print(f"  Including: Posteriors {[i+1 for i in brain_indices]}")
+
+            # Load and combine brain tissue posteriors
             atropos_mask = np.zeros(nib.load(posteriors[0]).shape)
-            for i in [1, 2, 3]:  # Posteriors 2-4 (0-indexed), exclude 1 (background) and 5 (CSF)
+            for i in brain_indices:
                 post_img = nib.load(posteriors[i])
-                atropos_mask += post_img.get_fdata() > 0.5  # Threshold at 50% probability
+                atropos_mask += post_img.get_fdata() > 0.5
 
             atropos_mask = atropos_mask > 0
 
@@ -387,6 +407,20 @@ def skull_strip_rodent(
 
             # Get the refined mask
             mask_file = Path(bet_result.outputs.mask_file)
+
+            # Apply morphological closing to mask (dilate → erode)
+            # This fills small holes and removes external speckles
+            from scipy import ndimage
+            mask_img = nib.load(mask_file)
+            mask_data = mask_img.get_fdata().astype(bool)
+
+            # Closing: dilate then erode (fills holes, smooths boundaries)
+            mask_data = ndimage.binary_dilation(mask_data, iterations=2)
+            mask_data = ndimage.binary_erosion(mask_data, iterations=2)
+
+            # Save cleaned mask
+            nib.save(nib.Nifti1Image(mask_data.astype(np.uint8), mask_img.affine, mask_img.header),
+                    mask_file)
 
             # Return brain, mask, and atropos posteriors for tissue segmentation reuse
             return output_file, mask_file, posteriors
@@ -480,10 +514,16 @@ def segment_brain_tissue(
     csf_data = nib.load(atropos_posteriors[3]).get_fdata() * mask_data
 
     # Create hard segmentation (argmax of tissue probabilities)
+    # Only assign tissue label if max probability exceeds threshold (reduces speckling)
     # Label 1 = WM, Label 2 = GM, Label 3 = CSF
     tissue_stack = np.stack([wm_data, gm_data, csf_data], axis=-1)
+    max_prob = np.max(tissue_stack, axis=-1)
     segmentation_data = np.argmax(tissue_stack, axis=-1) + 1  # Add 1 so labels are 1,2,3
     segmentation_data = segmentation_data * mask_data  # Apply brain mask
+
+    # Remove low-confidence assignments (reduces speckling)
+    min_prob_threshold = 0.35  # Only assign tissue if confidence >= 35%
+    segmentation_data[max_prob < min_prob_threshold] = 0
 
     # Save tissue probability maps
     wm_prob = output_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
@@ -958,6 +998,7 @@ def run_anatomical_preprocessing(
     print("="*60)
     print("Copying files to derivatives directory...")
 
+    final_brain_skullstrip = derivatives_dir / f'{subject}_{session}_desc-skullstrip_T2w.nii.gz'
     final_brain = derivatives_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
     final_mask = derivatives_dir / f'{subject}_{session}_desc-brain_mask.nii.gz'
     final_seg = derivatives_dir / f'{subject}_{session}_dseg.nii.gz'
@@ -966,6 +1007,7 @@ def run_anatomical_preprocessing(
     final_csf = derivatives_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
 
     import shutil
+    shutil.copy(brain_file, final_brain_skullstrip)
     shutil.copy(brain_norm_file, final_brain)
     shutil.copy(mask_file, final_mask)
     shutil.copy(tissue_results['segmentation'], final_seg)
@@ -973,6 +1015,7 @@ def run_anatomical_preprocessing(
     shutil.copy(tissue_results['wm_prob'], final_wm)
     shutil.copy(tissue_results['csf_prob'], final_csf)
 
+    print(f"  ✓ Skull-stripped T2w: {final_brain_skullstrip.name}")
     print(f"  ✓ Preprocessed T2w: {final_brain.name}")
     print(f"  ✓ Brain mask: {final_mask.name}")
     print(f"  ✓ Tissue segmentation: {final_seg.name}")

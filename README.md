@@ -59,14 +59,18 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 **✅ Phase 3 (Anatomical Preprocessing) - Complete**
 - Image Validation: Pre-pipeline validation (voxel size, orientation, dimensions, data type)
 - Orientation Matching: Automatic orientation detection and correction between images
-- Adaptive Skull Stripping: Two-pass approach with subject-specific parameters
+- Robust Skull Stripping: Two-pass approach with dynamic posterior classification
   - ANTs Atropos 5-component segmentation for rough brain mask
+  - **Dynamic posterior identification**: Volume-based exclusion of largest (background/CSF) and smallest (peripheral skull/eyes) posteriors
+  - Handles non-deterministic Atropos KMeans initialization (no hardcoded posterior indices)
+  - Morphological closing (dilate→erode) to remove mask speckles and fill holes
   - FSL BET refinement with adaptive frac calculation (CNR-based, range 0.1-0.4)
   - Conservative parameters to minimize over-stripping across variable image quality
 - Tissue Segmentation: Reuses Atropos posteriors from skull stripping (30-40% faster, no redundant execution)
   - Extracts GM, WM, CSF probability maps from skull stripping posteriors
   - Applies refined BET mask for accurate tissue classification
-  - Creates hard segmentation (dseg) via argmax
+  - Creates hard segmentation (dseg) via argmax with confidence thresholding
+  - Minimum probability threshold (0.35) reduces tissue classification noise
 - N4 Bias Correction: Intensity inhomogeneity correction
 - Intensity Normalization: Scale-invariant preprocessing
 - Automatic T2w Scan Selection: Score-based selection with 3D scan penalty
