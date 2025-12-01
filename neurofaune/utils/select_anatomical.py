@@ -65,19 +65,22 @@ def score_anatomical_scan(
         'shape': shape,
     }
 
-    # 1. Number of slices (weight: 3.0)
+    # 1. Number of slices (weight: UP TO 5.0)
     # More slices = better coverage
+    # STRONGLY penalize localizers and targeted scans
     n_slices = info['slices']
     if n_slices >= 40:
-        score += 3.0  # Excellent coverage
+        score += 5.0  # Excellent full-brain coverage
+    elif n_slices >= 30:
+        score += 4.0  # Very good coverage
     elif n_slices >= 25:
-        score += 2.0  # Good coverage
+        score += 3.0  # Good coverage
     elif n_slices >= 15:
-        score += 1.0  # Moderate coverage
+        score += 2.0  # Moderate coverage
     elif n_slices >= 10:
-        score += 0.5  # Minimal coverage
+        score += 1.0  # Minimal acceptable coverage
     else:
-        score -= 1.0  # Too few slices (probably targeted scan)
+        score -= 5.0  # STRONG penalty for localizers/targeted scans (< 10 slices)
 
     # 2. Orientation (weight: 2.0)
     # Determine orientation from scan name
