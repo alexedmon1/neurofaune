@@ -194,7 +194,7 @@ def run_slice_timing_correction(
         '-i', str(input_file),
         '-o', str(output_file),
         '-r', str(tr),
-        '--tcustom', str(timing_file)
+        f'--tcustom={timing_file}'
     ]
 
     print(f"  Running: {' '.join(cmd)}")
