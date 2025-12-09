@@ -133,8 +133,8 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 **Note**: Registration to anatomical/atlas spaces is under development and currently disabled.
 
-**🚧 Phase 8 (Advanced fMRI & Additional Modalities) - Planned**
-- Slice timing correction
+**🚧 Phase 8 (Advanced Features & Additional Modalities) - Planned**
+- Atlas registration and normalization (under development)
 - MTR: Magnetization transfer ratio calculation
 - Multi-echo fMRI support
 
