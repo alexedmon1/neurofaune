@@ -204,6 +204,14 @@ functional:
   tr: 1.0  # Repetition time (seconds) - study-specific
   te: 30.0  # Echo time (ms) - study-specific, or list for multi-echo
 
+  # Slice timing correction (run BEFORE motion correction)
+  # Corrects for temporal differences in slice acquisition within each TR
+  slice_timing:
+    enabled: true  # Enable for multi-slice acquisitions
+    order: custom  # 'sequential_ascending', 'sequential_descending', 'interleaved', 'interleaved_even_first', 'custom'
+    custom_order: [0, 2, 4, 6, 8, 1, 3, 5, 7]  # Bruker interleaved odd-first for 9 slices
+    reference_slice: middle  # Slice to align to (middle = middle in time, or integer)
+
   # BET for functional data
   bet:
     frac: 0.3

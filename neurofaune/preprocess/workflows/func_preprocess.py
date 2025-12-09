@@ -40,6 +40,10 @@ from neurofaune.preprocess.utils.func.acompcor import (
     extract_acompcor_components,
     generate_acompcor_qc
 )
+from neurofaune.preprocess.utils.func.slice_timing import (
+    run_slice_timing_correction,
+    detect_slice_order
+)
 
 
 def discard_initial_volumes(
@@ -505,6 +509,7 @@ def run_functional_preprocessing(
     This workflow performs:
     1. Image validation
     2. Discard initial volumes (if requested)
+    2.5. Slice timing correction (optional, BEFORE motion correction)
     3. Motion correction (MCFLIRT)
     4. Brain extraction from mean BOLD
     5. Apply mask to timeseries
@@ -513,13 +518,12 @@ def run_functional_preprocessing(
     8. Confound extraction (24 motion regressors)
 
     Optionally performs:
+    - Slice timing correction (corrects for temporal differences in slice acquisition)
     - ICA-based denoising (rodent-specific, enabled via config)
     - aCompCor extraction (CSF/WM physiological noise components)
     - Registration to anatomical T2w space (if t2w_file provided)
     - Registration to SIGMA atlas (via anatomical transforms)
     - Comprehensive QC reports for all steps
-
-    NOTE: Slice timing correction is not yet implemented
 
     Parameters
     ----------
@@ -617,6 +621,58 @@ def run_functional_preprocessing(
         print("No volumes to discard")
         bold_for_processing = bold_file
         results['n_volumes_discarded'] = 0
+
+    # =========================================================================
+    # STEP 2.5: Slice Timing Correction (Optional, BEFORE motion correction)
+    # =========================================================================
+    slice_timing_config = func_config.get('slice_timing', {})
+    stc_enabled = slice_timing_config.get('enabled', False)
+
+    if stc_enabled:
+        print("\n" + "="*60)
+        print("STEP 2.5: Slice Timing Correction")
+        print("="*60)
+        print("  IMPORTANT: Correcting for slice acquisition time differences")
+        print("  This is done BEFORE motion correction to avoid interpolation artifacts")
+
+        # Detect slice order from JSON or use config
+        json_file = bold_file.with_suffix('.json')
+        slice_order = slice_timing_config.get('order', 'interleaved')
+        custom_order = slice_timing_config.get('custom_order', None)
+
+        if json_file.exists():
+            print(f"  Checking for slice timing in: {json_file.name}")
+            detected_order, detected_custom = detect_slice_order(
+                json_file=json_file,
+                method=slice_order
+            )
+            slice_order = detected_order
+            if detected_custom is not None:
+                custom_order = detected_custom
+                print(f"  Detected custom slice order: {custom_order}")
+
+        bold_stc = work_dir / f"{subject}_{session}_bold_stc.nii.gz"
+        run_slice_timing_correction(
+            input_file=bold_for_processing,
+            output_file=bold_stc,
+            tr=tr,
+            slice_order=slice_order,
+            custom_order=custom_order,
+            reference_slice=slice_timing_config.get('reference_slice', 'middle')
+        )
+
+        # Use slice-time corrected data for motion correction
+        bold_for_processing = bold_stc
+        results['slice_timing_corrected'] = True
+        results['slice_order'] = slice_order if custom_order is None else 'custom'
+        print(f"  ✓ Using slice-time corrected data for motion correction")
+
+    else:
+        print("\n" + "="*60)
+        print("STEP 2.5: Slice Timing Correction (Skipped)")
+        print("="*60)
+        print("  Slice timing correction disabled in config")
+        results['slice_timing_corrected'] = False
 
     # =========================================================================
     # STEP 3: Motion Correction
@@ -892,6 +948,10 @@ def run_functional_preprocessing(
             'n_components': results.get('acompcor', {}).get('n_components') if acompcor_enabled else None,
             'n_voxels_csf': results.get('acompcor', {}).get('n_voxels_csf') if acompcor_enabled else None,
             'n_voxels_wm': results.get('acompcor', {}).get('n_voxels_wm') if acompcor_enabled else None
+        },
+        'slice_timing': {
+            'corrected': results.get('slice_timing_corrected', False),
+            'slice_order': results.get('slice_order', None) if results.get('slice_timing_corrected', False) else None
         }
     }
 
