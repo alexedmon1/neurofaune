@@ -34,11 +34,20 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
    - T2 compartment analysis (myelin, intra/extra-cellular, CSF)
    - QC with T2 decay curves and NNLS spectra visualization
 
+4. **Functional fMRI Preprocessing (NEW!)**
+   - Motion correction (MCFLIRT with middle volume reference)
+   - Brain extraction (BET optimized for BOLD)
+   - Spatial smoothing (0.5mm FWHM for rodents)
+   - Temporal filtering (highpass/lowpass)
+   - Confound extraction (24 motion regressors: 6 params + derivatives + squares)
+   - Comprehensive QC (motion QC with FD/DVARS, confounds visualization)
+   - Template-based normalization ready
+
 ### 🚧 **In Progress**
 
-- **Resting-state fMRI:** Workflow design complete, implementation pending
 - **Template building:** ANTs-based age-specific template creation
 - **Registration to atlas:** SIGMA atlas integration
+- **Advanced fMRI denoising:** ICA-AROMA, slice timing correction
 
 ## Features
 
@@ -110,10 +119,21 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Comprehensive QC with T2 decay curves and NNLS spectra visualization
 - Template-based normalization ready
 
-**🚧 Phase 7 (Additional Modality Workflows) - In Progress**
-- Functional (fMRI): Motion correction, ICA-AROMA, confound regression
+**✅ Phase 7 (Functional fMRI Preprocessing) - Complete**
+- Volume discarding for T1 equilibration (configurable)
+- MCFLIRT motion correction with selectable reference volume
+- Brain extraction optimized for BOLD contrast
+- Spatial smoothing with rodent-appropriate kernels (0.5mm FWHM)
+- Temporal filtering (highpass 0.01 Hz, lowpass configurable)
+- Extended confound extraction (24 regressors: motion + derivatives + squares)
+- Comprehensive QC with motion plots (FD, DVARS) and confound correlation matrices
+- Template-based normalization ready
+
+**🚧 Phase 8 (Advanced fMRI & Additional Modalities) - Planned**
+- ICA-AROMA automatic component classification
+- Slice timing correction
 - MTR: Magnetization transfer ratio calculation
-- All workflows to use template-based normalization
+- Multi-echo fMRI support
 
 **✅ Bruker to BIDS Conversion - Complete**
 - 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)

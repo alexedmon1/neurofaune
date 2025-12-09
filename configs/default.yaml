@@ -225,20 +225,25 @@ functional:
 
   # Denoising strategy
   denoising:
-    # ICA-AROMA (single-echo)
-    ica_aroma:
+    # Rodent-specific ICA denoising (replaces ICA-AROMA)
+    ica:
       enabled: true
-      dim: "auto"  # Automatic dimensionality estimation
+      n_components: 30  # Number of ICA components to extract
+      classification_mode: "score"  # 'score' (recommended) or 'threshold'
+      motion_threshold: 0.40  # Motion correlation threshold
+      edge_threshold: 0.80  # Edge fraction threshold
+      csf_threshold: 0.70  # CSF overlap threshold
+      freq_threshold: 0.60  # High-frequency power threshold
 
-    # ACompCor (nuisance regression)
+    # ACompCor (nuisance regression) - can be used in addition to ICA
     acompcor:
-      enabled: true
+      enabled: false  # Disable if using ICA
       num_components: 5
       variance_threshold: 0.5
 
-    # GLM confound regression
+    # GLM confound regression - motion regressors always computed
     glm:
-      enabled: true
+      enabled: false  # Set to true if not using ICA
 
   # Registration
   registration:

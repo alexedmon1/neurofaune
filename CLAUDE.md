@@ -39,13 +39,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Anatomical workflow**: Complete T2w preprocessing pipeline (`neurofaune/preprocess/workflows/anat_preprocess.py`)
 - **Testing**: Validated on BPA-Rat study (p60 cohort)
 
+**✅ Phase 7 Completed (Functional fMRI Preprocessing)**:
+- **Motion correction**: MCFLIRT with configurable reference volume (first/middle/mean)
+- **Brain extraction**: BET optimized for BOLD contrast
+- **Volume discarding**: Configurable T1 equilibration (default: 0 volumes)
+- **Spatial smoothing**: Rodent-appropriate FWHM (0.5mm default)
+- **Temporal filtering**: Highpass (0.01 Hz) and lowpass (configurable) filtering
+- **Confound extraction**: 24 extended motion regressors (6 params + derivatives + squares)
+- **Comprehensive QC**: Motion QC with FD/DVARS plots, confound correlation matrices
+- **Tested on BPA-Rat data**: Validated on resting-state fMRI (TR=0.5s, 360 volumes)
+
 **📋 Planned**:
-- **Phase 4**: Diffusion preprocessing (DWI/DTI)
-- **Phase 5**: Functional preprocessing (fMRI)
-- **Phase 6**: Advanced modalities (MSME, MTR, MRS)
-- **Phase 7**: CLI and batch processing
-- **Phase 8**: Testing and validation
-- **Phase 9**: Comprehensive documentation
+- **Phase 8**: Advanced fMRI features (ICA-AROMA, slice timing correction, multi-echo support)
+- **Phase 9**: MTR and additional modalities
+- **Phase 10**: CLI and batch processing
+- **Phase 11**: Testing and validation
+- **Phase 12**: Comprehensive documentation
 
 ---
 
