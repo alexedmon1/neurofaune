@@ -120,17 +120,18 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - Template-based normalization ready
 
 **✅ Phase 7 (Functional fMRI Preprocessing) - Complete**
+- **Slice timing correction**: Corrects temporal differences in multi-slice acquisition (Bruker interleaved)
 - Volume discarding for T1 equilibration (configurable)
 - MCFLIRT motion correction with selectable reference volume
 - Brain extraction optimized for BOLD contrast
 - Spatial smoothing with rodent-appropriate kernels (0.5mm FWHM)
-- Temporal filtering (highpass 0.01 Hz, lowpass 0.1 Hz)
+- Temporal filtering (bandpass 0.01-0.1 Hz for resting-state)
 - **Rodent-specific ICA denoising**: Automated noise component classification (26/30 signal retained)
 - **aCompCor**: Physiological noise extraction from CSF/WM (5 components per tissue)
 - Extended confound extraction (24 regressors: motion + derivatives + squares)
-- **Registration to T2w anatomical** space (within-subject affine)
-- **Registration to SIGMA atlas** (reusing anatomical transforms)
-- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA classification, aCompCor, registration overlays
+- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA classification, aCompCor
+
+**Note**: Registration to anatomical/atlas spaces is under development and currently disabled.
 
 **🚧 Phase 8 (Advanced fMRI & Additional Modalities) - Planned**
 - Slice timing correction
