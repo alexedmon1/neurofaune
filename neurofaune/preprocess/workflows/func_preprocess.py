@@ -36,6 +36,7 @@ from neurofaune.preprocess.utils.func.ica_denoising import (
     remove_noise_components,
     generate_ica_denoising_qc
 )
+from neurofaune.preprocess.utils.func.skull_strip import brain_extraction
 from neurofaune.preprocess.utils.func.acompcor import (
     extract_acompcor_components,
     generate_acompcor_qc
@@ -576,7 +577,30 @@ def run_functional_preprocessing(
     # Get config parameters
     func_config = config.get('functional', {})
     tr = func_config.get('tr', 1.0)  # Will be overridden by JSON sidecar
-    bet_frac = func_config.get('bet', {}).get('frac', 0.3)
+
+    # Skull stripping parameters
+    bet_config = func_config.get('bet', {})
+    bet_method = bet_config.get('method', 'bet')  # 'bet' or 'bet4animal'
+    bet_frac = bet_config.get('frac', 0.3)
+
+    # bet4animal-specific parameters (for rodent brains)
+    bet4animal_params = {}
+    if bet_method == 'bet4animal':
+        # Get age-specific brain center if available
+        centers = bet_config.get('centers', {})
+        if session in centers:
+            center = centers[session]
+        else:
+            center = bet_config.get('center', [40, 25, 5])
+
+        bet4animal_params = {
+            'frac': bet_config.get('frac', 0.7),  # Higher for bet4animal
+            'center': tuple(center),
+            'radius': bet_config.get('radius', 125),
+            'scale': tuple(bet_config.get('scale', [1, 1, 1.5])),
+            'width': bet_config.get('width', 2.5)
+        }
+
     motion_method = func_config.get('motion_correction', {}).get('method', 'mcflirt')
     motion_ref = func_config.get('motion_correction', {}).get('reference', 'middle')
     smoothing_fwhm = func_config.get('smoothing', {}).get('fwhm', 0.5)
@@ -677,15 +701,52 @@ def run_functional_preprocessing(
         results['slice_timing_corrected'] = False
 
     # =========================================================================
-    # STEP 3: Motion Correction
+    # STEP 3: Brain Extraction (BEFORE motion correction)
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 3: Motion Correction")
+    print("STEP 3: Brain Extraction")
+    print("="*60)
+
+    # Calculate mean of input image for skull stripping
+    mean_bold = work_dir / f"{subject}_{session}_bold_mean.nii.gz"
+    calculate_mean_image(bold_for_processing, mean_bold)
+
+    # Extract brain from mean image
+    brain_mean = work_dir / f"{subject}_{session}_bold_brain_mean.nii.gz"
+    brain_mask = derivatives_dir / f"{subject}_{session}_desc-brain_mask.nii.gz"
+
+    # Use configured skull stripping method
+    if bet_method == 'bet4animal':
+        brain_results = brain_extraction(
+            mean_bold,
+            brain_mean,
+            brain_mask,
+            method='bet4animal',
+            **bet4animal_params
+        )
+    else:
+        brain_results = brain_extraction(
+            mean_bold,
+            brain_mean,
+            brain_mask,
+            method='bet',
+            frac=bet_frac
+        )
+
+    # Apply mask to timeseries BEFORE motion correction
+    bold_masked = work_dir / f"{subject}_{session}_bold_brain.nii.gz"
+    apply_mask_to_timeseries(bold_for_processing, brain_mask, bold_masked)
+
+    # =========================================================================
+    # STEP 4: Motion Correction (on skull-stripped data)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("STEP 4: Motion Correction")
     print("="*60)
 
     motion_dir = work_dir / 'motion_correction'
     motion_results = run_motion_correction(
-        bold_for_processing,
+        bold_masked,  # Run on skull-stripped data
         motion_dir,
         reference=motion_ref,
         method=motion_method
@@ -695,32 +756,6 @@ def run_functional_preprocessing(
     motion_params = motion_results['motion_params']
 
     # =========================================================================
-    # STEP 4: Brain Extraction
-    # =========================================================================
-    print("\n" + "="*60)
-    print("STEP 4: Brain Extraction")
-    print("="*60)
-
-    # Calculate mean of motion-corrected image
-    mean_bold = work_dir / f"{subject}_{session}_bold_mcf_mean.nii.gz"
-    calculate_mean_image(bold_mcf, mean_bold)
-
-    # Extract brain from mean image
-    brain_mean = work_dir / f"{subject}_{session}_bold_brain_mean.nii.gz"
-    brain_mask = derivatives_dir / f"{subject}_{session}_desc-brain_mask.nii.gz"
-
-    brain_results = extract_brain_from_bold(
-        mean_bold,
-        brain_mean,
-        brain_mask,
-        frac=bet_frac
-    )
-
-    # Apply mask to timeseries
-    bold_masked = work_dir / f"{subject}_{session}_bold_mcf_brain.nii.gz"
-    apply_mask_to_timeseries(bold_mcf, brain_mask, bold_masked)
-
-    # =========================================================================
     # STEP 5: Spatial Smoothing
     # =========================================================================
     print("\n" + "="*60)
@@ -728,39 +763,23 @@ def run_functional_preprocessing(
     print("="*60)
 
     bold_smooth = work_dir / f"{subject}_{session}_bold_smooth.nii.gz"
-    smooth_image(bold_masked, bold_smooth, smoothing_fwhm)
+    smooth_image(bold_mcf, bold_smooth, smoothing_fwhm)
 
     # =========================================================================
-    # STEP 6: Temporal Filtering
-    # =========================================================================
-    print("\n" + "="*60)
-    print("STEP 6: Temporal Filtering")
-    print("="*60)
-
-    bold_filtered = work_dir / f"{subject}_{session}_bold_filtered.nii.gz"
-    temporal_filter(
-        bold_smooth,
-        bold_filtered,
-        tr,
-        highpass=highpass_freq,
-        lowpass=lowpass_freq
-    )
-
-    # =========================================================================
-    # STEP 7: ICA Denoising (Optional)
+    # STEP 6: ICA Denoising (BEFORE temporal filtering)
     # =========================================================================
     ica_config = func_config.get('denoising', {}).get('ica', {})
     ica_enabled = ica_config.get('enabled', False)
 
     if ica_enabled:
         print("\n" + "="*60)
-        print("STEP 7: ICA Denoising")
+        print("STEP 6: ICA Denoising")
         print("="*60)
 
-        # Run MELODIC ICA
+        # Run MELODIC ICA on smoothed data (before filtering)
         melodic_dir = work_dir / 'melodic'
         melodic_outputs = run_melodic_ica(
-            input_file=bold_filtered,
+            input_file=bold_smooth,
             output_dir=melodic_dir,
             brain_mask=brain_mask,
             tr=tr,
@@ -786,10 +805,10 @@ def run_functional_preprocessing(
             classification_mode=ica_config.get('classification_mode', 'score')
         )
 
-        # Remove noise components
-        bold_denoised = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+        # Remove noise components from smoothed data
+        bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
         remove_noise_components(
-            input_file=bold_filtered,
+            input_file=bold_smooth,  # Use smoothed data (before filtering)
             output_file=bold_denoised,
             melodic_dir=melodic_dir,
             noise_components=classification['summary']['noise_components']
@@ -811,18 +830,37 @@ def run_functional_preprocessing(
             'qc_report': ica_qc_report
         }
 
-        # Use denoised data for subsequent steps
-        final_bold = bold_denoised
+        # Use denoised data for filtering
+        bold_for_filtering = bold_denoised
 
     else:
         print("\n" + "="*60)
-        print("STEP 7: ICA Denoising (Skipped)")
+        print("STEP 6: ICA Denoising (Skipped)")
         print("="*60)
         print("ICA denoising disabled in config")
 
-        # Copy filtered data to derivatives
-        final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
-        shutil.copy(str(bold_filtered), str(final_bold))
+        # Use smoothed data for filtering
+        bold_for_filtering = bold_smooth
+
+    # =========================================================================
+    # STEP 7: Temporal Filtering (AFTER ICA denoising)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("STEP 7: Temporal Filtering")
+    print("="*60)
+
+    bold_filtered = work_dir / f"{subject}_{session}_bold_filtered.nii.gz"
+    temporal_filter(
+        bold_for_filtering,
+        bold_filtered,
+        tr,
+        highpass=highpass_freq,
+        lowpass=lowpass_freq
+    )
+
+    # Copy filtered data to derivatives as final output
+    final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+    shutil.copy(str(bold_filtered), str(final_bold))
 
     # =========================================================================
     # STEP 8: Extract Confounds
@@ -868,7 +906,7 @@ def run_functional_preprocessing(
         acompcor_file = derivatives_dir / f"{subject}_{session}_desc-acompcor_timeseries.tsv"
 
         acompcor_results = extract_acompcor_components(
-            bold_file=bold_filtered,  # Use filtered data before ICA denoising
+            bold_file=bold_smooth,  # Use smoothed data (before ICA and filtering)
             csf_mask=csf_mask,
             wm_mask=wm_mask,
             n_components=acompcor_config.get('num_components', 5),
