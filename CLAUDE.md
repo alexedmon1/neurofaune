@@ -40,17 +40,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Testing**: Validated on BPA-Rat study (p60 cohort)
 
 **✅ Phase 7 Completed (Functional fMRI Preprocessing)**:
-- **Motion correction**: MCFLIRT with configurable reference volume (first/middle/mean)
-- **Brain extraction**: BET optimized for BOLD contrast
-- **Volume discarding**: Configurable T1 equilibration (default: 0 volumes)
-- **Spatial smoothing**: Rodent-appropriate FWHM (0.5mm default)
-- **Temporal filtering**: Highpass (0.01 Hz) and lowpass (configurable) filtering
-- **Confound extraction**: 24 extended motion regressors (6 params + derivatives + squares)
-- **Comprehensive QC**: Motion QC with FD/DVARS plots, confound correlation matrices
-- **Tested on BPA-Rat data**: Validated on resting-state fMRI (TR=0.5s, 360 volumes)
+- **Complete workflow**: 14 processing steps from raw BOLD to atlas-registered data
+- **Motion correction**: MCFLIRT with middle volume reference
+- **Brain extraction**: BET optimized for BOLD contrast (frac=0.3)
+- **Spatial smoothing**: Rodent-optimized FWHM (0.5mm)
+- **Temporal filtering**: Bandpass 0.01-0.1 Hz for resting-state
+- **ICA denoising**: Rodent-specific automated classification (score-based, 26/30 signal retained)
+- **aCompCor**: CSF/WM physiological noise extraction (5 components per tissue)
+- **Confound extraction**: 24 extended motion regressors
+- **Registration**: T2w anatomical and SIGMA atlas alignment
+- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA, aCompCor, registration overlays
+- **Transform registry**: Reuses anatomical transforms for efficiency
+- **Validated**: Tested on BPA-Rat study (ses-p90, TR=0.5s)
 
 **📋 Planned**:
-- **Phase 8**: Advanced fMRI features (ICA-AROMA, slice timing correction, multi-echo support)
+- **Phase 8**: Slice timing correction, MTR workflows, multi-echo support
 - **Phase 9**: MTR and additional modalities
 - **Phase 10**: CLI and batch processing
 - **Phase 11**: Testing and validation

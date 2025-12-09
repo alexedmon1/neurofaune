@@ -124,13 +124,15 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - MCFLIRT motion correction with selectable reference volume
 - Brain extraction optimized for BOLD contrast
 - Spatial smoothing with rodent-appropriate kernels (0.5mm FWHM)
-- Temporal filtering (highpass 0.01 Hz, lowpass configurable)
+- Temporal filtering (highpass 0.01 Hz, lowpass 0.1 Hz)
+- **Rodent-specific ICA denoising**: Automated noise component classification (26/30 signal retained)
+- **aCompCor**: Physiological noise extraction from CSF/WM (5 components per tissue)
 - Extended confound extraction (24 regressors: motion + derivatives + squares)
-- Comprehensive QC with motion plots (FD, DVARS) and confound correlation matrices
-- Template-based normalization ready
+- **Registration to T2w anatomical** space (within-subject affine)
+- **Registration to SIGMA atlas** (reusing anatomical transforms)
+- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA classification, aCompCor, registration overlays
 
 **🚧 Phase 8 (Advanced fMRI & Additional Modalities) - Planned**
-- ICA-AROMA automatic component classification
 - Slice timing correction
 - MTR: Magnetization transfer ratio calculation
 - Multi-echo fMRI support
@@ -147,7 +149,7 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 #### Core Modalities
 - **Anatomical (T2w)**: N4 bias correction, skull stripping, ANTs registration to SIGMA atlas, tissue segmentation
 - **Diffusion (DWI/DTI)**: Eddy correction, DTI fitting, advanced models (DKI, NODDI), spatial normalization
-- **Functional (fMRI)**: ICA-AROMA denoising, ACompCor, motion correction, GLM confound regression
+- **Functional (fMRI)**: Rodent-specific ICA denoising, aCompCor, motion correction, SIGMA registration
 - **Spectroscopy (MRS)**: FSL-MRS integration, metabolite quantification, regional analysis
 
 #### Advanced Features
