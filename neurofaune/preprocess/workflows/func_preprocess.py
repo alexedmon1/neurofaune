@@ -521,9 +521,11 @@ def run_functional_preprocessing(
     - Slice timing correction (corrects for temporal differences in slice acquisition)
     - ICA-based denoising (rodent-specific, enabled via config)
     - aCompCor extraction (CSF/WM physiological noise components)
-    - Registration to anatomical T2w space (if t2w_file provided)
-    - Registration to SIGMA atlas (via anatomical transforms)
     - Comprehensive QC reports for all steps
+
+    Future features (under development):
+    - Registration to anatomical T2w space
+    - Registration to SIGMA atlas
 
     Parameters
     ----------
@@ -993,10 +995,11 @@ def run_functional_preprocessing(
     }
 
     # =========================================================================
-    # STEP 12: Registration to Anatomical Space (Optional)
+    # STEP 12: Registration to Anatomical Space (DISABLED - Future Feature)
     # =========================================================================
+    # Registration and normalization are under development and disabled by default
     func_reg_config = func_config.get('registration', {})
-    reg_enabled = func_reg_config.get('enabled', True) and (t2w_file is not None)
+    reg_enabled = func_reg_config.get('enabled', False) and (t2w_file is not None)
 
     if reg_enabled:
         print("\n" + "="*60)

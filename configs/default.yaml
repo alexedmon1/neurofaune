@@ -255,15 +255,17 @@ functional:
     glm:
       enabled: false  # Set to true if not using ICA
 
-  # Registration
+  # Registration (DISABLED - under development)
+  # Registration to anatomical and atlas spaces will be added in future releases
   registration:
+    enabled: false  # Disable for now
     method: "ants"
     cost_function: "corratio"  # Correlation ratio (faster than BBR)
     dof: 6  # Rigid registration to anatomical
 
-  # Spatial normalization
+  # Spatial normalization (DISABLED - under development)
   normalization:
-    enabled: true
+    enabled: false  # Disable for now
     target_space: "SIGMA"
     reuse_transforms: true  # Reuse anatomical transforms
 
