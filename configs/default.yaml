@@ -235,11 +235,13 @@ functional:
       csf_threshold: 0.70  # CSF overlap threshold
       freq_threshold: 0.60  # High-frequency power threshold
 
-    # ACompCor (nuisance regression) - can be used in addition to ICA
+    # ACompCor (anatomical nuisance regression)
+    # Extracts principal components from CSF/WM to remove physiological noise
+    # Can be used as alternative to ICA or complementary with it
     acompcor:
-      enabled: false  # Disable if using ICA
-      num_components: 5
-      variance_threshold: 0.5
+      enabled: true  # Enable to extract physiological noise components
+      num_components: 5  # Number of components from each tissue (CSF, WM)
+      variance_threshold: 0.5  # Minimum tissue probability threshold
 
     # GLM confound regression - motion regressors always computed
     glm:

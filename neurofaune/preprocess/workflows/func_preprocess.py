@@ -23,12 +23,22 @@ from neurofaune.preprocess.utils.orientation import (
     print_orientation_info
 )
 from neurofaune.utils.transforms import TransformRegistry
-from neurofaune.preprocess.qc.func import generate_motion_qc_report, generate_confounds_qc_report
+from neurofaune.preprocess.qc.func import (
+    generate_motion_qc_report,
+    generate_confounds_qc_report,
+    generate_registration_qc
+)
+from neurofaune.templates.registration import register_within_subject, apply_transforms
+from neurofaune.atlas.manager import AtlasManager
 from neurofaune.preprocess.utils.func.ica_denoising import (
     run_melodic_ica,
     classify_ica_components,
     remove_noise_components,
     generate_ica_denoising_qc
+)
+from neurofaune.preprocess.utils.func.acompcor import (
+    extract_acompcor_components,
+    generate_acompcor_qc
 )
 
 
@@ -485,6 +495,7 @@ def run_functional_preprocessing(
     bold_file: Path,
     output_dir: Path,
     transform_registry: TransformRegistry,
+    t2w_file: Optional[Path] = None,
     work_dir: Optional[Path] = None,
     n_discard: int = 0
 ) -> Dict[str, Any]:
@@ -497,14 +508,18 @@ def run_functional_preprocessing(
     3. Motion correction (MCFLIRT)
     4. Brain extraction from mean BOLD
     5. Apply mask to timeseries
-    6. Spatial smoothing
-    7. Temporal filtering (highpass/lowpass)
-    8. Confound extraction
+    6. Spatial smoothing (rodent-optimized FWHM)
+    7. Temporal filtering (highpass/lowpass bandpass)
+    8. Confound extraction (24 motion regressors)
 
-    NOTE: This workflow does NOT perform:
-    - Slice timing correction (future feature)
-    - ICA-AROMA denoising (future feature)
-    - Registration to template/atlas (done separately)
+    Optionally performs:
+    - ICA-based denoising (rodent-specific, enabled via config)
+    - aCompCor extraction (CSF/WM physiological noise components)
+    - Registration to anatomical T2w space (if t2w_file provided)
+    - Registration to SIGMA atlas (via anatomical transforms)
+    - Comprehensive QC reports for all steps
+
+    NOTE: Slice timing correction is not yet implemented
 
     Parameters
     ----------
@@ -520,6 +535,8 @@ def run_functional_preprocessing(
         Study root directory (will create derivatives/{subject}/{session}/func/)
     transform_registry : TransformRegistry
         Transform registry for saving spatial transforms
+    t2w_file : Path, optional
+        T2w anatomical reference for registration (if provided, enables registration)
     work_dir : Path, optional
         Working directory (defaults to output_dir/work/{subject}/{session}/func_preproc)
     n_discard : int
@@ -765,10 +782,71 @@ def run_functional_preprocessing(
     )
 
     # =========================================================================
-    # STEP 9: Save Output Files and Metadata
+    # STEP 9: aCompCor (Optional)
+    # =========================================================================
+    acompcor_config = func_config.get('denoising', {}).get('acompcor', {})
+    acompcor_enabled = acompcor_config.get('enabled', False)
+
+    if acompcor_enabled:
+        print("\n" + "="*60)
+        print("STEP 9: aCompCor Extraction")
+        print("="*60)
+
+        # Find CSF and WM masks from anatomical preprocessing
+        anat_deriv_dir = output_dir / 'derivatives' / subject / session / 'anat'
+        csf_mask = anat_deriv_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
+        wm_mask = anat_deriv_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
+
+        if not csf_mask.exists() or not wm_mask.exists():
+            print(f"  Warning: Tissue masks not found:")
+            print(f"    CSF: {csf_mask.exists()}")
+            print(f"    WM: {wm_mask.exists()}")
+            print(f"  Skipping aCompCor extraction")
+            print(f"  (Run anatomical preprocessing first to generate tissue masks)")
+            acompcor_enabled = False
+
+    if acompcor_enabled:
+        # Extract aCompCor components
+        acompcor_file = derivatives_dir / f"{subject}_{session}_desc-acompcor_timeseries.tsv"
+
+        acompcor_results = extract_acompcor_components(
+            bold_file=bold_filtered,  # Use filtered data before ICA denoising
+            csf_mask=csf_mask,
+            wm_mask=wm_mask,
+            n_components=acompcor_config.get('num_components', 5),
+            variance_threshold=acompcor_config.get('variance_threshold', 0.5),
+            output_file=acompcor_file
+        )
+
+        # Generate aCompCor QC
+        acompcor_qc_report = generate_acompcor_qc(
+            subject=subject,
+            session=session,
+            acompcor_results=acompcor_results,
+            output_dir=qc_dir
+        )
+
+        results['acompcor'] = {
+            'acompcor_file': acompcor_file,
+            'qc_report': acompcor_qc_report,
+            'n_components': acompcor_results['n_components_csf'] + acompcor_results['n_components_wm'],
+            'n_voxels_csf': acompcor_results['n_voxels_csf'],
+            'n_voxels_wm': acompcor_results['n_voxels_wm']
+        }
+
+        print(f"  ✓ aCompCor components saved: {acompcor_file}")
+    else:
+        if not acompcor_config.get('enabled', False):
+            print("\n" + "="*60)
+            print("STEP 9: aCompCor (Skipped)")
+            print("="*60)
+            print("  aCompCor disabled in config")
+
+    # =========================================================================
+    # STEP 10: Save Output Files and Metadata
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 9: Save Output Files")
+    print("STEP 10: Save Output Files")
     print("="*60)
 
     # Copy/save final outputs
@@ -808,6 +886,12 @@ def run_functional_preprocessing(
             'classification_mode': ica_config.get('classification_mode', 'score') if ica_enabled else None,
             'n_signal_components': classification['summary']['n_signal'] if ica_enabled else None,
             'n_noise_components': classification['summary']['n_noise'] if ica_enabled else None
+        },
+        'acompcor': {
+            'enabled': acompcor_enabled,
+            'n_components': results.get('acompcor', {}).get('n_components') if acompcor_enabled else None,
+            'n_voxels_csf': results.get('acompcor', {}).get('n_voxels_csf') if acompcor_enabled else None,
+            'n_voxels_wm': results.get('acompcor', {}).get('n_voxels_wm') if acompcor_enabled else None
         }
     }
 
@@ -818,10 +902,10 @@ def run_functional_preprocessing(
     results['metadata'] = metadata_file
 
     # =========================================================================
-    # STEP 10: Generate QC Reports
+    # STEP 11: Generate QC Reports
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 10: Generate QC Reports")
+    print("STEP 11: Generate QC Reports")
     print("="*60)
 
     # Motion QC
@@ -848,6 +932,152 @@ def run_functional_preprocessing(
         'confounds': confounds_qc_report
     }
 
+    # =========================================================================
+    # STEP 12: Registration to Anatomical Space (Optional)
+    # =========================================================================
+    func_reg_config = func_config.get('registration', {})
+    reg_enabled = func_reg_config.get('enabled', True) and (t2w_file is not None)
+
+    if reg_enabled:
+        print("\n" + "="*60)
+        print("STEP 12: Registration to Anatomical Space")
+        print("="*60)
+
+        # Check if T2w file exists
+        if not t2w_file.exists():
+            print(f"  Warning: T2w file not found: {t2w_file}")
+            print("  Skipping registration")
+            reg_enabled = False
+
+    if reg_enabled:
+        # Create mean BOLD for registration
+        mean_bold_reg = work_dir / f"{subject}_{session}_mean_bold_for_reg.nii.gz"
+        if not mean_bold_reg.exists():
+            shutil.copy(str(mean_bold), str(mean_bold_reg))
+
+        # Register mean BOLD to T2w
+        bold_to_t2w_prefix = work_dir / f"{subject}_{session}_bold_to_t2w_"
+        reg_results = register_within_subject(
+            moving_image=mean_bold_reg,
+            fixed_image=t2w_file,
+            output_prefix=bold_to_t2w_prefix,
+            moving_modality='bold',
+            fixed_modality='T2w',
+            n_cores=config.get('execution', {}).get('n_procs', 4)
+        )
+
+        # Apply transform to 4D BOLD timeseries
+        bold_in_t2w = derivatives_dir / f"{subject}_{session}_space-T2w_bold.nii.gz"
+        print(f"\n  Applying transform to 4D BOLD timeseries...")
+        apply_transforms(
+            input_image=final_bold,
+            reference_image=t2w_file,
+            transforms=[reg_results['composite_transform']],
+            output_image=bold_in_t2w,
+            interpolation='Linear'
+        )
+
+        # Save transform to registry
+        transform_registry.save_ants_composite_transform(
+            composite_file=reg_results['composite_transform'],
+            source_space='bold',
+            target_space='T2w',
+            reference=t2w_file,
+            source_image=mean_bold_reg
+        )
+
+        results['registration'] = {
+            'bold_in_t2w': bold_in_t2w,
+            'transform': reg_results['composite_transform'],
+            'mean_bold_registered': reg_results['warped']
+        }
+
+        print(f"  ✓ BOLD → T2w registration complete")
+        print(f"    Registered BOLD: {bold_in_t2w}")
+
+        # =====================================================================
+        # STEP 13: Registration to SIGMA Atlas (via T2w)
+        # =====================================================================
+        norm_enabled = func_config.get('normalization', {}).get('enabled', True)
+        reuse_transforms = func_config.get('normalization', {}).get('reuse_transforms', True)
+
+        if norm_enabled:
+            print("\n" + "="*60)
+            print("STEP 13: Registration to SIGMA Atlas")
+            print("="*60)
+
+            # Check if T2w→SIGMA transform exists in registry
+            if reuse_transforms and transform_registry.has_transform('T2w', 'SIGMA'):
+                print("  Using existing T2w → SIGMA transform from anatomical preprocessing")
+
+                # Get T2w → SIGMA transform
+                t2w_to_sigma_transform = transform_registry.get_ants_composite_transform('T2w', 'SIGMA')
+
+                # Get SIGMA template
+                atlas_config = config.get('atlas', {})
+                atlas_manager = AtlasManager(
+                    atlas_name=atlas_config.get('name', 'SIGMA'),
+                    base_path=Path(atlas_config.get('base_path', '/mnt/arborea/atlases/SIGMA_scaled'))
+                )
+                sigma_template = atlas_manager.get_invivo_template()
+
+                # Apply concatenated transforms: BOLD → T2w → SIGMA
+                bold_in_sigma = derivatives_dir / f"{subject}_{session}_space-SIGMA_bold.nii.gz"
+                print(f"\n  Applying chained transforms: BOLD → T2w → SIGMA")
+                apply_transforms(
+                    input_image=final_bold,
+                    reference_image=sigma_template,
+                    transforms=[
+                        t2w_to_sigma_transform,
+                        reg_results['composite_transform']
+                    ],
+                    output_image=bold_in_sigma,
+                    interpolation='Linear'
+                )
+
+                results['normalization'] = {
+                    'bold_in_sigma': bold_in_sigma,
+                    'atlas_template': sigma_template
+                }
+
+                print(f"  ✓ BOLD → SIGMA registration complete")
+                print(f"    SIGMA-space BOLD: {bold_in_sigma}")
+
+                # =============================================================
+                # STEP 14: Registration QC
+                # =============================================================
+                print("\n" + "="*60)
+                print("STEP 14: Generate Registration QC")
+                print("="*60)
+
+                reg_qc_report = generate_registration_qc(
+                    subject=subject,
+                    session=session,
+                    bold_file=mean_bold,
+                    t2w_file=t2w_file,
+                    bold_in_t2w=reg_results['warped'],
+                    atlas_file=sigma_template,
+                    bold_in_atlas=bold_in_sigma,
+                    output_dir=qc_dir
+                )
+
+                results['qc_reports']['registration'] = reg_qc_report
+                print(f"  ✓ Registration QC: {reg_qc_report}")
+
+            else:
+                print("  Warning: T2w → SIGMA transform not found in registry")
+                print("  Run anatomical preprocessing first to create the transform")
+                print("  Skipping atlas normalization")
+
+    else:
+        print("\n" + "="*60)
+        print("STEP 12-14: Registration (Skipped)")
+        print("="*60)
+        if t2w_file is None:
+            print("  No T2w reference provided - registration disabled")
+        else:
+            print("  Registration disabled in config")
+
     print("\n" + "="*80)
     print("FUNCTIONAL PREPROCESSING COMPLETE")
     print("="*80)
@@ -855,6 +1085,13 @@ def run_functional_preprocessing(
     print(f"Brain mask: {brain_mask}")
     print(f"Confounds: {confounds_file}")
     print(f"Metadata: {metadata_file}")
+
+    if 'registration' in results:
+        print(f"\nRegistered BOLD:")
+        print(f"  T2w space: {results['registration']['bold_in_t2w']}")
+        if 'normalization' in results:
+            print(f"  SIGMA space: {results['normalization']['bold_in_sigma']}")
+
     print(f"\nQC Reports:")
     print(f"  Motion QC: {motion_qc_report}")
     print(f"  Confounds QC: {confounds_qc_report}")
@@ -863,6 +1100,14 @@ def run_functional_preprocessing(
         print(f"\nICA Denoising:")
         print(f"  Signal components: {classification['summary']['n_signal']}")
         print(f"  Noise components: {classification['summary']['n_noise']}")
+    if acompcor_enabled and 'acompcor' in results:
+        print(f"  aCompCor QC: {results['acompcor']['qc_report']}")
+        print(f"\naCompCor:")
+        print(f"  Total components: {results['acompcor']['n_components']}")
+        print(f"  CSF voxels: {results['acompcor']['n_voxels_csf']}")
+        print(f"  WM voxels: {results['acompcor']['n_voxels_wm']}")
+    if 'registration' in results and 'registration' in results['qc_reports']:
+        print(f"  Registration QC: {results['qc_reports']['registration']}")
     print("="*80)
 
     return results
