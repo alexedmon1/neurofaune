@@ -138,9 +138,53 @@ def update_nifti_header(
 
     # Save
     nib.save(new_img, output_file)
-    print(f"  ✓ Updated: {output_file}")
+    print(f"  ✓ Updated NIfTI: {output_file}")
 
     return output_file
+
+
+def update_json_sidecar(
+    json_file: Path,
+    voxel_size: Tuple[float, float, float],
+    scale_factor: float = 10.0
+) -> Path:
+    """
+    Update JSON sidecar with PixelSpacing field.
+
+    Parameters
+    ----------
+    json_file : Path
+        JSON sidecar file
+    voxel_size : Tuple[float, float, float]
+        Voxel sizes in mm (x, y, z) from Bruker
+    scale_factor : float
+        Scaling factor for FSL/ANTs compatibility (default: 10.0)
+
+    Returns
+    -------
+    Path
+        Path to updated JSON file
+    """
+    # Load existing metadata
+    with open(json_file, 'r') as f:
+        metadata = json.load(f)
+
+    # Scale voxel sizes
+    scaled_voxel_size = tuple(v * scale_factor for v in voxel_size)
+
+    # Add PixelSpacing (in-plane x, y) and update SliceThickness
+    metadata['PixelSpacing'] = [scaled_voxel_size[0], scaled_voxel_size[1]]
+    metadata['SliceThickness'] = scaled_voxel_size[2]
+
+    # Save updated metadata
+    with open(json_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"  ✓ Updated JSON: {json_file.name}")
+    print(f"    PixelSpacing: {metadata['PixelSpacing']}")
+    print(f"    SliceThickness: {metadata['SliceThickness']}")
+
+    return json_file
 
 
 def find_bruker_scan_dir(
@@ -294,13 +338,16 @@ def fix_bids_nifti_headers(
             voxel_size = params['voxel_size']
             scaled_voxel_size = tuple(v * 10.0 for v in voxel_size)
 
-            # Update NIfTI header
+            # Update NIfTI header and JSON sidecar
             if not dry_run:
                 update_nifti_header(nifti_file, voxel_size)
+                update_json_sidecar(json_file, voxel_size)
                 stats['updated'] += 1
             else:
                 print(f"  [DRY RUN] Bruker voxel sizes: {voxel_size}")
                 print(f"  [DRY RUN] Would update to (10x scaled): {scaled_voxel_size}")
+                print(f"  [DRY RUN] Would add PixelSpacing: [{scaled_voxel_size[0]}, {scaled_voxel_size[1]}]")
+                print(f"  [DRY RUN] Would update SliceThickness: {scaled_voxel_size[2]}")
                 stats['updated'] += 1
 
         except Exception as e:

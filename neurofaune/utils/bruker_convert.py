@@ -312,6 +312,13 @@ def extract_bids_metadata(scan_dir: Path, modality: str) -> Dict[str, any]:
         if 'PVM_SPackArrSliceDistance' in method:
             metadata['SliceThickness'] = float(method['PVM_SPackArrSliceDistance']['value'])
 
+        # Extract in-plane voxel dimensions (CRITICAL for proper preprocessing)
+        if 'PVM_SpatResol' in method:
+            spat_resol = method['PVM_SpatResol']['value']
+            if isinstance(spat_resol, (list, np.ndarray)) and len(spat_resol) >= 2:
+                # In-plane resolution in mm [x, y]
+                metadata['PixelSpacing'] = [float(spat_resol[0]), float(spat_resol[1])]
+
         # Modality-specific fields
         if modality == 'dwi':
             # Diffusion parameters
