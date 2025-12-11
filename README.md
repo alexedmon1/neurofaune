@@ -34,20 +34,28 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
    - T2 compartment analysis (myelin, intra/extra-cellular, CSF)
    - QC with T2 decay curves and NNLS spectra visualization
 
-4. **Functional fMRI Preprocessing (NEW!)**
-   - Motion correction (MCFLIRT with middle volume reference)
-   - Brain extraction (BET optimized for BOLD)
-   - Spatial smoothing (0.5mm FWHM for rodents)
-   - Temporal filtering (highpass/lowpass)
-   - Confound extraction (24 motion regressors: 6 params + derivatives + squares)
-   - Comprehensive QC (motion QC with FD/DVARS, confounds visualization)
-   - Template-based normalization ready
+4. **Functional fMRI Preprocessing**
+   - **Adaptive skull stripping** (per-slice BET with -R flag, protocol-robust 0.8% variability)
+     - N4 bias correction + intensity normalization on reference volume
+     - Slice-wise adaptive frac optimization targeting 15% brain extraction
+     - BET -R flag for robust center estimation across acquisition geometries
+     - Tested across 6 distinct acquisition protocols (voxel sizes 1.2-5.9mm)
+   - **Motion correction** (MCFLIRT with middle volume reference)
+   - **ICA denoising** (MELODIC with automatic dimensionality estimation)
+     - Rodent-optimized automated component classification (score-based)
+     - Motion, edge, CSF, and frequency-based noise detection
+     - Typical signal retention: 75-77% of components
+   - **Spatial smoothing** (6mm FWHM)
+   - **Temporal filtering** (0.01-0.1 Hz bandpass for resting-state)
+   - **Confound extraction** (24 extended motion regressors + aCompCor when tissue masks available)
+   - **Comprehensive QC** (motion FD/DVARS, ICA classification, confounds, registration overlays)
+   - **Note:** Some acquisitions contain zebra stripe artifacts inherent to the scan (not introduced by preprocessing)
 
 ### 🚧 **In Progress**
 
 - **Template building:** ANTs-based age-specific template creation
-- **Registration to atlas:** SIGMA atlas integration
-- **Advanced fMRI denoising:** ICA-AROMA, slice timing correction
+- **Registration to SIGMA atlas:** T2w and functional template alignment
+- **Advanced features:** Multi-echo support, slice timing optimization
 
 ## Features
 

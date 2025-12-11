@@ -211,10 +211,13 @@ def run_bet_skull_strip(
     print(f"  Running {method} (frac={frac})...")
 
     if method == 'bet':
+        # BET adds .nii.gz, so we need to remove both suffixes from output path
+        output_base = str(output_file).replace('.nii.gz', '')
+
         cmd = [
             'bet',
             str(input_file),
-            str(output_file.with_suffix('')),  # BET adds .nii.gz
+            output_base,  # BET will add .nii.gz
             '-f', str(frac),
             '-m',  # Create mask
             '-n'   # No mesh
@@ -223,7 +226,7 @@ def run_bet_skull_strip(
         if auto_center:
             # Calculate center of gravity for robust centering
             cog = calculate_center_of_gravity(input_file)
-            cmd.extend(['-c', f"{int(cog[0])} {int(cog[1])} {int(cog[2])}"])
+            cmd.extend(['-c', str(int(cog[0])), str(int(cog[1])), str(int(cog[2]))])
             print(f"    Using automatic center: ({int(cog[0])}, {int(cog[1])}, {int(cog[2])})")
         else:
             cmd.append('-R')  # Use BET's robust center estimation
@@ -238,6 +241,9 @@ def run_bet_skull_strip(
             print("    Using -B (bias field and neck cleanup)")
 
     elif method == 'bet4animal':
+        # bet4animal adds .nii.gz, so we need to remove both suffixes
+        output_base = str(output_file).replace('.nii.gz', '')
+
         if auto_center:
             # Calculate center of gravity for robust centering
             center = calculate_center_of_gravity(input_file)
@@ -252,7 +258,7 @@ def run_bet_skull_strip(
         cmd = [
             'bet4animal',
             str(input_file),
-            str(output_file.with_suffix('')),
+            output_base,
             '-f', str(frac),
             '-c', f"{center[0]:.1f} {center[1]:.1f} {center[2]:.1f}",
             '-r', '125',
@@ -264,15 +270,31 @@ def run_bet_skull_strip(
     else:
         raise ValueError(f"Unknown method: {method}")
 
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    # Run command - BET may return non-zero even on success
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
 
-    # Find mask file (created with _mask suffix)
+    # Find mask file (created with _mask suffix by BET)
     bet_mask = output_file.with_name(
         output_file.stem.replace('.nii', '') + '_mask.nii.gz'
     )
 
-    # Rename to expected location
-    if bet_mask.exists() and bet_mask != mask_file:
+    # Check if output files were actually created (more reliable than exit code)
+    if not output_file.exists() or not bet_mask.exists():
+        print(f"\n✗ Error running {method}:")
+        print(f"  Command: {' '.join(cmd)}")
+        print(f"  Exit code: {result.returncode}")
+        if result.stdout:
+            print(f"  Stdout: {result.stdout[:500]}")
+        if result.stderr:
+            print(f"  Stderr: {result.stderr[:500]}")
+        print(f"  Expected brain file: {output_file} (exists: {output_file.exists()})")
+        print(f"  Expected mask file: {bet_mask} (exists: {bet_mask.exists()})")
+        raise RuntimeError(f"{method} failed - output files not created")
+    elif result.returncode != 0:
+        print(f"  Note: {method} returned exit code {result.returncode} but output files exist (continuing)")
+
+    # Rename mask to expected location if different
+    if bet_mask != mask_file:
         import shutil
         shutil.move(str(bet_mask), str(mask_file))
 

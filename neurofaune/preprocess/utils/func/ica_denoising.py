@@ -29,12 +29,12 @@ def run_melodic_ica(
     output_dir: Path,
     brain_mask: Path,
     tr: float,
-    n_components: int = 40,
+    n_components: Optional[int] = None,
     bg_image: Optional[Path] = None
 ) -> Dict[str, Path]:
     """
     Run FSL MELODIC ICA decomposition.
-    
+
     Parameters
     ----------
     input_file : Path
@@ -45,31 +45,39 @@ def run_melodic_ica(
         Brain mask
     tr : float
         Repetition time (seconds)
-    n_components : int
-        Number of ICA components (default: 40)
+    n_components : int, optional
+        Number of ICA components. If None, MELODIC will automatically estimate
+        the optimal dimensionality (recommended to avoid truncating signal)
     bg_image : Path, optional
         Background image for visualization
-    
+
     Returns
     -------
     dict
         Paths to MELODIC outputs
     """
-    print(f"Running MELODIC ICA with {n_components} components...")
-    
+    if n_components is None:
+        print("Running MELODIC ICA with automatic dimensionality estimation...")
+    else:
+        print(f"Running MELODIC ICA with {n_components} components...")
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     cmd = [
         'melodic',
         '-i', str(input_file),
         '-o', str(output_dir),
         '-m', str(brain_mask),
         f'--tr={tr}',  # FSL wants --tr=value format
-        f'--dim={n_components}',
         '--nobet',  # Already masked
         '--report',  # Generate HTML report
         '-v'  # Verbose
     ]
+
+    # Only add --dim if n_components is specified
+    # Otherwise MELODIC will automatically estimate optimal dimensionality
+    if n_components is not None:
+        cmd.append(f'--dim={n_components}')
 
     if bg_image is not None:
         cmd.extend([f'--bgimage={bg_image}'])
