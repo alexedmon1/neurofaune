@@ -51,11 +51,14 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
    - **Comprehensive QC** (motion FD/DVARS, ICA classification, confounds, registration overlays)
    - **Note:** Some acquisitions contain zebra stripe artifacts inherent to the scan (not introduced by preprocessing)
 
-### 🚧 **In Progress**
+### 🚧 **In Progress (December 2024)**
 
-- **Template building:** ANTs-based age-specific template creation
-- **Registration to SIGMA atlas:** T2w and functional template alignment
-- **Advanced features:** Multi-echo support, slice timing optimization
+- **Template building:** ANTs-based age-specific T2w templates actively building
+  - p30: 38 subjects available (building)
+  - p60: 34 subjects available (pending)
+  - p90: 47 subjects available (pending)
+- **Registration to SIGMA atlas:** T2w template → SIGMA registration included in build
+- **Directory structure updated:** `templates/{modality}/{cohort}/` organization
 
 ## Features
 
@@ -329,17 +332,21 @@ study_root/
 │       │   └── sub-001_space-SIGMA_FA.nii.gz
 │       └── func/
 │           └── sub-001_desc-preproc_bold.nii.gz
-├── templates/               # Age-specific templates
-│   ├── p30/
-│   │   ├── tpl-BPARat_p30_T2w.nii.gz
-│   │   ├── tpl-BPARat_p30_label-GM_probseg.nii.gz
-│   │   ├── tpl-BPARat_p30_label-WM_probseg.nii.gz
-│   │   ├── tpl-BPARat_p30_label-CSF_probseg.nii.gz
-│   │   ├── tpl-BPARat_p30_FA.nii.gz
-│   │   ├── tpl-BPARat_p30_bold.nii.gz
-│   │   └── transforms/
-│   ├── p60/ (same structure)
-│   └── p90/ (same structure)
+├── templates/               # Age-specific templates (organized by modality)
+│   ├── anat/                # T2w anatomical templates
+│   │   ├── p30/
+│   │   │   ├── tpl-BPARat_p30_T2w.nii.gz
+│   │   │   ├── tpl-BPARat_p30_space-SIGMA_T2w.nii.gz
+│   │   │   ├── tpl-BPARat_p30_label-GM_probseg.nii.gz
+│   │   │   ├── tpl-BPARat_p30_label-WM_probseg.nii.gz
+│   │   │   ├── tpl-BPARat_p30_label-CSF_probseg.nii.gz
+│   │   │   └── transforms/
+│   │   │       ├── tpl-to-SIGMA_Composite.h5
+│   │   │       └── SIGMA-to-tpl_Composite.h5
+│   │   ├── p60/ (same structure)
+│   │   └── p90/ (same structure)
+│   ├── dwi/                 # FA templates (future)
+│   └── func/                # BOLD templates (future)
 ├── transforms/              # Transform registry
 │   └── sub-001/
 │       ├── T2w_to_template_Composite.h5

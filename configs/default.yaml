@@ -11,7 +11,7 @@ study:
 
 # Directory structure (neurovrai-compatible)
 paths:
-  study_root: "/mnt/arborea/bpa-rat/test"
+  study_root: "/mnt/arborea/bpa-rat"
   raw: "${paths.study_root}/raw"
   bruker: "${paths.raw}/bruker"
   bids: "${paths.raw}/bids"

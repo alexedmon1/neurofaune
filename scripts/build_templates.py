@@ -69,8 +69,8 @@ def build_anatomical_template(
 
     print(f"\nUsing {len(input_files)} subjects for template building")
 
-    # Build template
-    cohort_dir = template_dir / cohort
+    # Build template - organize by modality/cohort
+    cohort_dir = template_dir / 'anat' / cohort
     cohort_dir.mkdir(parents=True, exist_ok=True)
 
     output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_T2w_'
@@ -217,8 +217,8 @@ def build_dti_template(
 
     print(f"\nUsing {len(input_files)} subjects for template building")
 
-    # Build template
-    cohort_dir = template_dir / cohort
+    # Build template - organize by modality/cohort
+    cohort_dir = template_dir / 'dwi' / cohort
     cohort_dir.mkdir(parents=True, exist_ok=True)
 
     output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_FA_'
@@ -274,9 +274,10 @@ def build_func_template(
         top_percent=top_percent
     )
 
-    # Extract mean BOLD for each subject
+    # Extract mean BOLD for each subject - organize by modality/cohort
     session = f'ses-{cohort}'
-    work_dir = template_dir / cohort / 'work'
+    cohort_dir = template_dir / 'func' / cohort
+    work_dir = cohort_dir / 'work'
     work_dir.mkdir(parents=True, exist_ok=True)
 
     input_files = []
@@ -302,7 +303,6 @@ def build_func_template(
     print(f"\nUsing {len(input_files)} subjects for template building")
 
     # Build template
-    cohort_dir = template_dir / cohort
     output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_bold_'
 
     results = build_template(

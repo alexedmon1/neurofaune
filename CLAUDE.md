@@ -14,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Current Implementation Status
 
+**Last Updated:** December 15, 2024
+
 **✅ Phase 1 Completed (Foundation)**:
 - **Project structure**: Complete directory hierarchy with modular organization
 - **Configuration system**: YAML-based config with variable substitution (`neurofaune/config.py`)
@@ -30,31 +32,50 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Comprehensive tests**: 28 unit and integration tests (all passing)
 - **Documentation**: Complete atlas guide (`docs/ATLAS_GUIDE.md`)
 
-**🚧 Phase 3 In Progress (Anatomical Preprocessing)**:
+**✅ Phase 3 Completed (Anatomical Preprocessing)**:
 - **Image validation**: Pre-pipeline validation module (`neurofaune/preprocess/utils/validation.py`)
 - **Orientation matching**: Automatic orientation detection and correction (`neurofaune/preprocess/utils/orientation.py`)
 - **Skull stripping**: Two-pass approach (ANTs Atropos + FSL BET) optimized for rodent brains
 - **Bias correction**: N4 bias field correction
-- **Registration**: ANTs SyN registration to SIGMA atlas with automatic orientation matching
+- **Tissue segmentation**: GM, WM, CSF probability maps
 - **Anatomical workflow**: Complete T2w preprocessing pipeline (`neurofaune/preprocess/workflows/anat_preprocess.py`)
-- **Testing**: Validated on BPA-Rat study (p60 cohort)
+- **Validated**: 189 subject/session combinations on BPA-Rat (38 p30, 34 p60, 47 p90)
+
+**✅ Phase 4 Completed (DTI Preprocessing)**:
+- **5D→4D conversion**: Bruker multi-average handling
+- **Eddy correction**: GPU-accelerated (with CPU fallback)
+- **DTI fitting**: FA, MD, AD, RD maps via FSL dtifit
+- **Comprehensive QC**: Motion, eddy, tensor metrics
+
+**✅ Phase 5 Completed (Template Architecture)**:
+- **Template builder**: ANTs multivariate template construction (`neurofaune/templates/builder.py`)
+- **Subject selection**: QC-based top 25% per cohort
+- **Registration framework**: Template → SIGMA alignment
+- **CLI script**: `scripts/build_templates.py`
+
+**✅ Phase 6 Completed (MSME T2 Mapping)**:
+- **Multi-echo T2 mapping**: T2 relaxometry workflow
+- **MWF calculation**: Myelin Water Fraction via NNLS
+- **Compartment analysis**: Myelin, intra/extra-cellular, CSF
 
 **✅ Phase 7 Completed (Functional fMRI Preprocessing)**:
-- **Complete workflow**: 14 processing steps from raw BOLD to atlas-registered data
+- **Adaptive skull stripping**: Per-slice BET with -R flag (0.8% protocol variability)
 - **Motion correction**: MCFLIRT with middle volume reference
-- **Brain extraction**: BET optimized for BOLD contrast (frac=0.3)
-- **Spatial smoothing**: Rodent-optimized FWHM (0.5mm)
+- **ICA denoising**: Rodent-specific automated classification (75-77% signal retention)
+- **Spatial smoothing**: 6mm FWHM
 - **Temporal filtering**: Bandpass 0.01-0.1 Hz for resting-state
-- **ICA denoising**: Rodent-specific automated classification (score-based, 26/30 signal retained)
 - **aCompCor**: CSF/WM physiological noise extraction (5 components per tissue)
 - **Confound extraction**: 24 extended motion regressors
-- **Registration**: T2w anatomical and SIGMA atlas alignment
-- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA, aCompCor, registration overlays
-- **Transform registry**: Reuses anatomical transforms for efficiency
-- **Validated**: Tested on BPA-Rat study (ses-p90, TR=0.5s)
+- **Comprehensive QC**: Motion (FD/DVARS), confounds, ICA, aCompCor
+- **Validated**: 294 BOLD scans across 6 acquisition protocols
+
+**🚧 Phase 8 In Progress (Template-Based Registration)** - ACTIVE:
+- **Template building**: ANTs-based age-specific T2w templates (p30 building, p60/p90 pending)
+- **Directory structure**: Updated to `templates/{modality}/{cohort}/`
+- **SIGMA registration**: Template → SIGMA transforms with tissue templates
+- **Available subjects**: 38 p30, 34 p60, 47 p90 preprocessed T2w images
 
 **📋 Planned**:
-- **Phase 8**: Slice timing correction, MTR workflows, multi-echo support
 - **Phase 9**: MTR and additional modalities
 - **Phase 10**: CLI and batch processing
 - **Phase 11**: Testing and validation

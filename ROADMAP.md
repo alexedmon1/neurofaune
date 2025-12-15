@@ -1,13 +1,26 @@
 # Neurofaune Development Roadmap
 
-**Last Updated:** December 11, 2024
-**Current Status:** Phase 7 Complete (Functional fMRI Preprocessing)
+**Last Updated:** December 15, 2024
+**Current Status:** Phase 8 In Progress (Template-Based Registration)
 
 This document outlines the implementation plan for neurofaune, a rodent-specific MRI preprocessing pipeline.
 
 ---
 
 ## 📊 Current Status
+
+### 🚧 **Active Work: Phase 8 - Template Building**
+
+Template building is currently running for T2w anatomical templates:
+- **Directory structure updated:** `templates/{modality}/{cohort}/` (e.g., `templates/anat/p60/`)
+- **p30:** Building (38 subjects available, using top 10)
+- **p60:** Pending (34 subjects available)
+- **p90:** Pending (47 subjects available)
+
+Each template build includes:
+- T2w template via ANTs multivariate template construction (4 iterations)
+- Tissue probability templates (GM, WM, CSF)
+- SIGMA atlas registration with composite transforms
 
 ### ✅ **Completed Phases**
 
@@ -66,29 +79,47 @@ This document outlines the implementation plan for neurofaune, a rodent-specific
 
 ## 🎯 Next Steps
 
-### **Phase 8: Template-Based Registration** ⭐ **HIGHEST PRIORITY**
+### **Phase 8: Template-Based Registration** ⭐ **IN PROGRESS**
 
-**Status:** Infrastructure exists, implementation needed
-**Timeline:** 1-2 weeks
+**Status:** Template building actively running
+**Started:** December 15, 2024
 **Blocking:** ROI extraction, group analysis, cross-subject comparisons
 
-#### 8.1 Build Age-Specific Templates
+#### 8.1 Build Age-Specific Templates 🚧 **ACTIVE**
 **Goal:** Create p30, p60, p90 cohort templates from preprocessed anatomical data
 
-**Implementation:**
-1. Use existing `scripts/build_templates.py` framework
-2. Select high-quality preprocessed T2w images per cohort
-3. Run ANTs template building:
-   - Initial affine alignment
-   - Iterative non-linear registration (3-5 iterations)
-   - Generate template + tissue probability maps
-4. QC: Visual inspection, sharpness metrics
+**Directory Structure (Updated December 15, 2024):**
+```
+templates/
+├── anat/                    # T2w anatomical templates
+│   ├── p30/
+│   │   ├── tpl-BPARat_p30_T2w.nii.gz
+│   │   ├── tpl-BPARat_p30_space-SIGMA_T2w.nii.gz
+│   │   ├── tpl-BPARat_p30_label-GM_probseg.nii.gz
+│   │   ├── tpl-BPARat_p30_label-WM_probseg.nii.gz
+│   │   ├── tpl-BPARat_p30_label-CSF_probseg.nii.gz
+│   │   └── transforms/
+│   │       ├── tpl-to-SIGMA_Composite.h5
+│   │       └── SIGMA-to-tpl_Composite.h5
+│   ├── p60/
+│   └── p90/
+├── dwi/                     # FA templates (future)
+│   └── ...
+└── func/                    # BOLD templates (future)
+    └── ...
+```
 
-**Input:** Preprocessed T2w from Phase 3 (`derivatives/sub-*/anat/*_desc-preproc_T2w.nii.gz`)
-**Output:**
-- `templates/cohort_p30/template_T2w.nii.gz`
-- `templates/cohort_p30/template_{GM,WM,CSF}_probseg.nii.gz`
-- Similar for p60, p90
+**Implementation:**
+1. ✅ Updated `scripts/build_templates.py` for new directory structure
+2. 🚧 Building T2w templates with ANTs (4 iterations, 10 subjects per cohort)
+3. ⏳ Tissue probability templates (GM, WM, CSF)
+4. ⏳ SIGMA atlas registration
+5. ⏳ QC: Visual inspection, sharpness metrics
+
+**Input:** Preprocessed T2w from Phase 3
+- p30: 38 subjects available
+- p60: 34 subjects available
+- p90: 47 subjects available
 
 **Validation:** Template sharpness, tissue boundary clarity, cohort representativeness
 
@@ -444,9 +475,9 @@ make html
 
 ## 🚀 Recommended Implementation Order
 
-### **Immediate (Next 1-2 Weeks)**
-1. ⭐ **Build age-specific templates** (Phase 8.1)
-2. ⭐ **Register templates to SIGMA** (Phase 8.2)
+### **Immediate (In Progress)**
+1. 🚧 **Build age-specific templates** (Phase 8.1) - ACTIVELY RUNNING
+2. ⭐ **Register templates to SIGMA** (Phase 8.2) - Next
 3. ⭐ **Integrate registration into anatomical workflow** (Phase 8.3)
 
 **Rationale:** Registration is the critical bottleneck preventing downstream analysis
@@ -536,6 +567,12 @@ make html
 ---
 
 ## 📝 Version History
+
+**v0.8.0-dev (December 2024)** - Phase 8 In Progress
+- Template building actively running for T2w (p30, p60, p90)
+- Updated directory structure: `templates/{modality}/{cohort}/`
+- 119 preprocessed subjects available (38 p30, 34 p60, 47 p90)
+- Improved build_templates.py with modality-first organization
 
 **v0.7.0 (December 2024)** - Phase 7 Complete
 - Functional fMRI preprocessing with adaptive skull stripping
