@@ -334,8 +334,9 @@ def register_template_to_sigma(
     -------
     dict
         Dictionary with paths to registration outputs:
-        - 'composite_transform': Template → SIGMA transform
-        - 'inverse_composite_transform': SIGMA → Template transform
+        - 'affine_transform': Affine transform (.mat)
+        - 'warp_transform': Deformation field (Template → SIGMA)
+        - 'inverse_warp': Inverse deformation field (SIGMA → Template)
         - 'warped': Template in SIGMA space
 
     Examples
@@ -401,21 +402,32 @@ def register_template_to_sigma(
     print()
 
     # Expected outputs from antsRegistrationSyN.sh
-    composite_transform = Path(str(output_prefix) + 'Composite.h5')
-    inverse_composite = Path(str(output_prefix) + 'InverseComposite.h5')
+    # ANTs creates separate transform files by default:
+    # - 0GenericAffine.mat: affine transform
+    # - 1Warp.nii.gz: deformation field
+    # - 1InverseWarp.nii.gz: inverse deformation field
+    # - Warped.nii.gz: warped template
+    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warp_transform = Path(str(output_prefix) + '1Warp.nii.gz')
+    inverse_warp = Path(str(output_prefix) + '1InverseWarp.nii.gz')
     warped = Path(str(output_prefix) + 'Warped.nii.gz')
 
-    if not composite_transform.exists():
-        raise FileNotFoundError(f"Expected transform not found: {composite_transform}")
+    # Verify transforms exist
+    if not affine_transform.exists():
+        raise FileNotFoundError(f"Expected affine transform not found: {affine_transform}")
+    if not warp_transform.exists():
+        raise FileNotFoundError(f"Expected warp transform not found: {warp_transform}")
 
-    print(f"Composite transform: {composite_transform}")
-    print(f"Inverse transform: {inverse_composite}")
+    print(f"Affine transform: {affine_transform}")
+    print(f"Warp transform: {warp_transform}")
+    print(f"Inverse warp: {inverse_warp}")
     print(f"Warped template: {warped}")
     print()
 
     return {
-        'composite_transform': composite_transform,
-        'inverse_composite_transform': inverse_composite,
+        'affine_transform': affine_transform,
+        'warp_transform': warp_transform,
+        'inverse_warp': inverse_warp,
         'warped': warped
     }
 
