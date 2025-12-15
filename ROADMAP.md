@@ -11,11 +11,11 @@ This document outlines the implementation plan for neurofaune, a rodent-specific
 
 ### 🚧 **Active Work: Phase 8 - Template Building**
 
-Template building is currently running for T2w anatomical templates:
-- **Directory structure updated:** `templates/{modality}/{cohort}/` (e.g., `templates/anat/p60/`)
-- **p30:** Building (38 subjects available, using top 10)
-- **p60:** Pending (34 subjects available)
-- **p90:** Pending (47 subjects available)
+Template building for T2w anatomical templates:
+- **Directory structure:** `templates/{modality}/{cohort}/` (e.g., `templates/anat/p60/`)
+- **p30:** ✅ COMPLETE (10 subjects, SIGMA registration done)
+- **p60:** 🔄 Building (10 subjects, ~50% complete)
+- **p90:** 🔄 Building (10 subjects, ~50% complete)
 
 Each template build includes:
 - T2w template via ANTs multivariate template construction (4 iterations)
@@ -99,8 +99,10 @@ templates/
 │   │   ├── tpl-BPARat_p30_label-WM_probseg.nii.gz
 │   │   ├── tpl-BPARat_p30_label-CSF_probseg.nii.gz
 │   │   └── transforms/
-│   │       ├── tpl-to-SIGMA_Composite.h5
-│   │       └── SIGMA-to-tpl_Composite.h5
+│   │       ├── tpl-to-SIGMA_0GenericAffine.mat
+│   │       ├── tpl-to-SIGMA_1Warp.nii.gz
+│   │       ├── tpl-to-SIGMA_1InverseWarp.nii.gz
+│   │       └── tpl-to-SIGMA_Warped.nii.gz
 │   ├── p60/
 │   └── p90/
 ├── dwi/                     # FA templates (future)
@@ -111,10 +113,13 @@ templates/
 
 **Implementation:**
 1. ✅ Updated `scripts/build_templates.py` for new directory structure
-2. 🚧 Building T2w templates with ANTs (4 iterations, 10 subjects per cohort)
-3. ⏳ Tissue probability templates (GM, WM, CSF)
-4. ⏳ SIGMA atlas registration
-5. ⏳ QC: Visual inspection, sharpness metrics
+2. ✅ Fixed `neurofaune/templates/builder.py` to handle ANTs separate transform files
+3. ✅ p30 T2w template built with ANTs (4 iterations, 10 subjects)
+4. ✅ p30 SIGMA registration complete (affine + warp transforms)
+5. 🔄 p60 T2w template building (4 iterations, 10 subjects)
+6. 🔄 p90 T2w template building (4 iterations, 10 subjects)
+7. ⏳ Tissue probability templates (GM, WM, CSF)
+8. ⏳ QC: Visual inspection, sharpness metrics
 
 **Input:** Preprocessed T2w from Phase 3
 - p30: 38 subjects available
@@ -569,10 +574,11 @@ make html
 ## 📝 Version History
 
 **v0.8.0-dev (December 2024)** - Phase 8 In Progress
-- Template building actively running for T2w (p30, p60, p90)
+- p30 T2w template COMPLETE with SIGMA registration
+- p60, p90 T2w templates building (~50% complete)
+- Fixed builder.py to handle ANTs separate transform files (.mat, .nii.gz)
 - Updated directory structure: `templates/{modality}/{cohort}/`
 - 119 preprocessed subjects available (38 p30, 34 p60, 47 p90)
-- Improved build_templates.py with modality-first organization
 
 **v0.7.0 (December 2024)** - Phase 7 Complete
 - Functional fMRI preprocessing with adaptive skull stripping
@@ -623,4 +629,4 @@ Neurofaune is open-source! Contributions welcome:
 
 ---
 
-**Last Updated:** December 11, 2024 by Claude Code
+**Last Updated:** December 15, 2024 by Claude Code
