@@ -84,6 +84,10 @@ atlases/SIGMA/  # Large atlas files
 sourcedata/
 bids/
 
+# But DO track source code QC modules
+!neurofaune/preprocess/qc/
+!neurofaune/preprocess/qc/**
+
 # Configuration files with sensitive paths
 # (Keep templates, ignore instance-specific configs)
 config.yaml
