@@ -286,7 +286,13 @@ def run_dwi_preprocessing(
 
     import shutil
     shutil.copy(eddy_output, dwi_eddy_file)
-    shutil.copy(eddy_bvecs_rotated, eddy_rotated_bvecs)
+
+    # Fix eddy rotated bvecs - replace NaN with 0 (occurs for b0 volumes)
+    bvecs_rotated = np.loadtxt(eddy_bvecs_rotated)
+    if np.any(np.isnan(bvecs_rotated)):
+        print("  Fixing NaN values in rotated bvecs (b0 volumes)...")
+        bvecs_rotated = np.nan_to_num(bvecs_rotated, nan=0.0)
+    np.savetxt(eddy_rotated_bvecs, bvecs_rotated, fmt='%.10g')
 
     # Copy bvals (unchanged by eddy)
     bval_output = derivatives_dir / f'{subject}_{session}_desc-preproc_dwi.bval'

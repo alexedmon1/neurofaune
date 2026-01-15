@@ -46,7 +46,34 @@ uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/output
 
 ## Architecture Overview
 
-Neurofaune is a rodent-specific MRI preprocessing pipeline built on Nipype/ANTs. Key architectural decisions:
+Neurofaune is a rodent-specific MRI preprocessing pipeline built on Nipype/ANTs.
+
+### Module Structure
+```
+neurofaune/
+├── config.py                 # YAML config loader with variable substitution
+├── atlas/                    # SIGMA atlas management
+│   ├── manager.py            # AtlasManager class for atlas access
+│   └── slice_extraction.py   # Modality-specific slice extraction
+├── preprocess/
+│   ├── workflows/            # Main preprocessing pipelines
+│   │   ├── anat_preprocess.py   # T2w anatomical
+│   │   ├── dwi_preprocess.py    # DTI/DWI diffusion
+│   │   ├── func_preprocess.py   # fMRI functional
+│   │   └── msme_preprocess.py   # Multi-echo T2 mapping
+│   ├── qc/                   # Quality control per modality
+│   └── utils/                # Preprocessing utilities
+│       └── func/             # Functional-specific utils (ICA, aCompCor, skull stripping)
+├── templates/                # Template building and registration
+│   ├── builder.py            # ANTs template construction
+│   └── registration.py       # Subject-to-template registration
+└── utils/
+    ├── transforms.py         # Transform registry system
+    ├── exclusion.py          # Subject exclusion tracking
+    └── select_anatomical.py  # Automatic T2w scan selection
+```
+
+Key architectural decisions:
 
 ### Transform Registry Pattern
 All workflows share transforms through a centralized registry to avoid redundant computation:
@@ -108,12 +135,25 @@ dwi_template = atlas.get_template(modality='dwi')  # Uses config slice_definitio
 3. **QC must be integrated into workflows** - runs during preprocessing, not after
 4. **Age cohorts** (p30, p60, p90) tracked in transform registry and config
 5. **SIGMA atlas** - standard rat brain atlas, scaled 10x for FSL/ANTs compatibility
+6. **Voxel scaling** - rodent MRI has sub-mm voxels; scale 10x for FSL/ANTs compatibility
 
 ## System Dependencies
 
 - **FSL 6.0+**: BET, eddy, MCFLIRT, MELODIC
 - **ANTs 2.3+**: Registration, N4 bias correction, Atropos segmentation
 - **CUDA** (optional): GPU-accelerated eddy correction
+
+## Configuration System
+
+Configs use YAML with variable substitution (`${paths.study_root}`, `${HOME}`):
+- `configs/default.yaml` - base defaults
+- `configs/bpa_rat_example.yaml` - study-specific overrides
+
+```python
+from neurofaune.config import load_config, get_config_value
+config = load_config(Path('config.yaml'))
+bet_frac = get_config_value(config, 'anatomical.bet.frac', default=0.3)
+```
 
 ## Project Status Tracking
 

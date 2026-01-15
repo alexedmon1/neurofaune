@@ -314,3 +314,154 @@ def propagate_labels_to_subject(
         interpolation='NearestNeighbor',  # Critical for labels!
         invert_transforms=invert_transforms
     )
+
+
+def propagate_atlas_to_dwi(
+    atlas_path: Path,
+    fa_reference: Path,
+    transforms_root: Path,
+    templates_root: Path,
+    subject: str,
+    session: str,
+    output_path: Path
+) -> Path:
+    """
+    Propagate SIGMA atlas to DTI/FA space through the transform chain.
+
+    Uses the multi-stage registration chain:
+        SIGMA → T2w Template → Subject T2w → Subject FA
+
+    This handles the common case of separate ANTs transform files
+    (affine .mat + warp .nii.gz) rather than composite .h5 files.
+
+    Parameters
+    ----------
+    atlas_path : Path
+        Path to SIGMA atlas parcellation
+    fa_reference : Path
+        Subject FA map (defines output space)
+    transforms_root : Path
+        Root directory for subject transforms
+    templates_root : Path
+        Root directory for templates
+    subject : str
+        Subject ID (e.g., 'sub-Rat1')
+    session : str
+        Session ID (e.g., 'ses-p60')
+    output_path : Path
+        Output path for atlas in FA space
+
+    Returns
+    -------
+    Path
+        Path to atlas in FA space
+
+    Raises
+    ------
+    FileNotFoundError
+        If required transforms are missing
+
+    Examples
+    --------
+    >>> propagate_atlas_to_dwi(
+    ...     atlas_path=Path('/path/to/SIGMA_atlas.nii'),
+    ...     fa_reference=Path('/path/to/sub-Rat1_FA.nii.gz'),
+    ...     transforms_root=Path('/study/transforms'),
+    ...     templates_root=Path('/study/templates'),
+    ...     subject='sub-Rat1',
+    ...     session='ses-p60',
+    ...     output_path=Path('/study/derivatives/sub-Rat1/ses-p60/dwi/atlas.nii.gz')
+    ... )
+    """
+    cohort = session.replace('ses-', '')
+
+    # Locate all required transforms
+    subj_transforms = transforms_root / subject / session
+    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
+
+    # Required transforms (check existence)
+    fa_to_t2w = subj_transforms / 'FA_to_T2w_0GenericAffine.mat'
+    t2w_to_tpl_affine = subj_transforms / 'T2w_to_template_0GenericAffine.mat'
+    t2w_to_tpl_inv_warp = subj_transforms / 'T2w_to_template_1InverseWarp.nii.gz'
+    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
+    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+
+    # Check FA→T2w exists
+    if not fa_to_t2w.exists():
+        raise FileNotFoundError(
+            f"FA→T2w transform not found: {fa_to_t2w}\n"
+            "Run within-subject DTI registration first."
+        )
+
+    # Check T2w→Template exists
+    if not t2w_to_tpl_affine.exists():
+        raise FileNotFoundError(
+            f"T2w→Template transform not found: {t2w_to_tpl_affine}\n"
+            "Run subject-to-template registration first."
+        )
+
+    # Check Template→SIGMA exists
+    if not tpl_to_sigma_affine.exists():
+        raise FileNotFoundError(
+            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Run template-to-SIGMA registration first."
+        )
+
+    # Build transform chain for SIGMA → FA (inverse direction)
+    # ANTs applies transforms in reverse order, so list from FA to SIGMA
+    transform_list = []
+
+    # 1. T2w → FA (inverse of FA → T2w)
+    transform_list.append(f"[{fa_to_t2w},1]")
+
+    # 2. Template → T2w (inverse of T2w → Template)
+    if t2w_to_tpl_inv_warp.exists():
+        transform_list.append(str(t2w_to_tpl_inv_warp))
+    transform_list.append(f"[{t2w_to_tpl_affine},1]")
+
+    # 3. SIGMA → Template (inverse of Template → SIGMA)
+    if tpl_to_sigma_inv_warp.exists():
+        transform_list.append(str(tpl_to_sigma_inv_warp))
+    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+
+    # Apply transforms
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(atlas_path),
+        '-r', str(fa_reference),
+        '-o', str(output_path),
+        '-n', 'NearestNeighbor',  # Critical for preserving integer labels
+    ]
+
+    for t in transform_list:
+        cmd.extend(['-t', t])
+
+    print(f"\nPropagating atlas to FA space...")
+    print(f"  Atlas: {atlas_path.name}")
+    print(f"  Reference: {fa_reference.name}")
+    print(f"  Transform chain: {len(transform_list)} transforms")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Atlas propagation failed!")
+        print(result.stderr)
+        raise RuntimeError("antsApplyTransforms failed")
+
+    # Verify output
+    atlas_img = nib.load(output_path)
+    atlas_data = atlas_img.get_fdata()
+    n_labels = len(set(atlas_data[atlas_data > 0].astype(int)))
+
+    print(f"  Output: {output_path}")
+    print(f"  Unique labels: {n_labels}")
+
+    return output_path
