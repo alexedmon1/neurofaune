@@ -6,19 +6,103 @@ This module handles registration of templates acquired with thick coronal slices
 registration fails in this case due to the extreme anisotropy mismatch.
 
 The approach:
-1. For each coronal slice in the template, extract the corresponding coronal
+1. Reorient template to match atlas orientation (transpose + flip as needed)
+2. For each coronal slice in the template, extract the corresponding coronal
    region from the atlas (averaging across the slice thickness)
-2. Perform 2D affine registration for each slice pair
-3. Store per-slice transforms for atlas label propagation
+3. Perform 2D affine registration for each slice pair
+4. Store per-slice transforms for atlas label propagation
 """
 
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import nibabel as nib
 import numpy as np
 from scipy.ndimage import zoom
+
+
+def reorient_template_to_sigma(
+    template_path: Union[str, Path],
+    output_path: Optional[Union[str, Path]] = None,
+    target_voxel_size: float = 1.5,
+    save_1mm: bool = False
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Reorient a thick-slice template to match SIGMA atlas orientation.
+
+    The BPA-Rat templates are acquired with thick coronal slices (8mm) where:
+    - Original X axis = Left-Right
+    - Original Y axis = Inferior-Superior
+    - Original Z axis = Anterior-Posterior (thick coronal slices)
+
+    SIGMA atlas has:
+    - X axis = Left-Right
+    - Y axis = Anterior-Posterior
+    - Z axis = Inferior-Superior
+
+    This function performs:
+    1. transpose(0, 2, 1) to swap Y and Z axes
+    2. flip(axis=2) to correct the I-S direction
+    3. Resample to target voxel size (default 1.5mm to match SIGMA)
+
+    Parameters
+    ----------
+    template_path : Path
+        Path to original template NIfTI file
+    output_path : Path, optional
+        Path to save reoriented template. If None, returns data without saving.
+    target_voxel_size : float
+        Target isotropic voxel size in mm (default 1.5 to match scaled SIGMA)
+    save_1mm : bool
+        If True and output_path is provided, also save a 1mm version
+
+    Returns
+    -------
+    tuple
+        (reoriented_data, affine) - the reoriented array and its affine matrix
+    """
+    template_path = Path(template_path)
+    template_img = nib.load(template_path)
+    template_data = template_img.get_fdata()
+    template_voxels = template_img.header.get_zooms()
+
+    # Step 1: Reorient by transposing Y and Z
+    # This maps: X->X, Y->Z, Z->Y
+    template_reoriented = np.transpose(template_data, (0, 2, 1))
+
+    # Step 2: Flip the new Z axis (originally Y) to correct I-S direction
+    template_reoriented = np.flip(template_reoriented, axis=2)
+
+    # Voxel sizes after transpose: (X, Z_orig, Y_orig) = (1.25, 8.0, 1.25)
+    reoriented_voxels = (template_voxels[0], template_voxels[2], template_voxels[1])
+
+    # Step 3: Resample to target voxel size
+    zoom_factors = [reoriented_voxels[i] / target_voxel_size for i in range(3)]
+    template_resampled = zoom(template_reoriented, zoom_factors, order=1)
+
+    # Create affine for RAS orientation at target voxel size
+    affine = np.eye(4) * target_voxel_size
+    affine[3, 3] = 1.0
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        new_img = nib.Nifti1Image(template_resampled.astype(np.float32), affine)
+        nib.save(new_img, output_path)
+
+        if save_1mm:
+            # Also save 1mm version
+            zoom_to_1mm = [reoriented_voxels[i] / 1.0 for i in range(3)]
+            template_1mm = zoom(template_reoriented, zoom_to_1mm, order=1)
+            affine_1mm = np.eye(4)
+
+            output_1mm = output_path.parent / output_path.name.replace('.nii', '_1mm.nii')
+            new_img_1mm = nib.Nifti1Image(template_1mm.astype(np.float32), affine_1mm)
+            nib.save(new_img_1mm, output_1mm)
+
+    return template_resampled, affine
 
 
 def get_slice_geometry(img: nib.Nifti1Image) -> Dict:
