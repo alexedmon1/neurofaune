@@ -144,10 +144,49 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 **Note**: Registration to anatomical/atlas spaces is under development and currently disabled.
 
-**🚧 Phase 8 (Advanced Features & Additional Modalities) - Planned**
+**🚧 Phase 8 (Template-Based Registration) - In Progress**
+- Age-specific T2w templates complete (p30, p60, p90) with SIGMA registration
+- Tissue probability templates (GM, WM, CSF) for all cohorts
+- **Slice Correspondence System** for partial-coverage modalities (see below)
 - Atlas registration and normalization (under development)
 - MTR: Magnetization transfer ratio calculation
 - Multi-echo fMRI support
+
+### Slice Correspondence for Partial-Coverage Modalities
+
+When registering partial-coverage modalities (DWI: 11 slices, fMRI: 9 slices) to full T2w (41 slices), the slice correspondence system determines which T2w slices correspond to the partial volume.
+
+**Challenge**: All modalities have affine origins at [0,0,0] with no header information about slice positioning.
+
+**Solution**: Dual-approach matching for robustness:
+1. **Intensity-based matching** - Correlates 2D slices using normalized cross-correlation with gradient enhancement
+2. **Landmark detection** - Identifies ventricle peaks to validate/refine alignment
+3. **Physical coordinate support** - Handles different slice thicknesses between modalities
+
+```python
+from neurofaune.registration import find_slice_correspondence
+
+result = find_slice_correspondence(
+    partial_image='sub-001_dwi_b0.nii.gz',
+    full_image='sub-001_T2w.nii.gz',
+    modality='dwi'
+)
+print(f"DWI slices 0-10 -> T2w slices {result.start_slice}-{result.end_slice}")
+print(f"Confidence: {result.combined_confidence:.2f}")
+print(f"Physical offset: {result.physical_offset:.1f} mm")
+```
+
+**QC Visualization**:
+```python
+from neurofaune.registration import plot_slice_correspondence
+
+plot_slice_correspondence(
+    partial_data=dwi_data,
+    full_data=t2w_data,
+    result=result,
+    output_file='qc/slice_correspondence.png'
+)
+```
 
 **✅ Bruker to BIDS Conversion - Complete**
 - 141 subjects converted from 7 cohorts (Cohorts 1-5, 7-8)

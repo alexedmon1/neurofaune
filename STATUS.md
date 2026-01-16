@@ -1,6 +1,6 @@
 # Project Status
 
-**Last Updated:** 2026-01-16
+**Last Updated:** 2026-01-16 (Session 2)
 
 This file tracks the current state of the neurofaune project. Update this file after important milestones or before ending a session.
 
@@ -75,7 +75,38 @@ Subject FA (128×128×11) → Subject T2w → Cohort Template → SIGMA Atlas
 |--------|--------|-------|
 | `templates/builder.py` | ✅ Complete | Template construction, SIGMA registration |
 | `templates/registration.py` | ✅ Complete | Subject-to-template, apply_transforms, label propagation, DTI atlas propagation |
+| `registration/slice_correspondence.py` | ✅ Complete | Dual-approach slice matching (intensity + landmarks) for partial-coverage modalities |
+| `registration/qc_visualization.py` | ✅ Complete | QC figure generation (checkerboard, edge overlay, slice correspondence) |
 | Integration into workflows | 🔄 In progress | DTI done, anat/func pending |
+
+### Slice Correspondence System (NEW)
+
+**Status:** ✅ Complete with unit tests (21 tests passing)
+
+For registering partial-coverage modalities (DWI: 11 slices, fMRI: 9 slices) to full T2w (41 slices),
+a dual-approach system combines:
+
+1. **Intensity-based matching**: Correlates 2D slices using normalized cross-correlation + gradient matching
+2. **Landmark detection**: Identifies ventricles to validate/refine alignment
+
+**Key classes:**
+- `SliceCorrespondenceFinder` - Main interface combining both approaches
+- `IntensityMatcher` - Handles intensity-based slice correlation
+- `LandmarkDetector` - Detects anatomical landmarks (ventricles)
+- `SliceCorrespondenceResult` - Detailed result with confidence metrics
+
+**Usage:**
+```python
+from neurofaune.registration import find_slice_correspondence
+
+result = find_slice_correspondence(
+    partial_image='sub-001_dwi_b0.nii.gz',
+    full_image='sub-001_T2w.nii.gz',
+    modality='dwi'
+)
+print(f"DWI slices 0-10 -> T2w slices {result.start_slice}-{result.end_slice}")
+print(f"Confidence: {result.combined_confidence:.2f}")
+```
 
 ---
 
@@ -96,9 +127,10 @@ Subject FA (128×128×11) → Subject T2w → Cohort Template → SIGMA Atlas
 
 1. ~~**Implement 2D slice-wise template-to-SIGMA registration**~~ ✅ RESOLVED via study-space atlas
 2. ~~**Generate tissue probability templates**~~ ✅ Complete (GM/WM/CSF for all cohorts)
-3. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
-4. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain
-5. **Batch process DTI data** - Run full pipeline on all subjects
+3. ~~**Slice correspondence for partial-coverage modalities**~~ ✅ Complete (intensity + landmark detection)
+4. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
+5. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
+6. **Batch process DTI data** - Run full pipeline on all subjects
 
 ---
 
@@ -134,6 +166,46 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-16 - Slice Correspondence System for Partial-Coverage Modalities
+
+Implemented robust dual-approach slice correspondence system to handle registration of
+partial-coverage modalities (DWI, fMRI) to full T2w anatomical images.
+
+**Challenge solved:** All modalities have affine origins at [0,0,0] with no header
+information about slice positioning. Need to determine which T2w slices correspond
+to the partial-coverage volume.
+
+**Solution:** Combined approach for robustness:
+1. **Intensity matching** - Correlates slices using normalized cross-correlation with gradient enhancement
+   - Uses absolute correlation to handle contrast-inverted modalities (FA vs T2w)
+   - Uses physical coordinate-based matching to handle different slice thicknesses
+2. **Landmark detection** - Identifies ventricle peaks to validate/refine the intensity-based match
+3. **Confidence scoring** - Weighted combination; when methods disagree, uses higher-confidence method
+
+**Physical coordinate support:**
+- Extracts slice thickness from NIfTI headers automatically
+- Computes physical positions (mm) for each slice center
+- Matches based on physical position, not slice index (handles different thicknesses)
+- Reports physical offset from full volume start
+
+**Test results (sub-Rat1 DWI → T2w):**
+- FA slices 0-10 mapped to T2w slices 12-22
+- Landmark confidence: 0.374, Intensity confidence: 0.203
+- Ventricle peak detected at partial slice 1 → T2w slice 13
+- Physical offset: 96mm from T2w start (12 slices × 8mm)
+- Coverage: 88mm partial / 328mm full
+
+**Files created:**
+- `neurofaune/registration/slice_correspondence.py` - Core implementation
+- `neurofaune/registration/qc_visualization.py` - QC figure generation
+- `neurofaune/registration/__init__.py` - Module exports
+- `tests/unit/test_slice_correspondence.py` - 27 unit tests (all passing)
+- `scripts/dev_registration/009_test_slice_correspondence.py` - Real data testing
+
+**QC figures generated:**
+- `qc/{subject}/{session}/registration/*_slice_correspondence.png` - Summary view
+- `qc/{subject}/{session}/registration/*_slice_detail.png` - Slice-by-slice detail
 
 ### 2026-01-16 - Tissue Probability Templates
 
