@@ -12,9 +12,9 @@ This file tracks the current state of the neurofaune project. Update this file a
 
 | Cohort | T2w Template | SIGMA Registration | Correlation | Tissue Templates | Subjects Used |
 |--------|--------------|-------------------|-------------|------------------|---------------|
-| p30 | ✅ Complete | ✅ Complete | r=0.68 | ❌ Not started | 10 |
-| p60 | ✅ Complete | ✅ Complete | r=0.72 | ❌ Not started | 10 |
-| p90 | ✅ Complete | ✅ Complete | r=0.70 | ❌ Not started | 10 |
+| p30 | ✅ Complete | ✅ Complete | r=0.68 | ✅ Complete | 10 |
+| p60 | ✅ Complete | ✅ Complete | r=0.72 | ✅ Complete | 10 |
+| p90 | ✅ Complete | ✅ Complete | r=0.70 | ✅ Complete | 10 |
 
 > **✅ SIGMA Registration Fixed (2026-01-16):** The registration issue was resolved by creating
 > a **study-space SIGMA atlas** - reorienting SIGMA to match the study's native acquisition
@@ -95,7 +95,7 @@ Subject FA (128×128×11) → Subject T2w → Cohort Template → SIGMA Atlas
 ## Immediate Next Steps
 
 1. ~~**Implement 2D slice-wise template-to-SIGMA registration**~~ ✅ RESOLVED via study-space atlas
-2. **Generate tissue probability templates** - Average GM/WM/CSF maps for each cohort
+2. ~~**Generate tissue probability templates**~~ ✅ Complete (GM/WM/CSF for all cohorts)
 3. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
 4. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain
 5. **Batch process DTI data** - Run full pipeline on all subjects
@@ -134,6 +134,17 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-16 - Tissue Probability Templates
+
+- Built GM, WM, CSF probability templates for all cohorts (p30, p60, p90)
+- Used existing subject→template transforms to warp tissue maps
+- Created `scripts/build_tissue_templates.py` for automated generation
+- QC visualizations generated for each cohort
+
+**Files created:**
+- `templates/anat/{cohort}/tpl-BPARat_{cohort}_label-{GM,WM,CSF}_probseg.nii.gz`
+- `templates/anat/{cohort}/tissue_templates_qc_{cohort}.png`
 
 ### 2026-01-16 - Study-Space SIGMA Atlas & Template Registration
 
@@ -206,7 +217,7 @@ anatomical correspondence due to the extreme anisotropy mismatch.
 
 1. ~~**Template-to-SIGMA registration broken**~~ ✅ RESOLVED (2026-01-16) - Fixed via study-space atlas
 2. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
-3. **Tissue probability templates** not yet generated for any cohort
+3. ~~**Tissue probability templates**~~ ✅ COMPLETE (2026-01-16) - GM/WM/CSF for all cohorts
 4. **Registration not integrated** into preprocessing workflows (anat, func)
 
 ---
