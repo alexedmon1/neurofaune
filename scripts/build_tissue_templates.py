@@ -24,6 +24,47 @@ from typing import List, Optional
 
 import nibabel as nib
 import numpy as np
+from scipy.ndimage import distance_transform_edt
+
+
+def apply_wm_edge_penalty(
+    wm_data: np.ndarray,
+    brain_mask: np.ndarray,
+    midpoint: float = 3.0,
+    steepness: float = 1.5
+) -> np.ndarray:
+    """
+    Apply sigmoid penalty to WM probability near brain edges.
+
+    Susceptibility artifacts at brain boundaries often get misclassified as WM.
+    This function reduces WM probability near edges using a smooth sigmoid falloff.
+
+    Parameters
+    ----------
+    wm_data : np.ndarray
+        WM probability map
+    brain_mask : np.ndarray
+        Binary brain mask
+    midpoint : float
+        Distance from edge (in voxels) where penalty is 0.5
+    steepness : float
+        Steepness of sigmoid falloff (higher = sharper transition)
+
+    Returns
+    -------
+    np.ndarray
+        Corrected WM probability map
+    """
+    # Compute distance from brain boundary (in voxels)
+    distance_from_edge = distance_transform_edt(brain_mask)
+
+    # Sigmoid penalty: 1 / (1 + exp(-steepness * (distance - midpoint)))
+    # At distance=midpoint, penalty=0.5
+    # As distance increases, penalty approaches 1
+    # As distance decreases toward 0, penalty approaches 0
+    penalty = 1 / (1 + np.exp(-steepness * (distance_from_edge - midpoint)))
+
+    return wm_data * penalty
 
 
 def find_subject_transforms(
@@ -189,6 +230,21 @@ def build_tissue_template(
 
     # Compute mean
     mean_data = sum_data / count
+
+    # Apply edge penalty to WM to reduce susceptibility artifact misclassification
+    if tissue == 'WM':
+        print(f"    Applying edge penalty to reduce boundary artifacts...")
+        # Create brain mask from template
+        template_img = nib.load(template_file)
+        template_data = template_img.get_fdata()
+        brain_mask = template_data > (template_data.max() * 0.05)
+
+        # Apply sigmoid penalty
+        mean_data = apply_wm_edge_penalty(
+            mean_data, brain_mask,
+            midpoint=3.0,   # 50% penalty at 3 voxels from edge
+            steepness=1.5   # Smooth falloff
+        )
 
     # Ensure valid probability range
     mean_data = np.clip(mean_data, 0, 1)
