@@ -2,21 +2,22 @@
 """
 008_register_template_to_sigma.py
 
-Register cohort template to STANDARD SIGMA atlas space.
+Register cohort template to SIGMA atlas in STUDY SPACE.
 
-IMPORTANT: The atlas is defined in the STANDARD SIGMA space (128×218×128 @ 1.5mm),
-NOT the coronal SIGMA (128×128×218 @ 1.0mm). Previous registration used the wrong
-target, causing atlas propagation to fail.
+IMPORTANT: This script now uses the STUDY-SPACE SIGMA atlas, which has been
+reoriented to match the study's native acquisition orientation. This avoids
+orientation mismatches that previously caused registration failures.
 
-This script registers the cohort T2w template to the standard SIGMA InVivo template,
-enabling proper atlas propagation through the transform chain.
+The study-space atlas is created by setup_study_atlas() from:
+    neurofaune.templates.slice_registration
 
 Usage:
     python 008_register_template_to_sigma.py /path/to/bpa-rat p60
 
 Prerequisites:
     - Cohort template exists (templates/anat/{cohort}/)
-    - SIGMA atlas available at /mnt/arborea/atlases/SIGMA_scaled/
+    - Study-space SIGMA atlas exists at {study_root}/atlas/SIGMA_study_space/
+      (Run setup_study_atlas() first if not present)
 
 Output:
     templates/anat/{cohort}/transforms/
@@ -108,17 +109,22 @@ def register_template_to_sigma(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Register cohort template to SIGMA atlas space'
+        description='Register cohort template to SIGMA atlas (study space)'
     )
     parser.add_argument('study_root', type=Path, help='Path to study root')
     parser.add_argument('cohort', type=str, help='Cohort ID (e.g., p60)')
     parser.add_argument('--n-cores', type=int, default=4, help='CPU cores')
-    parser.add_argument('--sigma-path', type=Path,
-                        default=Path('/mnt/arborea/atlases/SIGMA_scaled'),
-                        help='Path to SIGMA_scaled directory')
+    parser.add_argument('--atlas-path', type=Path, default=None,
+                        help='Path to study-space SIGMA atlas (default: {study_root}/atlas/SIGMA_study_space)')
     args = parser.parse_args()
 
     templates_root = args.study_root / 'templates'
+
+    # Use study-space atlas (default location or specified)
+    if args.atlas_path is None:
+        atlas_dir = args.study_root / 'atlas' / 'SIGMA_study_space'
+    else:
+        atlas_dir = args.atlas_path
 
     print("=" * 70)
     print(f"Template to SIGMA Registration: {args.cohort}")
@@ -130,21 +136,20 @@ def main():
         print(f"ERROR: Template not found: {template_path}")
         sys.exit(1)
 
-    # SIGMA template - use STANDARD orientation (not coronal!)
-    sigma_template = (args.sigma_path /
-                     'SIGMA_Rat_Anatomical_Imaging' /
-                     'SIGMA_Rat_Anatomical_InVivo_Template' /
-                     'SIGMA_InVivo_Brain_Template_Masked.nii')
+    # SIGMA template - use STUDY-SPACE version (same orientation as our data)
+    sigma_template = atlas_dir / 'SIGMA_InVivo_Brain_Template_Masked.nii.gz'
     if not sigma_template.exists():
-        print(f"ERROR: SIGMA template not found: {sigma_template}")
+        print(f"ERROR: Study-space SIGMA template not found: {sigma_template}")
+        print(f"\nPlease run setup_study_atlas() first:")
+        print(f"  from neurofaune.templates.slice_registration import setup_study_atlas")
+        print(f"  setup_study_atlas(")
+        print(f"      sigma_base_path='/mnt/arborea/atlases/SIGMA_scaled',")
+        print(f"      study_atlas_dir='{atlas_dir}'")
+        print(f"  )")
         sys.exit(1)
 
     # Also locate the atlas for verification
-    sigma_atlas = (args.sigma_path /
-                  'SIGMA_Rat_Brain_Atlases' /
-                  'SIGMA_Anatomical_Atlas' /
-                  'InVivo_Atlas' /
-                  'SIGMA_InVivo_Anatomical_Brain_Atlas.nii')
+    sigma_atlas = atlas_dir / 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz'
 
     print(f"\nInputs:")
     print(f"  Cohort template: {template_path}")
@@ -174,9 +179,11 @@ def main():
     old_affine = output_dir / 'tpl-to-SIGMA_0GenericAffine.mat'
     if old_affine.exists():
         import shutil
-        backup_dir = output_dir / 'backup_coronal'
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_dir = output_dir / f'backup_old_sigma_{timestamp}'
         backup_dir.mkdir(exist_ok=True)
-        print(f"\n  Backing up old (coronal) transforms to {backup_dir.name}/")
+        print(f"\n  Backing up old transforms to {backup_dir.name}/")
         for f in output_dir.glob('tpl-to-SIGMA_*'):
             if f.is_file():
                 shutil.move(str(f), str(backup_dir / f.name))

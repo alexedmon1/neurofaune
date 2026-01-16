@@ -170,6 +170,188 @@ def reorient_sigma_to_study(
     return reoriented, affine
 
 
+def setup_study_atlas(
+    sigma_base_path: Union[str, Path],
+    study_atlas_dir: Union[str, Path],
+    config_path: Optional[Union[str, Path]] = None,
+) -> Dict[str, Path]:
+    """
+    Set up study-space SIGMA atlas by reorienting all files to match study orientation.
+
+    This function:
+    1. Reorients all SIGMA InVivo atlas files to match the study's native acquisition
+    2. Saves them to the study atlas directory
+    3. Optionally updates the config file with the new paths
+
+    Parameters
+    ----------
+    sigma_base_path : Path
+        Path to SIGMA_scaled directory (e.g., /mnt/arborea/atlases/SIGMA_scaled)
+    study_atlas_dir : Path
+        Output directory for study-space atlas (e.g., {study_root}/atlas/SIGMA_study_space)
+    config_path : Path, optional
+        Path to study config YAML file to update. If provided, adds study_space_atlas
+        section with file paths.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping file types to output paths
+
+    Example
+    -------
+    >>> paths = setup_study_atlas(
+    ...     sigma_base_path="/mnt/arborea/atlases/SIGMA_scaled",
+    ...     study_atlas_dir="/mnt/arborea/bpa-rat/atlas/SIGMA_study_space",
+    ...     config_path="/mnt/arborea/bpa-rat/config.yaml"
+    ... )
+    """
+    import json
+    import yaml
+
+    sigma_base_path = Path(sigma_base_path)
+    study_atlas_dir = Path(study_atlas_dir)
+    study_atlas_dir.mkdir(parents=True, exist_ok=True)
+
+    # Define files to reorient
+    # Format: (source_subpath, output_name, is_labels)
+    files_to_process = [
+        # Templates and masks
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_Brain_Template.nii",
+         "SIGMA_InVivo_Brain_Template.nii.gz", False),
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_Brain_Template_Masked.nii",
+         "SIGMA_InVivo_Brain_Template_Masked.nii.gz", False),
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_Brain_Mask.nii",
+         "SIGMA_InVivo_Brain_Mask.nii.gz", False),
+        # Tissue probability maps
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_GM.nii",
+         "SIGMA_InVivo_GM.nii.gz", False),
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_WM.nii",
+         "SIGMA_InVivo_WM.nii.gz", False),
+        ("SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_CSF.nii",
+         "SIGMA_InVivo_CSF.nii.gz", False),
+        # Anatomical atlas (label map)
+        ("SIGMA_Rat_Brain_Atlases/SIGMA_Anatomical_Atlas/InVivo_Atlas/SIGMA_InVivo_Anatomical_Brain_Atlas.nii",
+         "SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz", True),
+    ]
+
+    output_paths = {}
+    metadata = {
+        "description": "SIGMA atlas reoriented to study native space",
+        "transformation": {
+            "step1": "transpose(0, 2, 1) - swap Y and Z axes",
+            "step2": "flip(axis=0) - flip X axis",
+            "step3": "flip(axis=1) - flip Y axis"
+        },
+        "files": {}
+    }
+
+    print(f"Setting up study-space SIGMA atlas in: {study_atlas_dir}")
+
+    for source_subpath, output_name, is_labels in files_to_process:
+        source_path = sigma_base_path / source_subpath
+        output_path = study_atlas_dir / output_name
+
+        if not source_path.exists():
+            print(f"  Warning: Source file not found: {source_path}")
+            continue
+
+        print(f"  Reorienting: {output_name} (labels={is_labels})")
+
+        # Load source to get shape info
+        source_img = nib.load(source_path)
+        source_shape = source_img.shape
+
+        # Reorient and save
+        reoriented_data, affine = reorient_sigma_to_study(
+            source_path, output_path, is_labels=is_labels
+        )
+
+        # Track output
+        file_key = output_name.replace('.nii.gz', '').replace('.nii', '')
+        output_paths[file_key] = output_path
+
+        # Record metadata
+        metadata["files"][source_path.name] = {
+            "source": str(source_path),
+            "output": str(output_path),
+            "original_shape": list(source_shape),
+            "reoriented_shape": list(reoriented_data.shape),
+            "is_labels": is_labels
+        }
+
+        if is_labels:
+            n_labels = len(np.unique(reoriented_data.astype(int)))
+            metadata["files"][source_path.name]["unique_labels"] = n_labels
+
+    # Save metadata
+    metadata_path = study_atlas_dir / "atlas_metadata.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"  Saved metadata: {metadata_path}")
+
+    # Update config file if provided
+    if config_path is not None:
+        config_path = Path(config_path)
+        if config_path.exists():
+            _update_config_with_atlas(config_path, study_atlas_dir, output_paths)
+        else:
+            print(f"  Warning: Config file not found: {config_path}")
+            print(f"  Creating new config section to add manually...")
+            _print_config_section(study_atlas_dir, output_paths)
+
+    print(f"✓ Study-space SIGMA atlas setup complete")
+    return output_paths
+
+
+def _update_config_with_atlas(
+    config_path: Path,
+    study_atlas_dir: Path,
+    output_paths: Dict[str, Path]
+) -> None:
+    """Update the config YAML file with study-space atlas paths."""
+    import yaml
+
+    # Read existing config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f) or {}
+
+    # Add or update study_space_atlas section under atlas
+    if 'atlas' not in config:
+        config['atlas'] = {}
+
+    config['atlas']['study_space'] = {
+        'base_path': str(study_atlas_dir),
+        'template': str(output_paths.get('SIGMA_InVivo_Brain_Template', '')),
+        'template_masked': str(output_paths.get('SIGMA_InVivo_Brain_Template_Masked', '')),
+        'brain_mask': str(output_paths.get('SIGMA_InVivo_Brain_Mask', '')),
+        'gm_prob': str(output_paths.get('SIGMA_InVivo_GM', '')),
+        'wm_prob': str(output_paths.get('SIGMA_InVivo_WM', '')),
+        'csf_prob': str(output_paths.get('SIGMA_InVivo_CSF', '')),
+        'parcellation': str(output_paths.get('SIGMA_InVivo_Anatomical_Brain_Atlas', '')),
+    }
+
+    # Write updated config
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    print(f"  Updated config: {config_path}")
+
+
+def _print_config_section(study_atlas_dir: Path, output_paths: Dict[str, Path]) -> None:
+    """Print the config section to add manually."""
+    print("\n# Add this section to your config.yaml under 'atlas:'")
+    print("  study_space:")
+    print(f"    base_path: \"{study_atlas_dir}\"")
+    print(f"    template: \"{output_paths.get('SIGMA_InVivo_Brain_Template', '')}\"")
+    print(f"    template_masked: \"{output_paths.get('SIGMA_InVivo_Brain_Template_Masked', '')}\"")
+    print(f"    brain_mask: \"{output_paths.get('SIGMA_InVivo_Brain_Mask', '')}\"")
+    print(f"    gm_prob: \"{output_paths.get('SIGMA_InVivo_GM', '')}\"")
+    print(f"    wm_prob: \"{output_paths.get('SIGMA_InVivo_WM', '')}\"")
+    print(f"    csf_prob: \"{output_paths.get('SIGMA_InVivo_CSF', '')}\"")
+    print(f"    parcellation: \"{output_paths.get('SIGMA_InVivo_Anatomical_Brain_Atlas', '')}\"")
+
+
 def get_slice_geometry(img: nib.Nifti1Image) -> Dict:
     """
     Analyze image geometry to determine slice orientation and spacing.

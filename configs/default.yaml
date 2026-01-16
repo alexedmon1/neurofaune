@@ -25,6 +25,19 @@ atlas:
   name: "SIGMA"
   base_path: "/mnt/arborea/atlases/SIGMA_scaled"  # Scaled 10x for FSL/ANTs compatibility
 
+  # Study-space atlas (reoriented to match study acquisition orientation)
+  # Set up using: setup_study_atlas() from neurofaune.templates.slice_registration
+  # This is REQUIRED for registration - reorients SIGMA once rather than every image
+  study_space:
+    base_path: "${paths.study_root}/atlas/SIGMA_study_space"
+    template: "${atlas.study_space.base_path}/SIGMA_InVivo_Brain_Template.nii.gz"
+    template_masked: "${atlas.study_space.base_path}/SIGMA_InVivo_Brain_Template_Masked.nii.gz"
+    brain_mask: "${atlas.study_space.base_path}/SIGMA_InVivo_Brain_Mask.nii.gz"
+    gm_prob: "${atlas.study_space.base_path}/SIGMA_InVivo_GM.nii.gz"
+    wm_prob: "${atlas.study_space.base_path}/SIGMA_InVivo_WM.nii.gz"
+    csf_prob: "${atlas.study_space.base_path}/SIGMA_InVivo_CSF.nii.gz"
+    parcellation: "${atlas.study_space.base_path}/SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz"
+
   # Modality-specific slice extraction
   slice_definitions:
     # DTI: Hippocampal region only (11 slices)
