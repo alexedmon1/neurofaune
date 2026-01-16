@@ -105,6 +105,71 @@ def reorient_template_to_sigma(
     return template_resampled, affine
 
 
+def reorient_sigma_to_study(
+    sigma_path: Union[str, Path],
+    output_path: Optional[Union[str, Path]] = None,
+    is_labels: bool = False
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Reorient SIGMA atlas to match BPA-Rat study native orientation.
+
+    This is the inverse of reorient_template_to_sigma(). Instead of reorienting
+    each template/image, we reorient the atlas once to match the study's native
+    acquisition space.
+
+    SIGMA atlas orientation: X=L-R, Y=A-P, Z=I-S
+    Study native orientation: X=L-R, Y=I-S, Z=A-P
+
+    Transformation:
+    1. transpose(0, 2, 1) to swap Y and Z axes
+    2. flip(axis=0) to correct L-R direction
+    3. flip(axis=1) to correct the new Y (I-S) direction
+
+    Parameters
+    ----------
+    sigma_path : Path
+        Path to SIGMA atlas NIfTI file
+    output_path : Path, optional
+        Path to save reoriented atlas. If None, returns data without saving.
+    is_labels : bool
+        If True, treat as label image (use int16, nearest neighbor)
+
+    Returns
+    -------
+    tuple
+        (reoriented_data, affine) - the reoriented array and its affine matrix
+    """
+    sigma_path = Path(sigma_path)
+    sigma_img = nib.load(sigma_path)
+    sigma_data = sigma_img.get_fdata()
+    sigma_voxels = sigma_img.header.get_zooms()
+
+    # Step 1: Swap Y and Z axes
+    reoriented = np.transpose(sigma_data, (0, 2, 1))
+
+    # Step 2: Flip X axis
+    reoriented = np.flip(reoriented, axis=0)
+
+    # Step 3: Flip Y axis (the new Y, which was Z)
+    reoriented = np.flip(reoriented, axis=1)
+
+    # Voxel sizes after transpose: (X, Z_orig, Y_orig)
+    new_voxel_sizes = (sigma_voxels[0], sigma_voxels[2], sigma_voxels[1])
+    affine = np.diag([new_voxel_sizes[0], new_voxel_sizes[1], new_voxel_sizes[2], 1.0])
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if is_labels:
+            new_img = nib.Nifti1Image(reoriented.astype(np.int16), affine)
+        else:
+            new_img = nib.Nifti1Image(reoriented.astype(np.float32), affine)
+        nib.save(new_img, output_path)
+
+    return reoriented, affine
+
+
 def get_slice_geometry(img: nib.Nifti1Image) -> Dict:
     """
     Analyze image geometry to determine slice orientation and spacing.
