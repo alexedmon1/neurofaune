@@ -186,7 +186,8 @@ The BPA-Rat study folder serves as a test dataset for neurofaune development:
   - Modalities: `anat/`, `dwi/`, `func/`, `msme/`, `mtr/`, `flash/`, `fmap/`
 
 ### Atlas Location
-- **SIGMA rat brain atlas**: `/mnt/arborea/atlases/SIGMA/`
+- **SIGMA rat brain atlas (original)**: `/mnt/arborea/atlases/SIGMA_scaled/`
+- **Study-space SIGMA atlas**: `/mnt/arborea/bpa-rat/atlas/SIGMA_study_space/`
 
 **Note**: Bruker data in temporary Cohort folders has been deleted after successful conversion. The original data is preserved in `/mnt/arborea/bruker/`.
 
@@ -215,6 +216,82 @@ pip install -e .
 
 # Or install with optional dependencies
 pip install -e ".[all]"  # Includes FSL-MRS, Bruker conversion tools
+```
+
+---
+
+## Study Setup
+
+Before running any preprocessing, you must create a **study-space SIGMA atlas**. This reorients the SIGMA atlas to match your study's native acquisition orientation.
+
+### Why is this necessary?
+
+MRI data is acquired with scanner-specific orientations. The BPA-Rat study uses thick coronal slices (8mm) with axes:
+- X = Left-Right
+- Y = Inferior-Superior
+- Z = Anterior-Posterior (thick coronal direction)
+
+The SIGMA atlas uses standard neuroimaging orientation:
+- X = Left-Right
+- Y = Anterior-Posterior
+- Z = Inferior-Superior
+
+Instead of reorienting every image to match SIGMA (which causes interpolation artifacts in thick-slice data), we reorient SIGMA once to match the study's native space.
+
+### Create Study-Space SIGMA Atlas
+
+```python
+from neurofaune.templates.slice_registration import reorient_sigma_to_study
+from pathlib import Path
+
+# Source SIGMA files (10x scaled version)
+sigma_dir = Path('/mnt/arborea/atlases/SIGMA_scaled')
+output_dir = Path('/mnt/arborea/bpa-rat/atlas/SIGMA_study_space')
+output_dir.mkdir(parents=True, exist_ok=True)
+
+# Files to reorient
+files = [
+    'SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_Brain_Template_Masked.nii',
+    'SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_Brain_Mask.nii',
+    'SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_GM.nii',
+    'SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_WM.nii',
+    'SIGMA_Rat_Anatomical_Imaging/SIGMA_Rat_Anatomical_InVivo_Template/SIGMA_InVivo_CSF.nii',
+    'SIGMA_Rat_Brain_Atlases/SIGMA_Anatomical_Atlas/InVivo_Atlas/SIGMA_InVivo_Anatomical_Brain_Atlas.nii',
+]
+
+for f in files:
+    input_path = sigma_dir / f
+    output_name = Path(f).name.replace('.nii', '.nii.gz')
+    is_labels = 'Atlas' in f
+
+    reorient_sigma_to_study(
+        sigma_path=input_path,
+        output_path=output_dir / output_name,
+        is_labels=is_labels
+    )
+```
+
+### Transformation Details
+
+The transformation applied (SIGMA → study space):
+```python
+data = np.transpose(data, (0, 2, 1))  # Swap Y↔Z axes
+data = np.flip(data, axis=0)           # Flip X axis
+data = np.flip(data, axis=1)           # Flip Y axis
+```
+
+### Study-Space Atlas Files
+
+After running the setup, your atlas directory should contain:
+```
+{study_root}/atlas/SIGMA_study_space/
+├── SIGMA_InVivo_Brain_Template_Masked.nii.gz  # Brain template
+├── SIGMA_InVivo_Brain_Mask.nii.gz             # Brain mask
+├── SIGMA_InVivo_GM.nii.gz                     # Gray matter probability
+├── SIGMA_InVivo_WM.nii.gz                     # White matter probability
+├── SIGMA_InVivo_CSF.nii.gz                    # CSF probability
+├── SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz # Region labels
+└── atlas_metadata.json                         # Transformation documentation
 ```
 
 ---
@@ -316,6 +393,11 @@ study_root/
 │           ├── anat/
 │           ├── dwi/
 │           └── func/
+├── atlas/                   # Study-space atlas (REQUIRED - see Study Setup)
+│   └── SIGMA_study_space/
+│       ├── SIGMA_InVivo_Brain_Template_Masked.nii.gz
+│       ├── SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz
+│       └── ...
 ├── derivatives/             # Preprocessed outputs
 │   └── sub-001/
 │       ├── anat/
