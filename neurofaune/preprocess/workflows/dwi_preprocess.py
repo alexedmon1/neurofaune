@@ -20,10 +20,12 @@ from neurofaune.preprocess.utils.dwi_utils import (
     validate_gradient_table,
     extract_b0_volume,
     create_brain_mask_from_b0,
+    create_brain_mask_atropos,
     check_dwi_data_quality,
     pad_slices_for_eddy,
     pad_mask_for_eddy,
-    crop_slices_after_eddy
+    crop_slices_after_eddy,
+    normalize_dwi_intensity
 )
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.orientation import (
@@ -205,6 +207,39 @@ def run_dwi_preprocessing(
     np.savetxt(bvec_validated, bvecs, fmt='%.6f')
 
     # ==========================================================================
+    # Step 2.5: Intensity Normalization (for robust brain extraction)
+    # ==========================================================================
+    # Check if intensity normalization is enabled (default: True)
+    norm_config = config.get('diffusion', {}).get('intensity_normalization', {})
+    normalize_enabled = norm_config.get('enabled', True)
+
+    if normalize_enabled:
+        print("\n" + "="*80)
+        print("Step 2.5: Intensity Normalization")
+        print("="*80)
+        print("\nNormalizing DWI intensity for robust brain extraction...")
+        print("  (Different Bruker ParaVision settings can cause vastly different")
+        print("   intensity scales - normalization ensures consistent BET performance)")
+
+        target_max = norm_config.get('target_max', 10000.0)
+        dwi_normalized_file = work_dir / f'{subject}_{session}_dwi_4d_normalized.nii.gz'
+
+        normalized_file, norm_params = normalize_dwi_intensity(
+            dwi_input, dwi_normalized_file, target_max=target_max
+        )
+
+        print(f"\n  Original intensity range: [{norm_params['original_min']:.2f}, {norm_params['original_max']:.2f}]")
+        print(f"  Percentile range used: [{norm_params['original_p_min']:.2f}, {norm_params['original_p_max']:.2f}]")
+        print(f"  Scale factor applied: {norm_params['scale_factor']:.4f}")
+        print(f"  Target max intensity: {norm_params['target_max']:.0f}")
+        print(f"  Normalized DWI: {normalized_file}")
+
+        # Use normalized data for subsequent steps
+        dwi_input = normalized_file
+    else:
+        print("\n  [INFO] Intensity normalization disabled in config")
+
+    # ==========================================================================
     # Step 3: Extract b0 volume and create brain mask
     # ==========================================================================
     print("\n" + "="*80)
@@ -213,10 +248,19 @@ def run_dwi_preprocessing(
 
     extract_b0_volume(dwi_input, bval_validated, b0_file)
 
-    # Get BET parameters from config
-    bet_frac = config.get('diffusion', {}).get('bet', {}).get('frac', 0.3)
-    print(f"\nCreating brain mask with BET (frac={bet_frac})...")
-    create_brain_mask_from_b0(b0_file, brain_mask_file, frac=bet_frac)
+    # Get brain extraction method from config (default: atropos for robustness)
+    # Atropos is more robust for DWI data with unusual intensity ranges
+    # (e.g., from different Bruker ParaVision reconstruction settings)
+    brain_extract_method = config.get('diffusion', {}).get('brain_extraction', {}).get('method', 'atropos')
+
+    if brain_extract_method == 'atropos':
+        print(f"\nCreating brain mask with Atropos segmentation...")
+        create_brain_mask_atropos(b0_file, brain_mask_file, work_dir)
+    else:
+        # Fall back to BET
+        bet_frac = config.get('diffusion', {}).get('bet', {}).get('frac', 0.3)
+        print(f"\nCreating brain mask with BET (frac={bet_frac})...")
+        create_brain_mask_from_b0(b0_file, brain_mask_file, frac=bet_frac)
 
     # ==========================================================================
     # Step 4: GPU-accelerated eddy correction (with slice padding)

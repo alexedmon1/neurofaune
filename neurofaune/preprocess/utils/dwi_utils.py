@@ -165,6 +165,141 @@ def validate_gradient_table(
     return bvals, bvecs
 
 
+def normalize_dwi_intensity(
+    input_file: Path,
+    output_file: Path,
+    target_max: float = 10000.0,
+    percentile_max: float = 99.5,
+    percentile_min: float = 0.5
+) -> Tuple[Path, dict]:
+    """
+    Normalize DWI intensity to a consistent range for robust brain extraction.
+
+    Different Bruker ParaVision reconstruction settings can result in vastly
+    different intensity scales (e.g., 0-50 vs 0-300000) due to different
+    VisuCoreDataSlope values applied during reconstruction. This causes
+    BET and other tools to fail on low-intensity data.
+
+    This function normalizes all DWI data to a consistent intensity range,
+    enabling reliable brain extraction regardless of the original acquisition
+    or reconstruction settings.
+
+    Parameters
+    ----------
+    input_file : Path
+        Input DWI NIfTI file (3D or 4D)
+    output_file : Path
+        Output normalized DWI NIfTI file
+    target_max : float
+        Target maximum intensity after normalization (default: 10000)
+        This value is chosen to work well with FSL BET.
+    percentile_max : float
+        Upper percentile for robust scaling (default: 99.5)
+        Values above this percentile are clipped to avoid outlier influence.
+    percentile_min : float
+        Lower percentile for robust scaling (default: 0.5)
+        Values below this percentile are set to 0.
+
+    Returns
+    -------
+    Tuple[Path, dict]
+        Path to normalized file and dict with normalization parameters:
+        - original_min, original_max: Original intensity range
+        - original_p_min, original_p_max: Original percentile values
+        - scale_factor: Multiplicative scaling factor applied
+        - was_normalized: Whether normalization was needed
+
+    Notes
+    -----
+    The normalization applies the following transformation:
+    1. Compute percentile-based intensity range (robust to outliers)
+    2. Clip values to percentile range
+    3. Scale linearly to [0, target_max]
+
+    This is applied identically to all volumes in 4D data to preserve
+    relative signal differences between diffusion directions.
+
+    Examples
+    --------
+    >>> normalized, params = normalize_dwi_intensity(
+    ...     Path('dwi_raw.nii.gz'),
+    ...     Path('dwi_normalized.nii.gz')
+    ... )
+    >>> print(f"Scale factor: {params['scale_factor']:.2f}")
+    """
+    img = nib.load(input_file)
+    data = img.get_fdata()
+
+    # Compute statistics on non-zero values (exclude background)
+    nonzero_data = data[data > 0]
+
+    if len(nonzero_data) == 0:
+        print("WARNING: All voxels are zero, skipping normalization")
+        nib.save(img, output_file)
+        return output_file, {'was_normalized': False, 'reason': 'all_zeros'}
+
+    original_min = float(data.min())
+    original_max = float(data.max())
+    p_min = float(np.percentile(nonzero_data, percentile_min))
+    p_max = float(np.percentile(nonzero_data, percentile_max))
+
+    print(f"DWI intensity normalization:")
+    print(f"  Original range: {original_min:.2f} - {original_max:.2f}")
+    print(f"  Percentile range ({percentile_min}-{percentile_max}%): {p_min:.2f} - {p_max:.2f}")
+
+    # Check if normalization is needed
+    # If data is already in a reasonable range (e.g., max > 1000), may not need it
+    # But we normalize anyway for consistency
+    if p_max < 1.0:
+        print(f"  WARNING: Very low intensity data (p{percentile_max}={p_max:.4f})")
+        print(f"  This likely indicates normalized/scaled Bruker data")
+
+    # Apply normalization
+    # Clip to percentile range, then scale to [0, target_max]
+    normalized_data = data.copy()
+
+    # Set values below p_min to 0 (background)
+    normalized_data[normalized_data < p_min] = 0
+
+    # Clip values above p_max
+    normalized_data = np.clip(normalized_data, 0, p_max)
+
+    # Scale to target range
+    if p_max > p_min:
+        scale_factor = target_max / (p_max - p_min)
+        normalized_data = (normalized_data - p_min) * scale_factor
+        normalized_data[data < p_min] = 0  # Ensure background stays at 0
+    else:
+        scale_factor = 1.0
+        print("  WARNING: Cannot normalize - min equals max")
+
+    print(f"  Normalized range: {normalized_data.min():.2f} - {normalized_data.max():.2f}")
+    print(f"  Scale factor: {scale_factor:.4f}")
+
+    # Save normalized image
+    normalized_img = nib.Nifti1Image(
+        normalized_data.astype(np.float32),
+        img.affine,
+        img.header
+    )
+    nib.save(normalized_img, output_file)
+    print(f"  Saved normalized DWI to: {output_file}")
+
+    params = {
+        'was_normalized': True,
+        'original_min': original_min,
+        'original_max': original_max,
+        'original_p_min': p_min,
+        'original_p_max': p_max,
+        'target_max': target_max,
+        'scale_factor': scale_factor,
+        'percentile_min': percentile_min,
+        'percentile_max': percentile_max
+    }
+
+    return output_file, params
+
+
 def extract_b0_volume(
     dwi_file: Path,
     bval_file: Path,
@@ -283,6 +418,170 @@ def create_brain_mask_from_b0(
         shutil.move(mask_file, output_mask)
 
     print(f"  Created brain mask: {output_mask}")
+
+    return output_mask
+
+
+def create_brain_mask_atropos(
+    b0_file: Path,
+    output_mask: Path,
+    work_dir: Path,
+    n_classes: int = 3,
+    bet_frac: float = 0.3
+) -> Path:
+    """
+    Create brain mask from b0 volume using Atropos + BET two-pass approach.
+
+    This method is more robust than BET alone for DWI data with unusual intensity
+    ranges (e.g., from different Bruker ParaVision reconstruction settings).
+
+    Parameters
+    ----------
+    b0_file : Path
+        b0 volume (should be intensity-normalized for best results)
+    output_mask : Path
+        Output mask file
+    work_dir : Path
+        Working directory for intermediate files
+    n_classes : int
+        Number of classes for Atropos segmentation (default: 3)
+        Classes typically represent: background/noise, intermediate tissue, brain
+    bet_frac : float
+        BET fractional intensity threshold for refinement (default: 0.3)
+
+    Returns
+    -------
+    Path
+        Path to brain mask
+
+    Notes
+    -----
+    The method works as follows:
+    1. Create initial mask using intensity thresholding
+    2. Run Atropos K-means segmentation with n_classes
+    3. Use the brightest class as initial brain estimate
+    4. Calculate center of gravity from Atropos brain mask
+    5. Run BET on Atropos-masked image with COG to refine edges
+
+    This two-pass approach (Atropos + BET) is particularly useful for
+    partial-brain DWI acquisitions (e.g., hippocampal slices) where
+    BET alone often fails.
+    """
+    import subprocess
+    from nipype.interfaces import fsl
+
+    print(f"Creating brain mask using Atropos + BET two-pass approach")
+    print(f"  Step 1: Atropos {n_classes}-class segmentation")
+
+    # Load b0 to create initial mask
+    img = nib.load(b0_file)
+    data = img.get_fdata()
+
+    # Create initial mask using threshold (exclude obvious background)
+    nonzero = data[data > 0]
+    if len(nonzero) == 0:
+        raise ValueError("b0 image has no non-zero voxels")
+
+    threshold = np.percentile(nonzero, 5)  # 5th percentile of non-zero
+    initial_mask = (data > threshold).astype(np.uint8)
+
+    # Save initial mask
+    initial_mask_file = work_dir / 'atropos_initial_mask.nii.gz'
+    nib.save(nib.Nifti1Image(initial_mask, img.affine, img.header), initial_mask_file)
+    print(f"    Initial mask (threshold): {int(np.sum(initial_mask)):,} voxels")
+
+    # Run Atropos segmentation
+    output_prefix = work_dir / 'atropos_dwi_'
+    seg_file = work_dir / 'atropos_dwi_seg.nii.gz'
+
+    cmd = [
+        'Atropos',
+        '-d', '3',
+        '-a', str(b0_file),
+        '-x', str(initial_mask_file),
+        '-i', f'KMeans[{n_classes}]',
+        '-o', f'[{seg_file},{output_prefix}prob%02d.nii.gz]',
+        '-v', '0'
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Atropos segmentation failed: {result.stderr}")
+
+    # Load segmentation and identify brain class (brightest)
+    seg_img = nib.load(seg_file)
+    seg_data = seg_img.get_fdata()
+
+    # Find mean intensity for each class to identify brain (brightest)
+    class_means = {}
+    for label in range(1, n_classes + 1):
+        mask = seg_data == label
+        if np.sum(mask) > 0:
+            class_means[label] = data[mask].mean()
+            n_vox = int(np.sum(mask))
+            print(f"    Class {label}: {n_vox:,} voxels, mean intensity = {class_means[label]:.1f}")
+
+    # Brain is the brightest class
+    brain_class = max(class_means, key=class_means.get)
+    print(f"    Using class {brain_class} as brain (brightest)")
+
+    # Create Atropos brain mask
+    atropos_mask = (seg_data == brain_class).astype(np.uint8)
+    n_atropos_voxels = int(np.sum(atropos_mask))
+    print(f"    Atropos brain mask: {n_atropos_voxels:,} voxels")
+
+    # Save Atropos mask for reference
+    atropos_mask_file = work_dir / 'atropos_brain_mask.nii.gz'
+    nib.save(nib.Nifti1Image(atropos_mask, seg_img.affine, seg_img.header), atropos_mask_file)
+
+    # Step 2: Calculate center of gravity from Atropos mask
+    print(f"  Step 2: Calculate center of gravity from Atropos mask")
+    brain_coords = np.argwhere(atropos_mask > 0)
+    center_of_gravity = brain_coords.mean(axis=0)
+    print(f"    COG (voxels): [{center_of_gravity[0]:.1f}, {center_of_gravity[1]:.1f}, {center_of_gravity[2]:.1f}]")
+
+    # Step 3: Create Atropos-masked b0 for BET
+    print(f"  Step 3: BET refinement (frac={bet_frac})")
+    masked_b0_data = data * atropos_mask
+    masked_b0_file = work_dir / 'b0_atropos_masked.nii.gz'
+    nib.save(nib.Nifti1Image(masked_b0_data, img.affine, img.header), masked_b0_file)
+
+    # Step 4: Run BET with COG from Atropos mask
+    bet_output = work_dir / 'bet_refined'
+
+    bet = fsl.BET()
+    bet.inputs.in_file = str(masked_b0_file)
+    bet.inputs.out_file = str(bet_output)
+    bet.inputs.mask = True
+    bet.inputs.frac = bet_frac
+    bet.inputs.center = [int(center_of_gravity[0]), int(center_of_gravity[1]), int(center_of_gravity[2])]
+    bet.inputs.robust = True
+
+    bet_result = bet.run()
+
+    # Get the mask file
+    bet_mask_file = work_dir / 'bet_refined_mask.nii.gz'
+
+    if bet_mask_file.exists():
+        # Load and count voxels
+        final_mask = nib.load(bet_mask_file)
+        final_mask_data = final_mask.get_fdata()
+        n_final_voxels = int(np.sum(final_mask_data > 0))
+        print(f"    BET refined mask: {n_final_voxels:,} voxels")
+
+        # Copy to output location
+        import shutil
+        shutil.copy(bet_mask_file, output_mask)
+    else:
+        # Fall back to Atropos mask if BET fails
+        print(f"    WARNING: BET refinement failed, using Atropos mask")
+        import shutil
+        shutil.copy(atropos_mask_file, output_mask)
+        n_final_voxels = n_atropos_voxels
+
+    print(f"  Final brain mask: {output_mask}")
+    print(f"  Voxel reduction: {n_atropos_voxels:,} -> {n_final_voxels:,} ({100*(n_atropos_voxels-n_final_voxels)/n_atropos_voxels:.1f}% removed)")
 
     return output_mask
 

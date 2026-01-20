@@ -1,12 +1,12 @@
 # Project Status
 
-**Last Updated:** 2026-01-16 (Session 2)
+**Last Updated:** 2026-01-20 (Session 2)
 
 This file tracks the current state of the neurofaune project. Update this file after important milestones or before ending a session.
 
 ---
 
-## Current Phase: 8 - Template-Based Registration
+## Current Phase: 8 - Template-Based Registration + DTI Batch Processing
 
 ### Template Building Status
 
@@ -38,7 +38,7 @@ This file tracks the current state of the neurofaune project. Update this file a
 
 ### DTI Registration Pipeline Status
 
-**Status:** ✅ Pipeline validated and integrated
+**Status:** ✅ Pipeline validated and integrated; 🔄 Batch processing in progress
 
 The DTI-to-atlas registration chain is now working:
 ```
@@ -47,16 +47,25 @@ Subject FA (128×128×11) → Subject T2w → Cohort Template → SIGMA Atlas
 
 | Component | Status | Script |
 |-----------|--------|--------|
-| DTI preprocessing | ✅ Working | `dwi_preprocess.py` (bvec NaN fix applied) |
+| DTI preprocessing | ✅ Working | `dwi_preprocess.py` |
+| Intensity normalization | ✅ NEW | Handles Bruker ParaVision intensity differences |
+| Brain extraction (Atropos+BET) | ✅ NEW | Two-pass: Atropos segmentation → BET refinement |
+| Eddy slice padding | ✅ Working | Prevents edge slice loss during motion correction |
 | FA → T2w registration | ✅ Working | `003_register_dwi_to_t2w.py` |
 | T2w → Template registration | ✅ Working | `007_register_subject_to_template.py` |
 | Template → SIGMA registration | ✅ Fixed | `008_register_template_to_sigma.py` |
 | Atlas propagation to FA | ✅ Working | `006_propagate_atlas_to_dwi.py` |
 
+**Batch Processing Status (2026-01-20):**
+- **Total subjects:** 187 DWI sessions
+- **Status:** Restarting with improved brain extraction
+- **Script:** `scripts/batch_preprocess_dwi.py`
+
 **Test result (sub-Rat1/ses-p60):**
 - 96 unique atlas labels in FA space
 - 65% coverage of FA brain voxels
 - Per-slice coverage: 35-110%
+- Edge slices preserved after slice padding fix (previously 0%)
 
 **Development scripts:** `scripts/dev_registration/`
 
@@ -118,8 +127,10 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 |----------|-----|-----|-----|-------|
 | Anatomical T2w | 38 | 34 | 47 | 119 |
 | Functional BOLD | ~98 | ~98 | ~98 | 294 |
-| DTI | TBD | TBD | TBD | TBD |
+| DTI | ~7 | ~8 | ~7 | 22 (in progress) |
 | MSME | TBD | TBD | TBD | TBD |
+
+*DTI counts are approximate; batch processing is ongoing.*
 
 ---
 
@@ -128,9 +139,10 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 1. ~~**Implement 2D slice-wise template-to-SIGMA registration**~~ ✅ RESOLVED via study-space atlas
 2. ~~**Generate tissue probability templates**~~ ✅ Complete (GM/WM/CSF for all cohorts)
 3. ~~**Slice correspondence for partial-coverage modalities**~~ ✅ Complete (intensity + landmark detection)
-4. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
-5. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
-6. **Batch process DTI data** - Run full pipeline on all subjects
+4. ~~**Batch process DTI data**~~ 🔄 IN PROGRESS (22/187 complete with slice padding fix)
+5. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
+6. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
+7. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
 
 ---
 
@@ -166,6 +178,74 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-20 (Session 2) - DWI Intensity Normalization & Atropos Brain Extraction
+
+**Problem Identified:** BET brain extraction failing on ~76% of DWI data due to vastly different
+intensity ranges from different Bruker ParaVision reconstruction settings.
+
+**Root Cause:** Different `VisuCoreDataSlope` values in Bruker reconstruction:
+- HIGH range subjects: max intensity ~300,000 (e.g., Rat1, Rat102)
+- LOW range subjects: max intensity ~50-100 (e.g., Rat110, Rat115)
+
+BET is calibrated for higher intensity ranges and fails on low-intensity data, producing
+masks that are 5-7x too large (182K voxels vs expected 25-35K).
+
+**Solution Implemented:**
+
+1. **Intensity Normalization** (before brain extraction):
+   - Normalizes all DWI to consistent range (0-10000) using percentile-based scaling
+   - Config: `diffusion.intensity_normalization.enabled` (default: true)
+   - Config: `diffusion.intensity_normalization.target_max` (default: 10000)
+
+2. **Atropos + BET Two-Pass Brain Extraction**:
+   - Step 1: Atropos 3-class K-means segmentation on normalized b0
+   - Step 2: Calculate center-of-gravity from brightest class (brain)
+   - Step 3: BET refinement on Atropos-masked image with correct COG
+   - Config: `diffusion.brain_extraction.method` (default: 'atropos')
+
+**Results (sub-Rat110 test):**
+- BET alone: 182,246 voxels (7x too large)
+- Atropos only: 37,036 voxels
+- Atropos + BET: 34,201 voxels (matches target ~25-35K)
+
+**Files modified:**
+- `neurofaune/preprocess/utils/dwi_utils.py` - Added `normalize_dwi_intensity()`, `create_brain_mask_atropos()`
+- `neurofaune/preprocess/workflows/dwi_preprocess.py` - Integrated normalization and Atropos+BET
+- `configs/default.yaml` - Added intensity_normalization and brain_extraction config sections
+
+### 2026-01-20 (Session 1) - Study Initialization Module & DTI Batch Processing
+
+**Study Initialization Module Created:**
+- New module `neurofaune/study_initialization.py` for setting up new studies
+- Discovers both Bruker raw data and BIDS-formatted data
+- Creates directory structure, generates config files, sets up atlas
+- CLI script: `scripts/init_study.py`
+
+**Key functions:**
+- `discover_bids_data()` - Scans BIDS directory for subjects/sessions/modalities
+- `discover_bruker_data()` - Scans Bruker raw data directories
+- `setup_study()` - Full study initialization with config generation
+- `get_study_subjects()` - Query subjects available for processing
+
+**Eddy Slice Padding Fix Implemented:**
+- Fixed edge slice loss during FSL eddy motion correction
+- Root cause: Eddy's interpolation zeros out edge slices during motion correction
+- Solution: Mirror-pad DWI with 2 extra slices on each side before eddy, crop after
+- Edge slices now preserved: went from 0% non-zero to ~14% non-zero
+
+**Files created/modified:**
+- `neurofaune/preprocess/utils/dwi_utils.py` - Added `pad_slices_for_eddy()`, `crop_slices_after_eddy()`
+- `neurofaune/preprocess/workflows/dwi_preprocess.py` - Integrated padding into pipeline
+
+**DTI Batch Processing Started:**
+- Script: `scripts/batch_preprocess_dwi.py`
+- Total: 187 DWI sessions identified
+- Currently processing with `--force` flag to apply slice padding fix
+
+**TBSS Implementation Plan:**
+- 6-phase plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
+- Addresses unique challenges: partial brain coverage, bad slice handling, slice QC
 
 ### 2026-01-16 - Slice Correspondence System for Partial-Coverage Modalities
 
@@ -290,7 +370,9 @@ anatomical correspondence due to the extreme anisotropy mismatch.
 1. ~~**Template-to-SIGMA registration broken**~~ ✅ RESOLVED (2026-01-16) - Fixed via study-space atlas
 2. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
 3. ~~**Tissue probability templates**~~ ✅ COMPLETE (2026-01-16) - GM/WM/CSF for all cohorts
-4. **Registration not integrated** into preprocessing workflows (anat, func)
+4. ~~**Eddy edge slice loss**~~ ✅ FIXED (2026-01-20) - Slice padding implemented
+5. ~~**DWI brain extraction failing on low-intensity data**~~ ✅ FIXED (2026-01-20) - Atropos+BET two-pass
+6. **Registration not integrated** into preprocessing workflows (anat, func)
 
 ---
 

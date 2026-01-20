@@ -155,7 +155,24 @@ diffusion:
   # Denoising
   denoise_method: "dwidenoise"  # MP-PCA denoising
 
-  # BET for DWI
+  # Intensity normalization (RECOMMENDED - enabled by default)
+  # Different Bruker ParaVision reconstruction settings can result in vastly
+  # different intensity scales (e.g., 0-50 vs 0-300000) due to different
+  # VisuCoreDataSlope values. This causes BET to fail on low-intensity data.
+  # Normalization ensures consistent intensity ranges for reliable brain extraction.
+  intensity_normalization:
+    enabled: true  # Set to false to disable (not recommended)
+    target_max: 10000.0  # Target maximum intensity after normalization
+
+  # Brain extraction method for DWI
+  # Options: 'atropos' (recommended) or 'bet'
+  # Atropos uses intensity-based segmentation which is more robust for:
+  # - Partial brain acquisitions (e.g., hippocampal DTI)
+  # - Data with unusual intensity ranges from different Bruker settings
+  brain_extraction:
+    method: atropos  # 'atropos' or 'bet'
+
+  # BET parameters (used when brain_extraction.method = 'bet')
   bet:
     frac: 0.25  # More conservative for DWI
     robust: true
