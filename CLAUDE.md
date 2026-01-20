@@ -62,14 +62,23 @@ neurofaune/
 │   │   ├── func_preprocess.py   # fMRI functional
 │   │   └── msme_preprocess.py   # Multi-echo T2 mapping
 │   ├── qc/                   # Quality control per modality
+│   │   ├── anat/             # Anatomical QC
+│   │   ├── dwi/              # DTI QC (eddy, tensor metrics)
+│   │   ├── func/             # Functional QC (motion, confounds)
+│   │   └── msme/             # MSME T2 mapping QC
 │   └── utils/                # Preprocessing utilities
 │       └── func/             # Functional-specific utils (ICA, aCompCor, skull stripping)
+├── registration/             # Cross-modal registration utilities
+│   ├── slice_correspondence.py  # Partial-to-full volume slice matching
+│   └── qc_visualization.py      # Registration QC figures (checkerboard, edge overlay)
 ├── templates/                # Template building and registration
 │   ├── builder.py            # ANTs template construction
-│   └── registration.py       # Subject-to-template registration
+│   ├── registration.py       # Subject-to-template, atlas propagation
+│   └── slice_registration.py # Study-space atlas setup
 └── utils/
     ├── transforms.py         # Transform registry system
     ├── exclusion.py          # Subject exclusion tracking
+    ├── orientation.py        # Image orientation utilities
     └── select_anatomical.py  # Automatic T2w scan selection
 ```
 
@@ -119,14 +128,38 @@ results = run_anatomical_preprocessing(
 └── work/                            # Temporary Nipype files (deletable)
 ```
 
-### Slice-Specific Atlas Registration
-For modalities that don't cover the full brain, extract relevant atlas slices before registration:
+### Slice Correspondence for Partial-Coverage Modalities
+DWI (11 slices) and fMRI (9 slices) don't cover the full brain (41 T2w slices). The slice correspondence system determines which T2w slices correspond to partial volumes:
 
 ```python
-from neurofaune.atlas import AtlasManager
-atlas = AtlasManager(config)
-dwi_template = atlas.get_template(modality='dwi')  # Uses config slice_definitions
+from neurofaune.registration import find_slice_correspondence
+
+result = find_slice_correspondence(
+    partial_image='sub-001_dwi_b0.nii.gz',
+    full_image='sub-001_T2w.nii.gz',
+    modality='dwi'
+)
+# result.start_slice, result.end_slice - T2w slice indices
+# result.combined_confidence - matching confidence score
+# result.physical_offset - offset in mm from T2w start
 ```
+
+Uses dual-approach matching: intensity correlation + ventricle landmark detection.
+
+### Study-Space Atlas Pattern
+SIGMA atlas must be reoriented to match study acquisition orientation before registration:
+
+```python
+from neurofaune.templates.slice_registration import setup_study_atlas
+
+# Run once per study - creates atlas/SIGMA_study_space/
+setup_study_atlas(
+    config_path=Path('config.yaml'),
+    sigma_base_path=Path('/path/to/SIGMA_scaled')
+)
+```
+
+This avoids resampling every image to atlas orientation.
 
 ## Key Design Constraints
 
@@ -155,22 +188,41 @@ config = load_config(Path('config.yaml'))
 bet_frac = get_config_value(config, 'anatomical.bet.frac', default=0.3)
 ```
 
-## Project Status Tracking
+## Testing Patterns
 
-**STATUS.md** contains the current project state. **Update it:**
-- After completing significant milestones (template builds, workflow changes, etc.)
-- Before ending a session
-- When discovering issues or blockers
+```bash
+# Run all unit tests
+uv run pytest tests/unit/ -v
 
-Key sections to update:
-- Template/registration status tables
-- Workflow integration status
-- Recent changes log
-- Known issues
+# Run with coverage
+uv run pytest --cov=neurofaune --cov-report=term-missing
+
+# Test specific module
+uv run pytest tests/unit/test_slice_correspondence.py -v
+```
+
+Tests use synthetic data generation - no external data files required. Integration tests marked with `@pytest.mark.integration` require FSL/ANTs installed.
+
+## Development Scripts
+
+Development scripts in `scripts/dev_registration/` follow numbered naming for workflow order:
+- `001_explore_geometry.py` - Investigate image geometries
+- `003_register_dwi_to_t2w.py` - FA→T2w registration
+- `007_register_subject_to_template.py` - Subject→template registration
+- `008_register_template_to_sigma.py` - Template→SIGMA registration
+
+Run with: `uv run python scripts/dev_registration/003_register_dwi_to_t2w.py`
 
 ## Current Status
 
 **Completed**: Phases 1-7 (Foundation, Atlas, Anatomical, DTI, Templates, MSME, fMRI)
-**In Progress**: Phase 8 (Template-Based Registration) - all templates built, integration pending
+**In Progress**: Phase 8 (Template-Based Registration)
+- All T2w templates built (p30, p60, p90) with SIGMA registration
+- Tissue probability templates complete (GM, WM, CSF)
+- Slice correspondence system complete
+- DTI atlas propagation validated
+- Workflow integration pending (anat, func)
 
-See STATUS.md for detailed current state and ROADMAP.md for full project plan.
+See **STATUS.md** for detailed current state and **ROADMAP.md** for full project plan.
+
+**Important**: Update STATUS.md after completing significant milestones or before ending a session.

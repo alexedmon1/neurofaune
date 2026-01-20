@@ -310,9 +310,9 @@ def check_dwi_data_quality(
     data = img.get_fdata()
 
     qc = {
-        'shape': data.shape,
-        'voxel_size': img.header.get_zooms()[:3],
-        'n_volumes': data.shape[3] if len(data.shape) == 4 else 1
+        'shape': list(data.shape),
+        'voxel_size': [float(v) for v in img.header.get_zooms()[:3]],
+        'n_volumes': int(data.shape[3]) if len(data.shape) == 4 else 1
     }
 
     if mask_file and mask_file.exists():
@@ -329,3 +329,168 @@ def check_dwi_data_quality(
     qc['has_negative'] = bool(np.any(data < 0))
 
     return qc
+
+
+def pad_slices_for_eddy(
+    input_file: Path,
+    output_file: Path,
+    n_pad: int = 2,
+    method: str = 'reflect'
+) -> Tuple[Path, int]:
+    """
+    Pad DWI volume with extra slices to prevent edge slice loss during eddy.
+
+    Eddy's motion correction can cause edge slices to be interpolated from
+    outside the volume, resulting in zeros. This function adds buffer slices
+    using mirrored padding so eddy has valid data to interpolate from.
+
+    Parameters
+    ----------
+    input_file : Path
+        Input 4D DWI NIfTI file
+    output_file : Path
+        Output padded DWI NIfTI file
+    n_pad : int
+        Number of slices to pad on each side (default: 2)
+    method : str
+        Padding method: 'reflect' (mirror), 'edge' (replicate), or 'wrap'
+
+    Returns
+    -------
+    Tuple[Path, int]
+        Path to padded file and original number of slices (for later cropping)
+    """
+    img = nib.load(input_file)
+    data = img.get_fdata()
+
+    original_n_slices = data.shape[2]
+
+    print(f"Padding DWI slices for eddy protection:")
+    print(f"  Original slices: {original_n_slices}")
+    print(f"  Padding: {n_pad} slices on each side")
+    print(f"  Method: {method}")
+
+    # Pad along the slice (Z) axis
+    # For 4D data, pad only axis 2
+    if method == 'reflect':
+        pad_mode = 'reflect'
+    elif method == 'edge':
+        pad_mode = 'edge'
+    elif method == 'wrap':
+        pad_mode = 'wrap'
+    else:
+        raise ValueError(f"Unknown padding method: {method}")
+
+    # np.pad with 4D: ((before_x, after_x), (before_y, after_y), (before_z, after_z), (before_t, after_t))
+    padded_data = np.pad(data, ((0, 0), (0, 0), (n_pad, n_pad), (0, 0)), mode=pad_mode)
+
+    print(f"  New shape: {padded_data.shape}")
+
+    # Create new image with padded data
+    # Need to adjust the affine for the new origin
+    new_affine = img.affine.copy()
+    # Shift origin by -n_pad slices in the Z direction
+    # The Z shift is: affine[:3, 2] * (-n_pad)
+    z_shift = new_affine[:3, 2] * (-n_pad)
+    new_affine[:3, 3] = new_affine[:3, 3] + z_shift
+
+    padded_img = nib.Nifti1Image(padded_data, new_affine, img.header)
+    padded_img.header.set_data_shape(padded_data.shape)
+
+    nib.save(padded_img, output_file)
+    print(f"  Saved padded DWI to: {output_file}")
+
+    return output_file, original_n_slices
+
+
+def pad_mask_for_eddy(
+    input_mask: Path,
+    output_mask: Path,
+    n_pad: int = 2
+) -> Path:
+    """
+    Pad brain mask to match padded DWI for eddy.
+
+    Parameters
+    ----------
+    input_mask : Path
+        Input 3D brain mask
+    output_mask : Path
+        Output padded brain mask
+    n_pad : int
+        Number of slices to pad on each side
+
+    Returns
+    -------
+    Path
+        Path to padded mask file
+    """
+    img = nib.load(input_mask)
+    data = img.get_fdata()
+
+    # Pad with zeros (conservative - don't extend mask beyond original brain)
+    # Or use 'edge' to extend the mask
+    padded_data = np.pad(data, ((0, 0), (0, 0), (n_pad, n_pad)), mode='edge')
+
+    # Adjust affine
+    new_affine = img.affine.copy()
+    z_shift = new_affine[:3, 2] * (-n_pad)
+    new_affine[:3, 3] = new_affine[:3, 3] + z_shift
+
+    padded_img = nib.Nifti1Image(padded_data, new_affine, img.header)
+    padded_img.header.set_data_shape(padded_data.shape)
+
+    nib.save(padded_img, output_mask)
+    print(f"  Saved padded mask to: {output_mask}")
+
+    return output_mask
+
+
+def crop_slices_after_eddy(
+    input_file: Path,
+    output_file: Path,
+    original_n_slices: int,
+    n_pad: int = 2
+) -> Path:
+    """
+    Crop padded DWI back to original slice count after eddy correction.
+
+    Parameters
+    ----------
+    input_file : Path
+        Input padded DWI (eddy output)
+    output_file : Path
+        Output cropped DWI
+    original_n_slices : int
+        Original number of slices before padding
+    n_pad : int
+        Number of slices that were padded on each side
+
+    Returns
+    -------
+    Path
+        Path to cropped file
+    """
+    img = nib.load(input_file)
+    data = img.get_fdata()
+
+    print(f"Cropping eddy output back to original slices:")
+    print(f"  Padded shape: {data.shape}")
+
+    # Crop along Z axis
+    cropped_data = data[:, :, n_pad:n_pad + original_n_slices, :]
+
+    print(f"  Cropped shape: {cropped_data.shape}")
+
+    # Adjust affine back
+    new_affine = img.affine.copy()
+    z_shift = new_affine[:3, 2] * n_pad
+    new_affine[:3, 3] = new_affine[:3, 3] + z_shift
+
+    cropped_img = nib.Nifti1Image(cropped_data, new_affine, img.header)
+    cropped_img.header.set_data_shape(cropped_data.shape)
+
+    nib.save(cropped_img, output_file)
+    print(f"  Saved cropped DWI to: {output_file}")
+
+    return output_file

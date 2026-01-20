@@ -20,7 +20,10 @@ from neurofaune.preprocess.utils.dwi_utils import (
     validate_gradient_table,
     extract_b0_volume,
     create_brain_mask_from_b0,
-    check_dwi_data_quality
+    check_dwi_data_quality,
+    pad_slices_for_eddy,
+    pad_mask_for_eddy,
+    crop_slices_after_eddy
 )
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.orientation import (
@@ -216,11 +219,27 @@ def run_dwi_preprocessing(
     create_brain_mask_from_b0(b0_file, brain_mask_file, frac=bet_frac)
 
     # ==========================================================================
-    # Step 4: GPU-accelerated eddy correction
+    # Step 4: GPU-accelerated eddy correction (with slice padding)
     # ==========================================================================
     print("\n" + "="*80)
     print("Step 4: Eddy Correction (Motion + Distortion)")
     print("="*80)
+
+    # Get slice padding config (default: 2 slices on each side)
+    n_pad_slices = config.get('diffusion', {}).get('eddy', {}).get('slice_padding', 2)
+
+    # Pad DWI and mask to prevent edge slice loss during eddy
+    # This is critical for thin-slice acquisitions where motion correction
+    # can cause edge slices to be interpolated from outside the volume
+    print(f"\nPadding slices for eddy protection (n_pad={n_pad_slices})...")
+
+    dwi_padded_file = work_dir / f'{subject}_{session}_dwi_4d_padded.nii.gz'
+    mask_padded_file = work_dir / f'{subject}_{session}_mask_padded.nii.gz'
+
+    dwi_padded_file, original_n_slices = pad_slices_for_eddy(
+        dwi_input, dwi_padded_file, n_pad=n_pad_slices, method='reflect'
+    )
+    pad_mask_for_eddy(brain_mask_file, mask_padded_file, n_pad=n_pad_slices)
 
     # Check for eddy_cuda availability
     eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy'
@@ -246,12 +265,12 @@ def run_dwi_preprocessing(
         # PA direction, 0.05s total readout time (adjust based on actual data)
         f.write('0 -1 0 0.05\n')
 
-    # Run eddy
+    # Run eddy on PADDED data
     eddy_basename = work_dir / 'eddy_corrected'
     eddy_cmd_full = [
         eddy_cmd,
-        f'--imain={dwi_input}',
-        f'--mask={brain_mask_file}',
+        f'--imain={dwi_padded_file}',
+        f'--mask={mask_padded_file}',
         f'--acqp={acqparams_file}',
         f'--index={index_file}',
         f'--bvecs={bvec_validated}',
@@ -264,7 +283,7 @@ def run_dwi_preprocessing(
     if use_gpu and eddy_cmd == 'eddy_cuda':
         eddy_cmd_full.append('--very_verbose')
 
-    print(f"\nRunning eddy correction...")
+    print(f"\nRunning eddy correction on padded data...")
     print(f"Command: {' '.join(eddy_cmd_full)}")
 
     result = subprocess.run(eddy_cmd_full,
@@ -280,12 +299,20 @@ def run_dwi_preprocessing(
 
     print("Eddy correction completed successfully")
 
-    # Copy eddy outputs to derivatives
-    eddy_output = work_dir / 'eddy_corrected.nii.gz'
+    # Crop eddy output back to original slice count
+    eddy_output_padded = work_dir / 'eddy_corrected.nii.gz'
+    eddy_output_cropped = work_dir / 'eddy_corrected_cropped.nii.gz'
+
+    crop_slices_after_eddy(
+        eddy_output_padded, eddy_output_cropped,
+        original_n_slices=original_n_slices, n_pad=n_pad_slices
+    )
+
+    # Copy cropped eddy output to derivatives
     eddy_bvecs_rotated = work_dir / 'eddy_corrected.eddy_rotated_bvecs'
 
     import shutil
-    shutil.copy(eddy_output, dwi_eddy_file)
+    shutil.copy(eddy_output_cropped, dwi_eddy_file)
 
     # Fix eddy rotated bvecs - replace NaN with 0 (occurs for b0 volumes)
     bvecs_rotated = np.loadtxt(eddy_bvecs_rotated)

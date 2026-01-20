@@ -212,25 +212,52 @@ def find_bruker_scan_dir(
     Path or None
         Path to Bruker scan directory containing method file
     """
-    # Try to find the subject's scan directory
-    # Pattern: bruker_root/Cohort*/session*/timestamp*subject*/scan_number/
-
-    # Extract cohort and session info
     cohort_dirs = list(bruker_root.glob('Cohort*'))
 
     for cohort_dir in cohort_dirs:
-        # Look for session directories
+        # Pattern 1: Cohorts 1-5 structure
+        # bruker_root/Cohort*/session*/timestamp*subject*/scan_number/
+        # Folder names like: 20221005_091305_IRC938_Rat150_1_1 or 20230413_..._Cohort2_Rat8_1_3
         session_dirs = list(cohort_dir.glob(f'{session}*'))
 
         for session_dir in session_dirs:
-            # Look for subject directories
-            subject_dirs = list(session_dir.glob(f'*{subject}*'))
+            # Look for subject directories - use exact match pattern to avoid substring matches
+            # e.g., *_Rat8_* should not match *_Rat86_*
+            subject_patterns_p1 = [
+                f'*_{subject}_1_*',     # e.g., *_Rat8_1_1 or *_Rat8_1_2
+                f'*_{subject}_*_*',     # e.g., *_Cohort2_Rat8_1_3
+            ]
 
+            for pattern in subject_patterns_p1:
+                subject_dirs = list(session_dir.glob(pattern))
+                for subject_dir in subject_dirs:
+                    # Verify it's an exact subject match (not Rat8 matching Rat86)
+                    dir_name = subject_dir.name
+                    # Check that subject is followed by _ and a digit (not another letter)
+                    if re.search(rf'_{subject}_\d', dir_name):
+                        scan_dir = subject_dir / scan_name
+                        if scan_dir.exists() and (scan_dir / 'method').exists():
+                            return scan_dir
+
+        # Pattern 2: Cohorts 7-8 structure (flat, all info in folder name)
+        # bruker_root/Cohort*/IRC1200_Cohort7_Rat102_1__Rat_102__p60_1_1_20250407/scan_number/
+        # Match patterns like *_Rat102_* or *_Rat_102_* and *_p60_*
+        # Extract numeric part of subject ID for matching (e.g., "Rat102" -> "102")
+        subject_num = subject.replace("Rat", "")
+
+        subject_patterns = [
+            f'*_{subject}_1_*_{session}_*',      # e.g., *_Rat102_1_*_p60_*
+            f'*_{subject}_1__*_{session}_*',     # e.g., *_Rat102_1__*_p60_*
+            f'*_Rat_{subject_num}_*_{session}_*',  # e.g., *_Rat_102_*_p60_*
+        ]
+
+        for pattern in subject_patterns:
+            subject_dirs = list(cohort_dir.glob(pattern))
             for subject_dir in subject_dirs:
-                # Check if scan directory exists
-                scan_dir = subject_dir / scan_name
-                if scan_dir.exists() and (scan_dir / 'method').exists():
-                    return scan_dir
+                if subject_dir.is_dir():
+                    scan_dir = subject_dir / scan_name
+                    if scan_dir.exists() and (scan_dir / 'method').exists():
+                        return scan_dir
 
     return None
 

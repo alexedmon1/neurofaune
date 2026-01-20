@@ -23,9 +23,10 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 2. **DWI/DTI Preprocessing**
    - 5D→4D conversion for Bruker data
-   - GPU-accelerated eddy correction
+   - GPU-accelerated eddy correction with **slice padding** to prevent edge slice loss
    - FSL dtifit for tensor fitting (FA, MD, AD, RD)
    - Comprehensive QC (motion, eddy, DTI metrics)
+   - Batch processing with header validation and optional Bruker-based fixing
    - Multi-shell ready (currently tested on 6-direction DTI)
 
 3. **MSME T2 Mapping**
@@ -103,9 +104,11 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - 5D→4D Conversion: Handle Bruker multi-average DTI acquisitions
 - Gradient Table Validation: Verify bval/bvec consistency with automatic normalization
 - GPU-Accelerated Eddy: FSL eddy_cuda support (with CPU fallback)
+- **Slice Padding for Edge Protection**: Mirror-pads DWI data before eddy to prevent edge slice loss from motion correction interpolation (critical for thin-slice acquisitions like 5-11 slice hippocampal DTI)
 - Brain Masking: BET-based masking from b0 volume
 - DTI Fitting: Compute FA, MD, AD, RD maps using FSL dtifit
 - Comprehensive QC: Motion/eddy QC with framewise displacement, DTI metric QC with histograms and montages
+- **Batch Processing**: Production-ready script with header validation, Bruker-based fixing, and parallel execution
 - Preprocessing Only: SIGMA registration removed for template-based approach
 
 **✅ Phase 5 (Multi-Modal Template Architecture) - Complete**
@@ -259,7 +262,98 @@ pip install -e ".[all]"  # Includes FSL-MRS, Bruker conversion tools
 
 ---
 
-## Study Setup
+## Study Initialization
+
+Neurofaune provides a comprehensive study initialization system that discovers raw data, creates directory structures, and generates configuration files.
+
+### Quick Start - Initialize a New Study
+
+```bash
+# Initialize with both Bruker and BIDS data
+uv run python scripts/init_study.py /path/to/study \
+    --name "My Study" \
+    --code mystudy \
+    --bruker-root /path/to/bruker \
+    --bids-root /path/to/bids \
+    --sigma-atlas /path/to/SIGMA
+
+# Initialize with just BIDS data
+uv run python scripts/init_study.py /path/to/study \
+    --name "My Study" \
+    --code mystudy \
+    --bids-root /path/to/bids
+```
+
+### What Study Initialization Does
+
+1. **Creates directory structure**: `raw/`, `derivatives/`, `templates/`, `atlas/`, `transforms/`, `qc/`, `work/`
+2. **Discovers raw Bruker data**: Scans for sessions and categorizes scans by type (RARE, DtiEpi, EPI, MSME, etc.)
+3. **Discovers BIDS data**: Inventories subjects, sessions, cohorts, and modalities
+4. **Generates configuration**: Creates `config.yaml` with proper paths and parameters
+5. **Sets up SIGMA atlas**: Reorients atlas to match study acquisition orientation
+6. **Provides next steps**: Suggests appropriate preprocessing commands based on available data
+
+### Discover Data Only (No Directories Created)
+
+```bash
+# Discover both Bruker and BIDS data
+uv run python scripts/init_study.py --discover-only /path/to/data
+
+# Output to JSON for programmatic use
+uv run python scripts/init_study.py --discover-only /path/to/data --output-json manifest.json
+```
+
+### View Study Summary
+
+```bash
+# Print summary of initialized study
+uv run python scripts/init_study.py /path/to/study --summary
+
+# List subjects by cohort
+uv run python scripts/init_study.py /path/to/study --list-subjects --cohort p60
+```
+
+### Example Output
+
+```
+======================================================================
+Initializing Study: BPA-Rat Study
+Study Root: /mnt/arborea/bpa-rat
+======================================================================
+
+[1/6] Creating directory structure...
+  Created 18 directories
+
+[2/6] Discovering raw Bruker data...
+  Found 45 sessions, 686 scans
+  Scan types: {'Bruker:RARE': 230, 'Bruker:DtiEpi': 47, 'Bruker:EPI': 88, ...}
+
+[3/6] Discovering BIDS data...
+  Found 141 subjects, 189 sessions
+  Cohorts: {'p30': 54, 'p60': 50, 'p90': 79}
+  Modalities: {'anat': 126, 'dwi': 187, 'func': 140}
+
+[4/6] Setting up configuration...
+  Generated config: /mnt/arborea/bpa-rat/config.yaml
+
+[5/6] Setting up study-space atlas...
+  Created study-space atlas: /mnt/arborea/bpa-rat/atlas/SIGMA_study_space
+
+[6/6] Saving study manifest...
+  Saved manifest: /mnt/arborea/bpa-rat/study_manifest.json
+
+Status: SUCCESS
+
+Next Steps:
+  1. Run anatomical preprocessing (126 sessions)
+  2. Run DTI preprocessing (187 sessions)
+  3. Run functional preprocessing (140 sessions)
+  4. Build age-specific templates
+```
+
+---
+
+## Study-Space SIGMA Atlas Setup
 
 Before running any preprocessing, you must create a **study-space SIGMA atlas**. This reorients the SIGMA atlas to match your study's native acquisition orientation.
 
@@ -337,15 +431,47 @@ After running the setup, your atlas directory should contain:
 
 ## Batch Processing
 
-Process all subjects with automatic 3D scan exclusion:
+Process all subjects with automatic scan validation and exclusion:
 
 ```bash
+# Initialize study (discovers data, creates config)
+uv run python scripts/init_study.py /path/to/study \
+    --name "My Study" --code mystudy \
+    --bids-root /path/to/bids
+
 # Anatomical preprocessing for all subjects
-python batch_anatomical_preprocessing.py /path/to/bids /path/to/output
+uv run python scripts/batch_preprocess_anat.py \
+    --config /path/to/study/config.yaml
+
+# DTI preprocessing for all subjects (with header validation)
+uv run python scripts/batch_preprocess_dwi.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study \
+    --config /path/to/study/config.yaml
+
+# DTI preprocessing with header fixing from Bruker source
+uv run python scripts/batch_preprocess_dwi.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study \
+    --fix-headers --bruker-root /path/to/bruker
+
+# Force reprocessing of all subjects
+uv run python scripts/batch_preprocess_dwi.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study \
+    --force
 
 # Build age-specific templates
-python build_templates.py /path/to/output
+uv run python scripts/build_templates.py --config /path/to/study/config.yaml
 ```
+
+### DTI Batch Processing Features
+
+- **Header validation**: Automatically detects and skips files with incorrect voxel sizes (identity affine)
+- **Bruker-based fixing**: Can fix headers using original Bruker source data
+- **Slice padding**: Protects edge slices from eddy correction artifacts
+- **GPU support**: Uses eddy_cuda when available (falls back to CPU)
+- **Dry run mode**: `--dry-run` to check files without processing
 
 See [BATCH_PROCESSING_GUIDE.md](BATCH_PROCESSING_GUIDE.md) for details.
 
