@@ -7,6 +7,25 @@ Redesign the anatomical preprocessing workflow to integrate template building an
 1. **Template-based (recommended)**: Build study-specific templates from a subset of subjects, then register all subjects to template → SIGMA
 2. **Direct-to-atlas (optional)**: Skip template building and register directly to SIGMA (less accurate but simpler)
 
+## Prerequisites
+
+### Study-Space Atlas
+
+Before running the pipeline, ensure the SIGMA atlas has been reoriented to match your study's acquisition orientation:
+
+```bash
+# This creates {study_root}/atlas/SIGMA_study_space/ with reoriented atlas files
+python -c "from neurofaune.templates.slice_registration import setup_study_atlas; setup_study_atlas(...)"
+```
+
+The study-space atlas is created once per study and contains:
+- `SIGMA_InVivo_Brain_Template.nii.gz` - T2w template (reoriented)
+- `SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz` - Parcellation labels (reoriented)
+- `SIGMA_InVivo_GM/WM/CSF.nii.gz` - Tissue probability maps (reoriented)
+- `atlas_metadata.json` - Reorientation parameters
+
+**IMPORTANT**: Always use the study-space atlas for registration and atlas propagation. The original SIGMA atlas has a different orientation and will produce incorrect results.
+
 ## Current State
 
 | Component | Status | Location |
@@ -14,9 +33,11 @@ Redesign the anatomical preprocessing workflow to integrate template building an
 | T2w preprocessing (skull strip, bias, tissue seg) | ✅ Complete | `anat_preprocess.py` |
 | Template building | ✅ Complete | `templates/builder.py` |
 | Template → SIGMA registration | ✅ Complete | `templates/builder.py` |
-| Subject → Template registration | ✅ Functions exist | `templates/registration.py` |
-| Atlas propagation to T2w | ❌ Missing | Need to create |
-| Integrated workflow | ❌ Missing | Need to create |
+| Subject → Template registration | ✅ Complete | `templates/anat_registration.py` |
+| Atlas propagation to T2w | ✅ Complete | `templates/anat_registration.py` |
+| Registration QC (Dice, correlation, overlays) | ✅ Complete | `templates/registration_qc.py` |
+| Template manifest tracking | ✅ Complete | `templates/manifest.py` |
+| Batch processing script | ✅ Complete | `scripts/batch_preprocess_anat.py` |
 
 ## Proposed Workflow
 
@@ -106,9 +127,14 @@ Redesign the anatomical preprocessing workflow to integrate template building an
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  6. PROPAGATE SIGMA LABELS → T2w                                │
+│     - Use STUDY-SPACE atlas (already reoriented to match study) │
+│     - Located at: {study_root}/atlas/SIGMA_study_space/         │
 │     - Use inverse transforms                                    │
-│     - Chain: SIGMA → Template → Subject T2w                    │
-│     - Save: sub-*_space-T2w_atlas-SIGMA_dseg.nii.gz           │
+│     - Chain: SIGMA (study-space) → Template → Subject T2w      │
+│     - Save: sub-*_space-T2w_atlas-SIGMA.nii.gz                 │
+│                                                                 │
+│     IMPORTANT: Do NOT use original SIGMA atlas - use the        │
+│     study-space version created by setup_study_atlas()          │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
