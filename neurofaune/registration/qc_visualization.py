@@ -10,6 +10,8 @@ Generates visual quality control figures for:
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid X11 errors
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import nibabel as nib

@@ -6,6 +6,8 @@ This module generates QC visualizations for DTI scalar maps (FA, MD, AD, RD).
 
 import nibabel as nib
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid X11 errors
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
