@@ -34,13 +34,14 @@ uv run mypy neurofaune/
 
 **Batch processing scripts** (in `scripts/`):
 ```bash
-# Build age-specific templates
-uv run python scripts/build_templates.py --config config.yaml --cohort p60 --modality anat
-
-# Batch anatomical preprocessing
+# Phase 1: Initialize (one-time per study)
+uv run python scripts/init_study.py /path/to/study --name "Study" --bids-root /path/to/bids
 uv run python scripts/batch_preprocess_for_templates.py /path/to/bids /path/to/output
+uv run python scripts/build_templates.py --config config.yaml --cohort p60
 
-# Batch functional preprocessing
+# Phase 2: Preprocessing (all subjects)
+uv run python scripts/batch_preprocess_anat.py --config config.yaml
+uv run python scripts/batch_preprocess_dwi.py --bids-root /path/to/bids --output-root /path/to/output
 uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/output
 ```
 
@@ -215,13 +216,13 @@ Run with: `uv run python scripts/dev_registration/003_register_dwi_to_t2w.py`
 
 ## Current Status
 
-**Completed**: Phases 1-7 (Foundation, Atlas, Anatomical, DTI, Templates, MSME, fMRI)
-**In Progress**: Phase 8 (Template-Based Registration)
-- All T2w templates built (p30, p60, p90) with SIGMA registration
-- Tissue probability templates complete (GM, WM, CSF)
-- Slice correspondence system complete
-- DTI atlas propagation validated
-- Workflow integration pending (anat, func)
+**Completed**: Phases 1-8 (Foundation, Atlas, Anatomical, DTI, Templates, MSME, fMRI, Template-Based Registration)
+
+See **README.md** for comprehensive workflow documentation including:
+- Two-phase workflow (Initialize → Preprocessing)
+- Study-space atlas setup
+- Batch processing commands
+- Output directory structure
 
 See **STATUS.md** for detailed current state and **ROADMAP.md** for full project plan.
 

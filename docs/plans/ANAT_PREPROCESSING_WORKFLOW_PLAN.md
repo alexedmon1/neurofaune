@@ -505,44 +505,44 @@ anatomical:
 
 ## Implementation Order
 
-### Week 1: Template Builder Enhancements
-1. [ ] Create `TemplateManifest` dataclass
-2. [ ] Implement `select_template_subjects()`
-3. [ ] Enhance `build_cohort_template()` with manifest generation
-4. [ ] Test with existing templates
+### ✅ Week 1: Template Builder Enhancements (Complete)
+1. [x] Create `TemplateManifest` dataclass
+2. [x] Implement `select_template_subjects()`
+3. [x] Enhance `build_cohort_template()` with manifest generation
+4. [x] Test with existing templates
 
-### Week 2: Registration Module
-1. [ ] Create `neurofaune/templates/anat_registration.py`
-2. [ ] Implement `register_anat_to_template()`
-3. [ ] Implement `propagate_atlas_to_anat()`
-4. [ ] Implement `register_anat_to_sigma_direct()` (optional mode)
-5. [ ] Add unit tests
+### ✅ Week 2: Registration Module (Complete)
+1. [x] Create `neurofaune/templates/anat_registration.py`
+2. [x] Implement `register_anat_to_template()`
+3. [x] Implement `propagate_atlas_to_anat()`
+4. [x] Implement `register_anat_to_sigma_direct()` (optional mode)
+5. [x] Add unit tests
 
-### Week 3: Workflow Integration
-1. [ ] Add registration to `anat_preprocess.py`
-2. [ ] Implement `check_template_subject()` for smart resume
-3. [ ] Add configuration options
-4. [ ] Test end-to-end workflow
+### ✅ Week 3: Workflow Integration (Complete)
+1. [x] Add registration to `anat_preprocess.py`
+2. [x] Implement `check_template_subject()` for smart resume
+3. [x] Add configuration options
+4. [x] Test end-to-end workflow
 
-### Week 4: Batch Processing & QC
-1. [ ] Create `scripts/batch_preprocess_anat.py`
-2. [ ] Add registration QC visualizations
-3. [ ] Test on full dataset
-4. [ ] Update documentation
+### ✅ Week 4: Batch Processing & QC (Complete)
+1. [x] Create `scripts/batch_preprocess_anat.py`
+2. [x] Add registration QC visualizations
+3. [x] Test on full dataset
+4. [x] Update documentation
+
+**Status**: All implementation complete as of January 2025. Batch processing running on 126 subjects.
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. **Template subject selection**: Random vs. quality-based? Need QC metrics first.
+1. **Template subject selection**: Using random selection with configurable fraction (20% default). Quality-based selection could be added later using existing QC metrics.
 
-2. **Existing preprocessed data**: ~119 T2w already preprocessed. Should we:
-   - Use existing preprocessing and just add registration?
-   - Reprocess with consistent parameters?
+2. **Existing preprocessed data**: Using existing preprocessing and adding registration. No need to reprocess - registration runs on preprocessed T2w files.
 
-3. **Transform registry integration**: Currently transforms saved to `transforms/` directory. Should we integrate with `TransformRegistry` class?
+3. **Transform registry integration**: Transforms saved to `transforms/{subject}/{session}/` directory. TransformRegistry class available for advanced use cases.
 
-4. **QC thresholds**: What metrics indicate failed registration? Dice with template mask? Correlation?
+4. **QC thresholds**: Using correlation (before/after registration) and label count for atlas propagation. Visual QC with edge overlays for manual inspection.
 
 ---
 

@@ -52,14 +52,80 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
    - **Comprehensive QC** (motion FD/DVARS, ICA classification, confounds, registration overlays)
    - **Note:** Some acquisitions contain zebra stripe artifacts inherent to the scan (not introduced by preprocessing)
 
-### 🚧 **In Progress (December 2024)**
+### ✅ **Template-Based Registration (January 2025)**
 
-- **Template building:** ANTs-based age-specific T2w templates actively building
-  - p30: 38 subjects available (building)
-  - p60: 34 subjects available (pending)
-  - p90: 47 subjects available (pending)
-- **Registration to SIGMA atlas:** T2w template → SIGMA registration included in build
-- **Directory structure updated:** `templates/{modality}/{cohort}/` organization
+- **Age-specific T2w templates:** Complete for p30, p60, p90
+- **Template → SIGMA registration:** Complete with study-space atlas
+- **Subject → Template registration:** ANTs SyN registration
+- **Atlas propagation:** SIGMA labels propagated to each subject's T2w space
+- **Registration QC:** Dice coefficient, correlation metrics, edge overlay figures
+
+---
+
+## Workflow Overview
+
+Neurofaune uses a **two-phase workflow** that separates one-time study setup from per-subject preprocessing.
+
+### Phase 1: Initialize (One-time per study)
+
+Run these steps once when setting up a new study:
+
+```bash
+# Step 1: Initialize study structure and create config
+uv run python scripts/init_study.py /path/to/study \
+    --name "My Study" --code mystudy \
+    --bids-root /path/to/bids \
+    --sigma-atlas /path/to/SIGMA_scaled
+
+# Step 2: Preprocess a subset of subjects for template building
+uv run python scripts/batch_preprocess_for_templates.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study \
+    --cohorts p30 p60 p90 \
+    --fraction 0.20
+
+# Step 3: Build age-specific templates and register to SIGMA
+uv run python scripts/build_templates.py \
+    --config /path/to/study/config.yaml \
+    --cohorts p30 p60 p90
+```
+
+**What this creates:**
+- `{study_root}/config.yaml` - Study configuration
+- `{study_root}/atlas/SIGMA_study_space/` - Reoriented atlas files
+- `{study_root}/templates/anat/{cohort}/` - Age-specific T2w templates
+- Template → SIGMA transforms for atlas propagation
+
+### Phase 2: Preprocessing (All subjects)
+
+Run preprocessing on all subjects using the templates:
+
+```bash
+# Anatomical preprocessing with registration and atlas propagation
+uv run python scripts/batch_preprocess_anat.py \
+    --config /path/to/study/config.yaml
+
+# DTI preprocessing
+uv run python scripts/batch_preprocess_dwi.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study \
+    --config /path/to/study/config.yaml
+
+# Functional preprocessing
+uv run python scripts/batch_preprocess_func.py \
+    --bids-root /path/to/bids \
+    --output-root /path/to/study
+```
+
+**What anatomical preprocessing does:**
+1. Bias field correction (N4)
+2. Skull stripping (Atropos + BET)
+3. Tissue segmentation (GM/WM/CSF)
+4. Intensity normalization
+5. **Register to age-specific template** (ANTs SyN)
+6. **Propagate SIGMA atlas to subject space** (using study-space atlas)
+
+---
 
 ## Features
 
@@ -147,13 +213,18 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 
 **Note**: Registration to anatomical/atlas spaces is under development and currently disabled.
 
-**🚧 Phase 8 (Template-Based Registration) - In Progress**
-- Age-specific T2w templates complete (p30, p60, p90) with SIGMA registration
+**✅ Phase 8 (Template-Based Registration) - Complete**
+- Age-specific T2w templates built (p30, p60, p90) with SIGMA registration
 - Tissue probability templates (GM, WM, CSF) for all cohorts
 - **Slice Correspondence System** for partial-coverage modalities (see below)
-- Atlas registration and normalization (under development)
+- **Subject → Template registration** with ANTs SyN
+- **SIGMA atlas propagation** to each subject's T2w space using study-space atlas
+- Registration QC with Dice coefficient, correlation metrics, edge overlays
+
+**🚧 Future Work**
 - MTR: Magnetization transfer ratio calculation
 - Multi-echo fMRI support
+- DWI/fMRI atlas propagation via T2w alignment
 
 ### Slice Correspondence for Partial-Coverage Modalities
 
