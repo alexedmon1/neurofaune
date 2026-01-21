@@ -8,6 +8,8 @@ This module provides utilities for:
 4. Subject-to-template registration
 5. Within-subject cross-modal registration
 6. Label propagation
+7. Template manifest tracking
+8. Registration QC (Dice, correlation, overlays)
 """
 
 from neurofaune.templates.builder import (
@@ -25,6 +27,28 @@ from neurofaune.templates.registration import (
     propagate_labels_to_subject
 )
 
+from neurofaune.templates.manifest import (
+    TemplateManifest,
+    SubjectTransforms,
+    find_template_manifest
+)
+
+from neurofaune.templates.anat_registration import (
+    register_anat_to_template,
+    propagate_atlas_to_anat,
+    register_anat_to_sigma_direct,
+    propagate_atlas_direct
+)
+
+from neurofaune.templates.registration_qc import (
+    compute_dice_coefficient,
+    compute_correlation,
+    compute_registration_metrics,
+    generate_registration_qc_figure,
+    generate_atlas_overlay_figure,
+    generate_template_qc_report
+)
+
 __all__ = [
     # Builder functions
     'build_template',
@@ -36,5 +60,21 @@ __all__ = [
     'register_subject_to_template',
     'register_within_subject',
     'apply_transforms',
-    'propagate_labels_to_subject'
+    'propagate_labels_to_subject',
+    # Manifest
+    'TemplateManifest',
+    'SubjectTransforms',
+    'find_template_manifest',
+    # Anatomical registration
+    'register_anat_to_template',
+    'propagate_atlas_to_anat',
+    'register_anat_to_sigma_direct',
+    'propagate_atlas_direct',
+    # QC functions
+    'compute_dice_coefficient',
+    'compute_correlation',
+    'compute_registration_metrics',
+    'generate_registration_qc_figure',
+    'generate_atlas_overlay_figure',
+    'generate_template_qc_report',
 ]
