@@ -496,14 +496,37 @@ class BatchQCConfig:
     })
 
     # Anatomical thresholds (not affected by voxel scaling)
+    # Note: brain_to_total_ratio can be > 1 due to how background is handled
+    # These thresholds are based on observed distributions
     anat_thresholds: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        'brain_volume_ratio': (0.3, 0.7),
-        'snr': (5.0, None),
+        'skull_stripping_brain_to_total_ratio': (0.8, 2.5),  # Ratio varies widely
+        'skull_stripping_snr_estimate': (0.8, None),  # SNR should be > 0.8 (low due to rodent brain contrast)
+        'segmentation_gm_volume_fraction': (0.1, 0.8),  # GM should be 10-80% of brain
+        'segmentation_wm_volume_fraction': (0.05, 0.85),  # WM can vary significantly
     })
 
     # Thumbnail settings
     thumbnail_size: Tuple[int, int] = (200, 200)
     thumbnail_quality: int = 85
+
+
+def _flatten_dict(d: Dict, parent_key: str = '', sep: str = '_') -> Dict:
+    """
+    Flatten a nested dictionary.
+
+    Example:
+        {'skull_stripping': {'snr': 2.5, 'brain_volume': 1000}}
+        becomes
+        {'skull_stripping_snr': 2.5, 'skull_stripping_brain_volume': 1000}
+    """
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(_flatten_dict(v, new_key, sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
 
 
 def collect_qc_metrics(
@@ -568,7 +591,9 @@ def collect_qc_metrics(
                 try:
                     with open(json_file) as f:
                         metrics = json.load(f)
-                    record.update(metrics)
+                    # Flatten nested dictionaries (e.g., anat has skull_stripping, segmentation)
+                    flat_metrics = _flatten_dict(metrics)
+                    record.update(flat_metrics)
                 except (json.JSONDecodeError, IOError) as e:
                     print(f"Warning: Could not read {json_file}: {e}")
 
@@ -760,7 +785,12 @@ def _get_key_metrics(modality: str) -> List[str]:
     """Get default key metrics for a modality."""
     metrics = {
         'dwi': ['fa_mean', 'md_mean', 'mean_fd', 'max_fd', 'mean_snr'],
-        'anat': ['brain_volume_ratio', 'snr', 'gm_fraction', 'wm_fraction'],
+        'anat': [
+            'skull_stripping_brain_to_total_ratio',
+            'skull_stripping_snr_estimate',
+            'segmentation_gm_volume_fraction',
+            'segmentation_wm_volume_fraction'
+        ],
         'func': ['mean_fd', 'max_fd', 'pct_bad_volumes', 'n_components_removed'],
         'msme': ['t2_mean', 'mwf_mean', 'iwf_mean'],
     }

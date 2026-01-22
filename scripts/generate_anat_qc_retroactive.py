@@ -61,15 +61,10 @@ def find_preprocessed_subjects(study_root: Path):
 
 def check_existing_qc(study_root: Path, subject: str, session: str) -> bool:
     """Check if QC metrics already exist for a subject."""
-    # Check new structure
-    qc_dir_new = study_root / 'qc' / 'sub' / subject / session / 'anat'
-    metrics_new = qc_dir_new / f'{subject}_{session}_anat_qc_metrics.json'
-
-    # Check old structure
-    qc_dir_old = study_root / 'qc' / subject / session / 'anat'
-    metrics_old = qc_dir_old / f'{subject}_{session}_anat_qc_metrics.json'
-
-    return metrics_new.exists() or metrics_old.exists()
+    # Check new structure: qc/sub/{subject}/{session}/anat/
+    qc_dir = study_root / 'qc' / 'sub' / subject / session / 'anat'
+    metrics_file = qc_dir / f'{subject}_{session}_anat_qc_metrics.json'
+    return metrics_file.exists()
 
 
 def main():
@@ -139,9 +134,8 @@ def main():
 
         print(f"\n[{i}/{len(need_qc)}] {subject} {session}")
 
-        # Get QC output directory (use old structure for consistency)
-        qc_dir = study_root / 'qc' / subject / session / 'anat'
-        qc_dir.mkdir(parents=True, exist_ok=True)
+        # Get QC output directory using standard function
+        qc_dir = get_subject_qc_dir(study_root, subject, session, 'anat')
 
         try:
             qc_report = generate_anatomical_qc_report(
