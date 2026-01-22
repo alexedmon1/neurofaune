@@ -28,6 +28,7 @@ from neurofaune.preprocess.qc.func import (
     generate_confounds_qc_report,
     generate_registration_qc
 )
+from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.templates.registration import register_within_subject, apply_transforms
 from neurofaune.atlas.manager import AtlasManager
 from neurofaune.preprocess.utils.func.ica_denoising import (
@@ -569,8 +570,7 @@ def run_functional_preprocessing(
     derivatives_dir = output_dir / 'derivatives' / subject / session / 'func'
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
-    qc_dir = output_dir / 'qc' / subject / session / 'func'
-    qc_dir.mkdir(parents=True, exist_ok=True)
+    qc_dir = get_subject_qc_dir(output_dir, subject, session, 'func')
 
     if work_dir is None:
         work_dir = output_dir / 'work' / subject / session / 'func_preproc'

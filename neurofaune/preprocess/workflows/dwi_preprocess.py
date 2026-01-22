@@ -36,6 +36,7 @@ from neurofaune.preprocess.utils.orientation import (
 from neurofaune.atlas.manager import AtlasManager
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_qc_report
+from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
 def run_dwi_preprocessing(
@@ -134,8 +135,7 @@ def run_dwi_preprocessing(
     derivatives_dir = output_dir / 'derivatives' / subject / session / 'dwi'
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
-    qc_dir = output_dir / 'qc' / subject / session / 'dwi'
-    qc_dir.mkdir(parents=True, exist_ok=True)
+    qc_dir = get_subject_qc_dir(output_dir, subject, session, 'dwi')
 
     if work_dir is None:
         work_dir = output_dir / 'work' / subject / session / 'dwi_preproc'

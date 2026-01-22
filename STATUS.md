@@ -1,6 +1,6 @@
 # Project Status
 
-**Last Updated:** 2026-01-20 (Session 2)
+**Last Updated:** 2026-01-22
 
 This file tracks the current state of the neurofaune project. Update this file after important milestones or before ending a session.
 
@@ -126,11 +126,40 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 | Modality | p30 | p60 | p90 | Total |
 |----------|-----|-----|-----|-------|
 | Anatomical T2w | 38 | 34 | 47 | 119 |
+| Anatomical + Registration | ~51 | ~48 | ~67 | 116 (see note) |
 | Functional BOLD | ~98 | ~98 | ~98 | 294 |
-| DTI | ~7 | ~8 | ~7 | 22 (in progress) |
+| DTI | 51 | 48 | 82 | 181 |
 | MSME | TBD | TBD | TBD | TBD |
 
-*DTI counts are approximate; batch processing is ongoing.*
+*Note: Anatomical registration completed for 116/126 preprocessed subjects (4 skipped due to unknown session, 6 failed).*
+
+---
+
+## Batch QC System (NEW - 2026-01-22)
+
+**Location:** `qc/{modality}_batch_summary/`
+
+Implemented batch QC summary generation with:
+- Subject-level exclusion lists (exclude/include .txt files)
+- Slice-level QC for TBSS (identifies bad slices per subject)
+- Categorized exclusions (high_motion, extreme_diffusion, low_snr)
+- Cohort-specific exclusion lists
+- Visual heatmaps and distribution plots
+
+**DWI Batch QC Results:**
+- Total subjects: 181
+- Excluded (subject-level): 40 (22%)
+  - High motion: 18
+  - Extreme diffusion: 9
+  - Low SNR: 3
+  - Other: 10
+- Slice-level issues: 26 subjects with ≥1 bad slice (36 total bad slices)
+- Overlap: Only 7 subjects have both high motion AND bad slices
+
+**Usage:**
+```bash
+uv run python scripts/generate_batch_qc.py /path/to/study --modality dwi --slice-qc
+```
 
 ---
 
@@ -139,9 +168,10 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 1. ~~**Implement 2D slice-wise template-to-SIGMA registration**~~ ✅ RESOLVED via study-space atlas
 2. ~~**Generate tissue probability templates**~~ ✅ Complete (GM/WM/CSF for all cohorts)
 3. ~~**Slice correspondence for partial-coverage modalities**~~ ✅ Complete (intensity + landmark detection)
-4. ~~**Batch process DTI data**~~ 🔄 IN PROGRESS (22/187 complete with slice padding fix)
-5. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
-6. **Integrate registration into anatomical workflow** - Add subject→template→SIGMA registration
+4. ~~**Batch process DTI data**~~ ✅ COMPLETE (187/187 processed, 181 with QC metrics)
+5. ~~**Batch QC summary system**~~ ✅ COMPLETE (subject + slice-level exclusion lists)
+6. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
+   - Use slice-level masking (Strategy B) to preserve data from subjects with isolated bad slices
 7. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
 
 ---
@@ -178,6 +208,41 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-22 - Batch QC Summary System & Exclusion Lists
+
+**Batch Processing Completed:**
+- DWI preprocessing: 187/187 subjects (100% complete)
+- Anatomical registration: 116/126 subjects (92% complete)
+
+**Batch QC System Implemented:**
+New module `neurofaune/preprocess/qc/batch_summary.py` providing:
+
+1. **Subject-Level Exclusion Lists:**
+   - `exclude_subjects.txt` / `include_subjects.txt` - Simple lists for scripting
+   - `exclusions.tsv` - Detailed with reasons and metrics
+   - `exclusions_by_reason.json` - Categorized (high_motion, extreme_diffusion, low_snr)
+   - `by_cohort/` - Cohort-specific lists (p30, p60, p90)
+
+2. **Slice-Level QC (for TBSS):**
+   - `bad_slices.tsv` - subject, session, slice_idx
+   - `slice_exclusions.json` - Per-slice flags and reasons
+   - `slice_quality_heatmap.png` - Visual summary
+
+3. **Threshold Correction:**
+   - Fixed FD thresholds to account for 10x voxel scaling
+   - Old: mean_fd > 2mm → New: mean_fd > 20mm (scaled) = 2mm actual
+   - Reduced false-positive outliers from 75 (41%) to 40 (22%)
+
+**Key Finding:** Only 7 subjects have both high motion AND bad slices. 19 subjects have
+bad slices but acceptable motion → use slice-level masking in TBSS to preserve their data.
+
+**Files Created/Modified:**
+- `neurofaune/preprocess/qc/batch_summary.py` - Core batch QC module
+- `neurofaune/preprocess/qc/__init__.py` - Exports
+- `scripts/generate_batch_qc.py` - CLI script
+- `docs/plans/TBSS_IMPLEMENTATION_PLAN.md` - Updated with slice masking strategy (Strategy B)
+- All workflow files updated for new QC path structure (`qc/sub/` for per-subject QC)
 
 ### 2026-01-20 (Session 2) - DWI Intensity Normalization & Atropos Brain Extraction
 

@@ -21,6 +21,7 @@ import subprocess
 
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
+from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
 def check_and_scale_voxel_size(
@@ -883,8 +884,7 @@ def run_anatomical_preprocessing(
     derivatives_dir = output_dir / 'derivatives' / subject / session / modality
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
-    qc_dir = output_dir / 'qc' / subject / session / modality
-    qc_dir.mkdir(parents=True, exist_ok=True)
+    qc_dir = get_subject_qc_dir(output_dir, subject, session, modality)
 
     if work_dir is None:
         work_dir = output_dir / 'work' / subject / session / 'anat_preproc'
@@ -1023,12 +1023,24 @@ def run_anatomical_preprocessing(
     print(f"  ✓ WM probability: {final_wm.name}")
     print(f"  ✓ CSF probability: {final_csf.name}")
 
-    # Step 7: Generate QC (placeholder for now)
+    # Step 7: Generate QC
     print("\n" + "="*60)
     print("STEP 7: Quality Control")
     print("="*60)
-    print("QC report generation: TODO")
-    # TODO: Implement QC generation
+    from neurofaune.preprocess.qc.anat import generate_anatomical_qc_report
+
+    qc_report = generate_anatomical_qc_report(
+        subject=subject,
+        session=session,
+        t2w_file=t2w_input,
+        brain_file=final_brain_skullstrip,
+        mask_file=final_mask,
+        gm_file=final_gm,
+        wm_file=final_wm,
+        csf_file=final_csf,
+        output_dir=qc_dir
+    )
+    print(f"  ✓ QC report: {qc_report}")
 
     print("\n" + "="*80)
     print("Anatomical preprocessing complete!")
@@ -1050,5 +1062,5 @@ def run_anatomical_preprocessing(
         'csf_prob': final_csf,
         'was_scaled': was_scaled,
         'scale_factor': scale_factor,
-        'qc_reports': []
+        'qc_reports': [qc_report]
     }

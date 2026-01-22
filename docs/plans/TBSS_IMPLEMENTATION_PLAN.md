@@ -540,7 +540,10 @@ def create_group_validity_map(
 
 #### 6.5 Analysis Strategy for Missing Slices
 
-**Strategy A: Conservative (Intersection)**
+> **RECOMMENDED: Strategy B (Threshold-Based)** - Preserves maximum data while handling
+> bad slices. See "Batch QC Integration" section below for implementation details.
+
+**Strategy A: Conservative (Intersection)** - *Use only for high-stakes analyses*
 ```python
 def create_intersection_mask(
     validity_masks: List[Path],
@@ -551,10 +554,11 @@ def create_intersection_mask(
 
     Most conservative - no missing data issues.
     But may exclude large regions if even one subject has a bad slice.
+    NOT RECOMMENDED: Wastes valid data from subjects with isolated bad slices.
     """
 ```
 
-**Strategy B: Threshold-Based**
+**Strategy B: Threshold-Based (RECOMMENDED)**
 ```python
 def create_threshold_mask(
     valid_subject_count: Path,
@@ -565,11 +569,18 @@ def create_threshold_mask(
     """
     Create mask where >= min_fraction of subjects have valid data.
 
+    RECOMMENDED APPROACH: Preserves data from subjects with isolated bad slices.
+
     E.g., with 100 subjects and min_fraction=0.8:
     Include voxels where >= 80 subjects have valid data.
 
     For voxels with fewer valid subjects, those subjects are
-    effectively excluded from analysis at that voxel.
+    effectively excluded from analysis at that voxel (imputed with group mean).
+
+    Benefits:
+    - Subject with 1-2 bad slices still contributes 9-10 valid slices
+    - Only truly problematic regions are excluded
+    - Maximizes statistical power
     """
 ```
 
@@ -789,6 +800,89 @@ Expected outputs:
 - `design.mat` (FSL format)
 - `design.con` (FSL format)
 - `design.json` (metadata)
+
+### 5. Batch QC Integration (RECOMMENDED APPROACH)
+
+**Use slice-level masking instead of excluding entire subjects** to preserve maximum data.
+
+The batch QC system (`neurofaune.preprocess.qc.batch_summary`) generates exclusion lists at both subject and slice levels:
+
+```
+qc/dwi_batch_summary/
+├── exclude_subjects.txt          # Subjects with severe issues (exclude entirely)
+├── include_subjects.txt          # Good subjects
+├── exclusions_by_reason.json     # Categorized: high_motion, extreme_diffusion, low_snr
+├── by_cohort/                    # Cohort-specific lists
+│   ├── include_p60.txt
+│   └── exclude_p60.txt
+└── slice_qc/
+    ├── bad_slices.tsv            # subject, session, slice_idx
+    ├── slice_exclusions.json     # Detailed per-slice flags
+    └── slice_quality_heatmap.png # Visual summary
+```
+
+**Recommended TBSS workflow with slice masking:**
+
+```python
+from neurofaune.preprocess.qc import generate_slice_qc_summary
+import pandas as pd
+
+# Step 1: Load slice exclusions from batch QC
+slice_exclusions = json.load(open('qc/dwi_batch_summary/slice_qc/slice_exclusions.json'))
+bad_slices_df = pd.read_csv('qc/dwi_batch_summary/slice_qc/bad_slices.tsv', sep='\t')
+
+# Step 2: Create per-subject validity masks (3D: 1=valid, 0=invalid slice)
+def create_validity_mask_from_batch_qc(
+    fa_file: Path,
+    subject: str,
+    session: str,
+    slice_exclusions: dict,
+    output_file: Path
+) -> Path:
+    """Create validity mask using batch QC results."""
+    import nibabel as nib
+    import numpy as np
+
+    fa_img = nib.load(fa_file)
+    mask = np.ones(fa_img.shape[:3], dtype=np.uint8)
+
+    key = f"{subject}_{session}"
+    if key in slice_exclusions['exclusions']:
+        bad_slices = slice_exclusions['exclusions'][key]['bad_slices']
+        for s in bad_slices:
+            mask[:, :, s] = 0
+
+    nib.save(nib.Nifti1Image(mask, fa_img.affine), output_file)
+    return output_file
+
+# Step 3: Use threshold-based analysis (Strategy B)
+# Include voxels where >= 80% of subjects have valid data
+# For those voxels, impute missing values with group mean
+def prepare_tbss_with_slice_masking(
+    all_fa_skeletonised: Path,
+    validity_masks: List[Path],
+    min_valid_fraction: float = 0.8
+) -> Tuple[Path, Path]:
+    """
+    Prepare TBSS data preserving subjects but masking bad slices.
+
+    - Voxels with < min_valid_fraction valid subjects are excluded from analysis
+    - For included voxels, subjects with bad slices get imputed with group mean
+    - This preserves data from subjects with isolated bad slices
+    """
+    # ... implementation in neurofaune/analysis/tbss/prepare.py
+```
+
+**Key insight:** A subject with 1-2 bad slices out of 11 can still contribute valid data from the other 9-10 slices. Only exclude entire subjects if:
+- Mean FD > threshold (severe global motion)
+- Multiple bad slices (>50% of volume)
+- Systematic artifacts affecting whole brain
+
+**Overlap analysis (BPA-rat dataset):**
+- 18 subjects flagged for high motion
+- 26 subjects have ≥1 bad slice
+- Only 7 subjects have BOTH issues
+- 19 subjects have bad slices but acceptable motion → preserve with slice masking
 
 ---
 

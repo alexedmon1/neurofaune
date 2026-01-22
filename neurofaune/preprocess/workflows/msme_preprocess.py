@@ -15,6 +15,7 @@ import json
 
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.utils.transforms import TransformRegistry
+from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
 def run_msme_preprocessing(
@@ -63,8 +64,7 @@ def run_msme_preprocessing(
     derivatives_dir = output_dir / 'derivatives' / subject / session / 'msme'
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
-    qc_dir = output_dir / 'qc' / subject / session / 'msme'
-    qc_dir.mkdir(parents=True, exist_ok=True)
+    qc_dir = get_subject_qc_dir(output_dir, subject, session, 'msme')
 
     if work_dir is None:
         work_dir = output_dir / 'work' / subject / session / 'msme_preproc'
