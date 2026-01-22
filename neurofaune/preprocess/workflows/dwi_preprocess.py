@@ -37,6 +37,189 @@ from neurofaune.atlas.manager import AtlasManager
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_qc_report
 from neurofaune.preprocess.qc import get_subject_qc_dir
+from neurofaune.registration.slice_correspondence import SliceCorrespondenceFinder
+
+
+def extract_t2w_slices_for_dwi(
+    t2w_file: Path,
+    dwi_file: Path,
+    output_path: Path
+) -> Tuple[Path, Dict[str, Any]]:
+    """
+    Extract T2w slices that correspond to DWI coverage.
+
+    DWI typically covers fewer slices (11) than T2w (41). This function
+    uses intensity-based slice correspondence to find which T2w slices
+    anatomically match the DWI coverage.
+
+    Parameters
+    ----------
+    t2w_file : Path
+        Full T2w image
+    dwi_file : Path
+        DWI image (FA or b0)
+    output_path : Path
+        Where to save extracted slices
+
+    Returns
+    -------
+    tuple
+        (Path to extracted T2w, metadata dict)
+    """
+    t2w_img = nib.load(t2w_file)
+    dwi_img = nib.load(dwi_file)
+    t2w_shape = t2w_img.shape[:3]
+    dwi_shape = dwi_img.shape[:3]
+
+    # Use intensity-based slice correspondence finder
+    print("  Finding slice correspondence using intensity matching...")
+    finder = SliceCorrespondenceFinder()
+    correspondence = finder.find_correspondence(
+        partial_image=dwi_file,
+        full_image=t2w_file,
+        modality='dwi',
+        partial_is_t2w=False,  # FA/b0 has different contrast than T2w
+        full_is_t2w=True
+    )
+
+    start_slice = correspondence.start_slice
+    end_slice = correspondence.end_slice
+    n_dwi_slices = dwi_shape[2]
+
+    # Ensure we extract the same number of slices as DWI has
+    slice_indices = list(range(start_slice, start_slice + n_dwi_slices))
+
+    # Clamp to valid range
+    slice_indices = [max(0, min(s, t2w_shape[2] - 1)) for s in slice_indices]
+
+    print(f"  DWI has {n_dwi_slices} slices")
+    print(f"  T2w slices selected: {slice_indices[0]} to {slice_indices[-1]} ({len(slice_indices)} slices)")
+    print(f"  Correspondence confidence: {correspondence.combined_confidence:.3f}")
+    print(f"  Method used: {correspondence.method_used}")
+
+    # Extract slices
+    t2w_data = t2w_img.get_fdata()
+    extracted_data = t2w_data[:, :, slice_indices]
+
+    # Update affine to reflect new origin
+    new_affine = t2w_img.affine.copy()
+    new_affine[:3, 3] += new_affine[:3, 2] * slice_indices[0]
+
+    # Create new image
+    extracted_img = nib.Nifti1Image(extracted_data, new_affine, t2w_img.header)
+    extracted_img.header.set_data_shape(extracted_data.shape)
+
+    # Save
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    nib.save(extracted_img, output_path)
+    print(f"  Extracted T2w saved: {output_path.name}")
+
+    metadata = {
+        'original_t2w_shape': list(t2w_shape),
+        'extracted_shape': list(extracted_data.shape),
+        'slice_indices': slice_indices,
+        'correspondence': correspondence.to_dict(),
+    }
+
+    return output_path, metadata
+
+
+def register_fa_to_t2w(
+    fa_file: Path,
+    t2w_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register FA to T2w within the same subject.
+
+    This handles the partial coverage of DWI by extracting matching T2w slices.
+
+    Parameters
+    ----------
+    fa_file : Path
+        FA map from DTI fitting
+    t2w_file : Path
+        Preprocessed T2w from anatomical pipeline
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("FA to T2w Registration")
+    print("="*60)
+
+    # Step 1: Extract T2w slices matching DWI coverage
+    print("\nStep 1: Extracting T2w slices matching FA coverage...")
+    t2w_slices_path = work_dir / f'{subject}_{session}_T2w_slices_for_dwi.nii.gz'
+    t2w_slices, slice_metadata = extract_t2w_slices_for_dwi(
+        t2w_file, fa_file, t2w_slices_path
+    )
+
+    # Step 2: Run ANTs Affine registration
+    print("\nStep 2: Running ANTs Affine registration...")
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'FA_to_T2w_'
+
+    # Use antsRegistrationSyN.sh with affine only
+    cmd = [
+        'antsRegistrationSyN.sh',
+        '-d', '3',
+        '-f', str(t2w_slices),
+        '-m', str(fa_file),
+        '-o', str(output_prefix),
+        '-n', str(n_cores),
+        '-t', 'a'  # Affine only
+    ]
+
+    print(f"  Moving: {fa_file.name}")
+    print(f"  Fixed: {t2w_slices.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("FA to T2w registration failed")
+
+    # Check outputs
+    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_fa = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not affine_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {affine_transform}")
+
+    print(f"  ✓ Affine transform: {affine_transform.name}")
+    if warped_fa.exists():
+        print(f"  ✓ Warped FA: {warped_fa.name}")
+
+    return {
+        'affine_transform': affine_transform,
+        'warped_fa': warped_fa if warped_fa.exists() else None,
+        't2w_slices': t2w_slices,
+        'slice_metadata': slice_metadata,
+    }
 
 
 def run_dwi_preprocessing(
@@ -49,7 +232,9 @@ def run_dwi_preprocessing(
     output_dir: Path,
     transform_registry: TransformRegistry,
     work_dir: Optional[Path] = None,
-    use_gpu: bool = True
+    use_gpu: bool = True,
+    t2w_file: Optional[Path] = None,
+    run_registration: bool = True
 ) -> Dict[str, Any]:
     """
     Run complete DTI/DWI preprocessing workflow.
@@ -61,12 +246,7 @@ def run_dwi_preprocessing(
     4. Brain masking from b0 volume
     5. DTI fitting (FA, MD, AD, RD)
     6. Save preprocessed outputs
-
-    NOTE: This workflow NO LONGER performs registration to SIGMA atlas.
-    Registration will be done separately:
-    - First to age-matched study FA template
-    - Within-subject T2w ↔ FA registration (for label propagation)
-    - T2w template → SIGMA (for parcellation access)
+    7. (Optional) Register FA to T2w for atlas propagation
 
     Parameters
     ----------
@@ -90,6 +270,10 @@ def run_dwi_preprocessing(
         Working directory (defaults to output_dir/work/{subject}/{session}/dwi_preproc)
     use_gpu : bool
         Use GPU-accelerated eddy_cuda (default: True)
+    t2w_file : Path, optional
+        Preprocessed T2w from anatomical pipeline (required if run_registration=True)
+    run_registration : bool
+        Whether to run FA→T2w registration (default: True)
 
     Returns
     -------
@@ -104,6 +288,7 @@ def run_dwi_preprocessing(
         - 'ad': Path to AD map
         - 'rd': Path to RD map
         - 'qc_metrics': Dict with QC metrics
+        - 'registration': Dict with registration outputs (if run_registration=True)
 
     Examples
     --------
@@ -444,6 +629,51 @@ def run_dwi_preprocessing(
     print(f"  - Basic metrics: {qc_json}")
 
     # ==========================================================================
+    # Step 7: FA to T2w Registration (optional)
+    # ==========================================================================
+    registration_results = None
+
+    if run_registration:
+        if t2w_file is None:
+            print("\n⚠ Registration requested but no T2w file provided - skipping")
+        elif not t2w_file.exists():
+            print(f"\n⚠ T2w file not found: {t2w_file} - skipping registration")
+        else:
+            print("\n" + "="*80)
+            print("Step 7: FA to T2w Registration")
+            print("="*80)
+
+            try:
+                registration_results = register_fa_to_t2w(
+                    fa_file=fa_file,
+                    t2w_file=t2w_file,
+                    output_dir=output_dir,
+                    subject=subject,
+                    session=session,
+                    work_dir=work_dir,
+                    n_cores=4
+                )
+
+                # Save registration metadata to JSON
+                reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_T2w_registration.json'
+                reg_metadata = {
+                    'fa_file': str(fa_file),
+                    't2w_file': str(t2w_file),
+                    'affine_transform': str(registration_results['affine_transform']),
+                    'slice_metadata': registration_results['slice_metadata'],
+                }
+                with open(reg_metadata_file, 'w') as f:
+                    json.dump(reg_metadata, f, indent=2)
+
+                print(f"\n✓ Registration complete:")
+                print(f"  - Transform: {registration_results['affine_transform']}")
+                print(f"  - Metadata: {reg_metadata_file}")
+
+            except Exception as e:
+                print(f"\n✗ Registration failed: {e}")
+                print("  Continuing without registration...")
+
+    # ==========================================================================
     # Workflow complete
     # ==========================================================================
     print("\n" + "="*80)
@@ -455,10 +685,13 @@ def run_dwi_preprocessing(
     print(f"MD map: {md_file}")
     print(f"AD map: {ad_file}")
     print(f"RD map: {rd_file}")
-    print("\nNOTE: Registration to study FA template and SIGMA will be done separately.")
+    if registration_results is not None:
+        print(f"FA→T2w transform: {registration_results['affine_transform']}")
+    else:
+        print("\nNOTE: FA→T2w registration was skipped. Run with t2w_file to enable.")
     print("="*80 + "\n")
 
-    return {
+    results = {
         'dwi_preproc': dwi_eddy_file,
         'dwi_mask': brain_mask_file,
         'bval': bval_output,
@@ -470,6 +703,11 @@ def run_dwi_preprocessing(
         'qc_results': qc_results,
         'qc_metrics': qc_metrics
     }
+
+    if registration_results is not None:
+        results['registration'] = registration_results
+
+    return results
 
 
 def fit_dti(

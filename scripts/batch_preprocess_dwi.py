@@ -8,6 +8,7 @@ Processes all DWI scans in the BPA-Rat BIDS dataset with:
 - GPU-accelerated eddy correction
 - DTI fitting (FA, MD, AD, RD)
 - Comprehensive QC
+- FA to T2w registration (if T2w is preprocessed)
 
 Usage:
     # Dry run to see what would be processed
@@ -24,6 +25,9 @@ Usage:
 
     # Force reprocessing
     python batch_preprocess_dwi.py --force
+
+    # Skip FA to T2w registration
+    python batch_preprocess_dwi.py --skip-registration
 """
 
 import argparse
@@ -193,6 +197,12 @@ def fix_headers_if_needed(
     return fixed_count
 
 
+def find_t2w_file(study_root: Path, subject: str, session: str) -> Optional[Path]:
+    """Find preprocessed T2w file for FA to T2w registration."""
+    t2w_path = study_root / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+    return t2w_path if t2w_path.exists() else None
+
+
 def preprocess_single_subject(
     study_root: Path,
     subject: str,
@@ -200,7 +210,8 @@ def preprocess_single_subject(
     dwi_path: Path,
     config_path: Path,
     use_gpu: bool = True,
-    force: bool = False
+    force: bool = False,
+    skip_registration: bool = False
 ) -> dict:
     """
     Run DTI preprocessing for a single subject.
@@ -237,6 +248,14 @@ def preprocess_single_subject(
         cohort=cohort
     )
 
+    # Find T2w file for registration
+    t2w_file = None
+    run_registration = not skip_registration
+    if run_registration:
+        t2w_file = find_t2w_file(study_root, subject, session)
+        if t2w_file is None:
+            print(f"  ⚠ No preprocessed T2w found for {subject}/{session}, registration will be skipped")
+
     try:
         results = run_dwi_preprocessing(
             config=config,
@@ -247,15 +266,22 @@ def preprocess_single_subject(
             bvec_file=bvec_path,
             output_dir=study_root,
             transform_registry=registry,
-            use_gpu=use_gpu
+            use_gpu=use_gpu,
+            t2w_file=t2w_file,
+            run_registration=run_registration
         )
 
-        return {
+        result = {
             'status': 'success',
             'fa_path': str(results.get('fa', '')),
             'md_path': str(results.get('md', '')),
             'qc_metrics': results.get('qc_metrics', {})
         }
+
+        if 'registration' in results:
+            result['registration'] = str(results['registration'].get('affine_transform', ''))
+
+        return result
 
     except Exception as e:
         return {
@@ -324,6 +350,11 @@ def main():
         '--dry-run',
         action='store_true',
         help='Only check files, do not process'
+    )
+    parser.add_argument(
+        '--skip-registration',
+        action='store_true',
+        help='Skip FA to T2w registration step'
     )
 
     args = parser.parse_args()
@@ -433,7 +464,8 @@ def main():
             dwi_path=dwi_path,
             config_path=args.config,
             use_gpu=not args.no_gpu,
-            force=args.force
+            force=args.force,
+            skip_registration=args.skip_registration
         )
 
         result['subject'] = subject
@@ -443,6 +475,8 @@ def main():
 
         if result['status'] == 'success':
             print(f"  ✓ FA: {result['fa_path']}")
+            if result.get('registration'):
+                print(f"  ✓ Registration: {result['registration']}")
         elif result['status'] == 'skipped':
             print(f"  → Skipped: {result['reason']}")
         else:
