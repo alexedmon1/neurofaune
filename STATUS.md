@@ -6,7 +6,7 @@ This file tracks the current state of the neurofaune project. Update this file a
 
 ---
 
-## Current Phase: 8 - Template-Based Registration + DTI Batch Processing
+## Current Phase: 9 - TBSS Analysis Pipeline
 
 ### Template Building Status
 
@@ -38,45 +38,44 @@ This file tracks the current state of the neurofaune project. Update this file a
 
 ### DTI Registration Pipeline Status
 
-**Status:** ✅ Pipeline validated and integrated; 🔄 Batch processing in progress
+**Status:** ✅ Complete — All transforms computed for 118 subjects
 
-The DTI-to-atlas registration chain is now working:
+The DTI-to-atlas registration chain is fully operational:
 ```
-Subject FA (128×128×11) → Subject T2w → Cohort Template → SIGMA Atlas
+Subject FA (160×160×11) → Subject T2w (256×256×41) → Cohort Template → SIGMA Atlas
+         Affine                    SyN                     SyN
 ```
 
-| Component | Status | Script |
-|-----------|--------|--------|
-| DTI preprocessing | ✅ Working | `dwi_preprocess.py` |
-| Intensity normalization | ✅ NEW | Handles Bruker ParaVision intensity differences |
-| Brain extraction (Atropos+BET) | ✅ NEW | Two-pass: Atropos segmentation → BET refinement |
-| Eddy slice padding | ✅ Working | Prevents edge slice loss during motion correction |
-| FA → T2w registration | ✅ Working | `003_register_dwi_to_t2w.py` |
-| T2w → Template registration | ✅ Working | `007_register_subject_to_template.py` |
-| Template → SIGMA registration | ✅ Fixed | `008_register_template_to_sigma.py` |
-| Atlas propagation to FA | ✅ Working | `006_propagate_atlas_to_dwi.py` |
+| Component | Status | Location |
+|-----------|--------|----------|
+| DTI preprocessing | ✅ Complete (181 sessions) | `scripts/batch_preprocess_dwi.py` |
+| Intensity normalization | ✅ Complete | Handles Bruker ParaVision intensity differences |
+| Brain extraction (Atropos+BET) | ✅ Complete | Two-pass: Atropos segmentation → BET refinement |
+| Eddy slice padding | ✅ Complete | Prevents edge slice loss during motion correction |
+| FA → T2w registration | ✅ Complete (118 subjects) | `dwi_preprocess.py` + `scripts/batch_register_fa_to_t2w.py` |
+| T2w → Template registration | ✅ Complete (121 subjects) | `scripts/batch_preprocess_anat.py` |
+| Template → SIGMA registration | ✅ Complete (3 cohorts) | `templates/anat/{cohort}/transforms/` |
+| Atlas propagation to FA | ✅ Working | `templates/registration.py` |
 
-**Batch Processing Status (2026-01-20):**
-- **Total subjects:** 187 DWI sessions
-- **Status:** Restarting with improved brain extraction
-- **Script:** `scripts/batch_preprocess_dwi.py`
+**FA→T2w Registration Approach:**
+- Registers FA directly to the full T2w volume (no slice extraction needed)
+- ANTs finds optimal 3D alignment including Z-offset for partial coverage DWI
+- Results: 113/115 subjects with expected 11 slices, 2 with 12 slices
+- Transforms reusable for any DWI metric (MD, AD, RD, future DKI)
 
-**Test result (sub-Rat1/ses-p60):**
-- 96 unique atlas labels in FA space
-- 65% coverage of FA brain voxels
-- Per-slice coverage: 35-110%
-- Edge slices preserved after slice padding fix (previously 0%)
-
-**Development scripts:** `scripts/dev_registration/`
+**Transform locations:**
+- FA→T2w: `transforms/{subject}/{session}/FA_to_T2w_0GenericAffine.mat`
+- T2w→Template: `transforms/{subject}/{session}/{subject}_{session}_T2w_to_template_*.{mat,nii.gz}`
+- Template→SIGMA: `templates/anat/{cohort}/transforms/tpl-to-SIGMA_*.{mat,nii.gz}`
 
 ### Workflow Integration Status
 
-| Workflow | Preprocessing | Registration to Template | Registration to SIGMA |
-|----------|--------------|-------------------------|----------------------|
-| Anatomical (`anat_preprocess.py`) | ✅ Complete | ❌ Not integrated | ❌ Not integrated |
-| Functional (`func_preprocess.py`) | ✅ Complete | ❌ Not integrated | ❌ Not integrated |
-| DTI (`dwi_preprocess.py`) | ✅ Complete | ✅ Validated | ✅ Atlas propagation added |
-| MSME (`msme_preprocess.py`) | ✅ Complete | ❌ Not integrated | ❌ Not integrated |
+| Workflow | Preprocessing | FA/Func→T2w | T2w→Template | Template→SIGMA |
+|----------|--------------|-------------|--------------|----------------|
+| Anatomical (`anat_preprocess.py`) | ✅ Complete | N/A | ✅ Integrated | ✅ Via template |
+| DTI (`dwi_preprocess.py`) | ✅ Complete | ✅ Integrated | ✅ Via anat | ✅ Via template |
+| Functional (`func_preprocess.py`) | ✅ Complete | ❌ Not integrated | ❌ Not integrated | ❌ Not integrated |
+| MSME (`msme_preprocess.py`) | ✅ Complete | ❌ Not integrated | ❌ Not integrated | ❌ Not integrated |
 
 ### Registration Utilities Status
 
@@ -125,13 +124,14 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 
 | Modality | p30 | p60 | p90 | Total |
 |----------|-----|-----|-----|-------|
-| Anatomical T2w | 38 | 34 | 47 | 119 |
-| Anatomical + Registration | ~51 | ~48 | ~67 | 116 (see note) |
+| Anatomical T2w | 38 | 34 | 48 | 126 (+ 6 ses-unknown) |
+| T2w → Template transforms | 38 | 35 | 48 | 121 |
+| DTI (FA, MD, AD, RD) | - | - | - | 181 sessions |
+| FA → T2w transforms | - | - | - | 118 subjects |
 | Functional BOLD | ~98 | ~98 | ~98 | 294 |
-| DTI | 51 | 48 | 82 | 181 |
 | MSME | TBD | TBD | TBD | TBD |
 
-*Note: Anatomical registration completed for 116/126 preprocessed subjects (4 skipped due to unknown session, 6 failed).*
+*Note: 118 subjects have the complete transform chain (FA→T2w→Template→SIGMA). The remaining DTI sessions lack a matching preprocessed T2w.*
 
 ---
 
@@ -191,8 +191,9 @@ uv run python scripts/generate_func_qc_retroactive.py /path/to/study
 3. ~~**Slice correspondence for partial-coverage modalities**~~ ✅ Complete (intensity + landmark detection)
 4. ~~**Batch process DTI data**~~ ✅ COMPLETE (187/187 processed, 181 with QC metrics)
 5. ~~**Batch QC summary system**~~ ✅ COMPLETE (DWI, anatomical, functional)
-6. **Integrate registration into DWI workflow** - Add FA→T2w→template→SIGMA chain to dwi_preprocess.py
+6. ~~**Integrate registration into DWI workflow**~~ ✅ COMPLETE - FA→T2w registration in dwi_preprocess.py, batch run for 118 subjects
 7. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
+   - All transforms now available (FA→T2w→Template→SIGMA)
    - Use slice-level masking (Strategy B) to preserve data from subjects with isolated bad slices
 8. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
 
@@ -230,6 +231,30 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-22 (Session 3) - FA→T2w Registration Complete
+
+**FA→T2w Registration Simplified and Batch-Processed:**
+- Simplified `register_fa_to_t2w()` to register FA directly to full T2w volume
+- Removed slice extraction approach (was causing incomplete coverage)
+- ANTs finds optimal 3D alignment including Z-offset naturally
+- Batch-processed all 118 subjects with matching FA + T2w (0 errors, ~17 min)
+- Coverage: 113 subjects with 11 slices, 2 with 12 slices (expected), 2 minor outliers
+
+**sub-Rat110/ses-p90 Reprocessed:**
+- T2w preprocessing was bad (caused only 6-slice FA coverage)
+- Reran anatomical preprocessing, T2w→Template (corr=0.907), and FA→T2w
+- Now shows expected 11-slice coverage (T2w slices 17-27)
+
+**Transform Chain Complete (118 subjects):**
+- Step 1: FA → T2w (Affine) — `FA_to_T2w_0GenericAffine.mat`
+- Step 2: T2w → Template (SyN) — `*_T2w_to_template_{0GenericAffine.mat, 1Warp.nii.gz}`
+- Step 3: Template → SIGMA (SyN) — `tpl-to-SIGMA_{0GenericAffine.mat, 1Warp.nii.gz}`
+- All transforms reusable for any DWI-space metric (MD, AD, RD, future DKI)
+
+**Files Created/Modified:**
+- `neurofaune/preprocess/workflows/dwi_preprocess.py` - Simplified registration, removed slice extraction
+- `scripts/batch_register_fa_to_t2w.py` - New standalone batch registration script
 
 ### 2026-01-22 (Session 2) - QC Directory Restructure & Multi-Modal QC
 
@@ -485,7 +510,7 @@ anatomical correspondence due to the extreme anisotropy mismatch.
 3. ~~**Tissue probability templates**~~ ✅ COMPLETE (2026-01-16) - GM/WM/CSF for all cohorts
 4. ~~**Eddy edge slice loss**~~ ✅ FIXED (2026-01-20) - Slice padding implemented
 5. ~~**DWI brain extraction failing on low-intensity data**~~ ✅ FIXED (2026-01-20) - Atropos+BET two-pass
-6. **Registration not integrated** into preprocessing workflows (anat, func)
+6. ~~**Registration not integrated**~~ ✅ RESOLVED (2026-01-22) - DWI and anat integrated; func pending
 
 ---
 
@@ -497,7 +522,7 @@ anatomical correspondence due to the extreme anisotropy mismatch.
 ├── derivatives/                 # Preprocessed outputs
 ├── templates/anat/{cohort}/     # Age-specific templates
 ├── atlas/SIGMA_study_space/     # Study-space SIGMA atlas (reoriented)
-├── transforms/                  # Subject transform registry (empty until integration)
+├── transforms/{subject}/{session}/ # Subject transforms (FA→T2w, T2w→Template)
 ├── qc/                          # Quality control reports
 └── work/                        # Temporary files
 
