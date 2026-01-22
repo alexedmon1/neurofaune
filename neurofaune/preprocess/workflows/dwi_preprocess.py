@@ -37,91 +37,6 @@ from neurofaune.atlas.manager import AtlasManager
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_qc_report
 from neurofaune.preprocess.qc import get_subject_qc_dir
-from neurofaune.registration.slice_correspondence import SliceCorrespondenceFinder
-
-
-def extract_t2w_slices_for_dwi(
-    t2w_file: Path,
-    dwi_file: Path,
-    output_path: Path
-) -> Tuple[Path, Dict[str, Any]]:
-    """
-    Extract T2w slices that correspond to DWI coverage.
-
-    DWI typically covers fewer slices (11) than T2w (41). This function
-    uses intensity-based slice correspondence to find which T2w slices
-    anatomically match the DWI coverage.
-
-    Parameters
-    ----------
-    t2w_file : Path
-        Full T2w image
-    dwi_file : Path
-        DWI image (FA or b0)
-    output_path : Path
-        Where to save extracted slices
-
-    Returns
-    -------
-    tuple
-        (Path to extracted T2w, metadata dict)
-    """
-    t2w_img = nib.load(t2w_file)
-    dwi_img = nib.load(dwi_file)
-    t2w_shape = t2w_img.shape[:3]
-    dwi_shape = dwi_img.shape[:3]
-
-    # Use intensity-based slice correspondence finder
-    print("  Finding slice correspondence using intensity matching...")
-    finder = SliceCorrespondenceFinder()
-    correspondence = finder.find_correspondence(
-        partial_image=dwi_file,
-        full_image=t2w_file,
-        modality='dwi',
-        partial_is_t2w=False,  # FA/b0 has different contrast than T2w
-        full_is_t2w=True
-    )
-
-    start_slice = correspondence.start_slice
-    end_slice = correspondence.end_slice
-    n_dwi_slices = dwi_shape[2]
-
-    # Ensure we extract the same number of slices as DWI has
-    slice_indices = list(range(start_slice, start_slice + n_dwi_slices))
-
-    # Clamp to valid range
-    slice_indices = [max(0, min(s, t2w_shape[2] - 1)) for s in slice_indices]
-
-    print(f"  DWI has {n_dwi_slices} slices")
-    print(f"  T2w slices selected: {slice_indices[0]} to {slice_indices[-1]} ({len(slice_indices)} slices)")
-    print(f"  Correspondence confidence: {correspondence.combined_confidence:.3f}")
-    print(f"  Method used: {correspondence.method_used}")
-
-    # Extract slices
-    t2w_data = t2w_img.get_fdata()
-    extracted_data = t2w_data[:, :, slice_indices]
-
-    # Update affine to reflect new origin
-    new_affine = t2w_img.affine.copy()
-    new_affine[:3, 3] += new_affine[:3, 2] * slice_indices[0]
-
-    # Create new image
-    extracted_img = nib.Nifti1Image(extracted_data, new_affine, t2w_img.header)
-    extracted_img.header.set_data_shape(extracted_data.shape)
-
-    # Save
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    nib.save(extracted_img, output_path)
-    print(f"  Extracted T2w saved: {output_path.name}")
-
-    metadata = {
-        'original_t2w_shape': list(t2w_shape),
-        'extracted_shape': list(extracted_data.shape),
-        'slice_indices': slice_indices,
-        'correspondence': correspondence.to_dict(),
-    }
-
-    return output_path, metadata
 
 
 def register_fa_to_t2w(
@@ -136,7 +51,8 @@ def register_fa_to_t2w(
     """
     Register FA to T2w within the same subject.
 
-    This handles the partial coverage of DWI by extracting matching T2w slices.
+    Registers FA directly to the full T2w volume, letting ANTs find the
+    optimal 3D alignment including the Z-offset for partial coverage DWI.
 
     Parameters
     ----------
@@ -164,15 +80,14 @@ def register_fa_to_t2w(
     print("FA to T2w Registration")
     print("="*60)
 
-    # Step 1: Extract T2w slices matching DWI coverage
-    print("\nStep 1: Extracting T2w slices matching FA coverage...")
-    t2w_slices_path = work_dir / f'{subject}_{session}_T2w_slices_for_dwi.nii.gz'
-    t2w_slices, slice_metadata = extract_t2w_slices_for_dwi(
-        t2w_file, fa_file, t2w_slices_path
-    )
+    # Load images to get info
+    fa_img = nib.load(fa_file)
+    t2w_img = nib.load(t2w_file)
+    print(f"\n  FA: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
+    print(f"  T2w: {t2w_img.shape} voxels, {t2w_img.header.get_zooms()[:3]} mm")
 
-    # Step 2: Run ANTs Affine registration
-    print("\nStep 2: Running ANTs Affine registration...")
+    # Register FA directly to full T2w - let ANTs find optimal alignment
+    print("\nRunning ANTs Affine registration (FA → full T2w)...")
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'FA_to_T2w_'
@@ -181,7 +96,7 @@ def register_fa_to_t2w(
     cmd = [
         'antsRegistrationSyN.sh',
         '-d', '3',
-        '-f', str(t2w_slices),
+        '-f', str(t2w_file),
         '-m', str(fa_file),
         '-o', str(output_prefix),
         '-n', str(n_cores),
@@ -189,7 +104,7 @@ def register_fa_to_t2w(
     ]
 
     print(f"  Moving: {fa_file.name}")
-    print(f"  Fixed: {t2w_slices.name}")
+    print(f"  Fixed: {t2w_file.name}")
 
     result = subprocess.run(
         cmd,
@@ -214,11 +129,19 @@ def register_fa_to_t2w(
     if warped_fa.exists():
         print(f"  ✓ Warped FA: {warped_fa.name}")
 
+        # Report which T2w slices have FA coverage
+        warped_data = nib.load(warped_fa).get_fdata()
+        slices_with_fa = [z for z in range(warped_data.shape[2])
+                         if np.sum(warped_data[:, :, z] > 0.1) > 1000]
+        if slices_with_fa:
+            print(f"  FA covers T2w slices {slices_with_fa[0]}-{slices_with_fa[-1]} ({len(slices_with_fa)} slices)")
+
     return {
         'affine_transform': affine_transform,
         'warped_fa': warped_fa if warped_fa.exists() else None,
-        't2w_slices': t2w_slices,
-        'slice_metadata': slice_metadata,
+        't2w_file': t2w_file,
+        'fa_shape': fa_img.shape,
+        't2w_shape': t2w_img.shape,
     }
 
 
@@ -658,9 +581,11 @@ def run_dwi_preprocessing(
                 reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_T2w_registration.json'
                 reg_metadata = {
                     'fa_file': str(fa_file),
-                    't2w_file': str(t2w_file),
+                    't2w_file': str(registration_results['t2w_file']),
                     'affine_transform': str(registration_results['affine_transform']),
-                    'slice_metadata': registration_results['slice_metadata'],
+                    'warped_fa': str(registration_results['warped_fa']) if registration_results.get('warped_fa') else None,
+                    'fa_shape': list(registration_results['fa_shape']),
+                    't2w_shape': list(registration_results['t2w_shape']),
                 }
                 with open(reg_metadata_file, 'w') as f:
                     json.dump(reg_metadata, f, indent=2)
