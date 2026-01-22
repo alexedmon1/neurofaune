@@ -4,10 +4,11 @@ Motion QC for functional MRI preprocessing.
 Generates quality control reports for fMRI motion correction.
 """
 
+import json
 import numpy as np
 import nibabel as nib
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -432,7 +433,46 @@ def generate_motion_qc_report(
     report_file = output_dir / f'{subject}_{session}_motion_qc.html'
     with open(report_file, 'w') as f:
         f.write(html_content)
-    
+
     print(f"  Motion QC report saved: {report_file}")
-    
+
+    # Save metrics JSON for batch QC
+    metrics = {
+        'motion': {
+            'n_volumes': int(n_volumes),
+            'mean_fd': float(mean_fd),
+            'max_fd': float(max_fd),
+            'median_fd': float(np.median(fd)),
+            'std_fd': float(np.std(fd)),
+            'n_bad_volumes': int(n_bad_volumes),
+            'pct_bad_volumes': float(pct_bad_volumes),
+            'fd_threshold': float(threshold_fd),
+            'mean_dvars': float(np.mean(dvars)),
+            'max_dvars': float(np.max(dvars)),
+            'std_dvars': float(np.std(dvars)),
+        },
+        'translation': {
+            'mean_abs_x': float(mean_abs_displacement[0]),
+            'mean_abs_y': float(mean_abs_displacement[1]),
+            'mean_abs_z': float(mean_abs_displacement[2]),
+            'max_abs_x': float(max_abs_displacement[0]),
+            'max_abs_y': float(max_abs_displacement[1]),
+            'max_abs_z': float(max_abs_displacement[2]),
+        },
+        'rotation': {
+            'mean_abs_x_deg': float(mean_abs_rotation[0]),
+            'mean_abs_y_deg': float(mean_abs_rotation[1]),
+            'mean_abs_z_deg': float(mean_abs_rotation[2]),
+            'max_abs_x_deg': float(max_abs_rotation[0]),
+            'max_abs_y_deg': float(max_abs_rotation[1]),
+            'max_abs_z_deg': float(max_abs_rotation[2]),
+        }
+    }
+
+    metrics_file = output_dir / f'{subject}_{session}_func_qc_metrics.json'
+    with open(metrics_file, 'w') as f:
+        json.dump(metrics, f, indent=2)
+
+    print(f"  Metrics saved: {metrics_file}")
+
     return report_file

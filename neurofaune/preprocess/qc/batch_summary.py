@@ -489,10 +489,12 @@ class BatchQCConfig:
     })
 
     # Functional-specific thresholds (in SCALED space)
+    # Note: Motion params from MCFLIRT are in scaled mm due to 10x voxel scaling
     func_thresholds: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        'mean_fd': (0.0, 5.0),        # 5mm scaled = 0.5mm actual, stricter for fMRI
-        'max_fd': (0.0, 20.0),        # 20mm scaled = 2mm actual
-        'pct_bad_volumes': (0.0, 20.0),  # %, warn if > 20%
+        'motion_mean_fd': (0.0, 5.0),        # 5mm scaled = 0.5mm actual, stricter for fMRI
+        'motion_max_fd': (0.0, 20.0),        # 20mm scaled = 2mm actual
+        'motion_pct_bad_volumes': (0.0, 20.0),  # %, warn if > 20%
+        'motion_mean_dvars': (0.0, None),    # DVARS (no upper bound, use z-score)
     })
 
     # Anatomical thresholds (not affected by voxel scaling)
@@ -791,7 +793,12 @@ def _get_key_metrics(modality: str) -> List[str]:
             'segmentation_gm_volume_fraction',
             'segmentation_wm_volume_fraction'
         ],
-        'func': ['mean_fd', 'max_fd', 'pct_bad_volumes', 'n_components_removed'],
+        'func': [
+            'motion_mean_fd',
+            'motion_max_fd',
+            'motion_pct_bad_volumes',
+            'motion_mean_dvars'
+        ],
         'msme': ['t2_mean', 'mwf_mean', 'iwf_mean'],
     }
     return metrics.get(modality, [])
