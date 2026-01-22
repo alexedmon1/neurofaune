@@ -135,30 +135,51 @@ print(f"Confidence: {result.combined_confidence:.2f}")
 
 ---
 
-## Batch QC System (NEW - 2026-01-22)
+## Batch QC System (Updated 2026-01-22)
 
-**Location:** `qc/{modality}_batch_summary/`
+**Directory Structure:**
+```
+qc/
+├── sub/{subject}/{session}/{modality}/   # Per-subject QC (metrics JSON, figures, HTML)
+├── dwi_batch_summary/                    # DWI batch aggregation
+├── anat_batch_summary/                   # Anatomical batch aggregation
+└── func_batch_summary/                   # Functional batch aggregation
+```
 
-Implemented batch QC summary generation with:
+**Features:**
 - Subject-level exclusion lists (exclude/include .txt files)
 - Slice-level QC for TBSS (identifies bad slices per subject)
 - Categorized exclusions (high_motion, extreme_diffusion, low_snr)
 - Cohort-specific exclusion lists
 - Visual heatmaps and distribution plots
+- Nested JSON metrics flattened for batch aggregation
 
-**DWI Batch QC Results:**
-- Total subjects: 181
-- Excluded (subject-level): 40 (22%)
-  - High motion: 18
-  - Extreme diffusion: 9
-  - Low SNR: 3
-  - Other: 10
-- Slice-level issues: 26 subjects with ≥1 bad slice (36 total bad slices)
-- Overlap: Only 7 subjects have both high motion AND bad slices
+**Batch QC Results:**
+
+| Modality | Subjects | Outliers | Notes |
+|----------|----------|----------|-------|
+| DWI | 181 | 40 (22%) | 26 subjects with bad slices |
+| Anatomical | 126 | 7 (6%) | Skull stripping/segmentation metrics |
+| Functional | 2 | 0 | Only 2 subjects preprocessed |
+
+**DWI Details:**
+- High motion: 18
+- Extreme diffusion: 9
+- Low SNR: 3
+- Slice-level issues: 26 subjects with ≥1 bad slice (36 total)
+- Only 7 subjects have both high motion AND bad slices
 
 **Usage:**
 ```bash
 uv run python scripts/generate_batch_qc.py /path/to/study --modality dwi --slice-qc
+uv run python scripts/generate_batch_qc.py /path/to/study --modality anat
+uv run python scripts/generate_batch_qc.py /path/to/study --modality func
+```
+
+**Retroactive QC Generation:**
+```bash
+uv run python scripts/generate_anat_qc_retroactive.py /path/to/study
+uv run python scripts/generate_func_qc_retroactive.py /path/to/study
 ```
 
 ---
@@ -169,10 +190,11 @@ uv run python scripts/generate_batch_qc.py /path/to/study --modality dwi --slice
 2. ~~**Generate tissue probability templates**~~ ✅ Complete (GM/WM/CSF for all cohorts)
 3. ~~**Slice correspondence for partial-coverage modalities**~~ ✅ Complete (intensity + landmark detection)
 4. ~~**Batch process DTI data**~~ ✅ COMPLETE (187/187 processed, 181 with QC metrics)
-5. ~~**Batch QC summary system**~~ ✅ COMPLETE (subject + slice-level exclusion lists)
-6. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
+5. ~~**Batch QC summary system**~~ ✅ COMPLETE (DWI, anatomical, functional)
+6. **Integrate registration into DWI workflow** - Add FA→T2w→template→SIGMA chain to dwi_preprocess.py
+7. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
    - Use slice-level masking (Strategy B) to preserve data from subjects with isolated bad slices
-7. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
+8. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
 
 ---
 
@@ -209,7 +231,33 @@ acquisition orientation:
 
 ## Recent Changes
 
-### 2026-01-22 - Batch QC Summary System & Exclusion Lists
+### 2026-01-22 (Session 2) - QC Directory Restructure & Multi-Modal QC
+
+**QC Directory Restructure:**
+- Migrated all QC from `qc/{subject}/` to `qc/sub/{subject}/` for better organization
+- Created migration script: `scripts/migrate_qc_to_sub_dir.py`
+- 141 subject directories moved successfully
+
+**Anatomical Batch QC:**
+- Generated QC for all 126 preprocessed anatomical subjects
+- Created retroactive script: `scripts/generate_anat_qc_retroactive.py`
+- Added `_flatten_dict()` to handle nested JSON metrics
+- Results: 126 subjects, 7 outliers (6%)
+
+**Functional QC Updates:**
+- Updated `motion_qc.py` to save metrics JSON (motion, translation, rotation)
+- Created retroactive script: `scripts/generate_func_qc_retroactive.py`
+- Validated batch QC with 2 preprocessed subjects
+
+**Files Created/Modified:**
+- `scripts/migrate_qc_to_sub_dir.py` - QC directory migration
+- `scripts/generate_anat_qc_retroactive.py` - Retroactive anatomical QC
+- `scripts/generate_func_qc_retroactive.py` - Retroactive functional QC
+- `neurofaune/preprocess/qc/func/motion_qc.py` - Added JSON metrics saving
+- `neurofaune/preprocess/qc/batch_summary.py` - Flattening, updated thresholds
+- `neurofaune/preprocess/workflows/anat_preprocess.py` - Added QC generation (was TODO)
+
+### 2026-01-22 (Session 1) - Batch QC Summary System & Exclusion Lists
 
 **Batch Processing Completed:**
 - DWI preprocessing: 187/187 subjects (100% complete)
@@ -242,7 +290,7 @@ bad slices but acceptable motion → use slice-level masking in TBSS to preserve
 - `neurofaune/preprocess/qc/__init__.py` - Exports
 - `scripts/generate_batch_qc.py` - CLI script
 - `docs/plans/TBSS_IMPLEMENTATION_PLAN.md` - Updated with slice masking strategy (Strategy B)
-- All workflow files updated for new QC path structure (`qc/sub/` for per-subject QC)
+- All workflow files updated for new QC path structure
 
 ### 2026-01-20 (Session 2) - DWI Intensity Normalization & Atropos Brain Extraction
 
