@@ -26,11 +26,8 @@ from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.func import (
     generate_motion_qc_report,
     generate_confounds_qc_report,
-    generate_registration_qc
 )
 from neurofaune.preprocess.qc import get_subject_qc_dir
-from neurofaune.templates.registration import register_within_subject, apply_transforms
-from neurofaune.atlas.manager import AtlasManager
 from neurofaune.preprocess.utils.func.ica_denoising import (
     run_melodic_ica,
     classify_ica_components,
@@ -735,7 +732,8 @@ def run_functional_preprocessing(
     transform_registry: TransformRegistry,
     t2w_file: Optional[Path] = None,
     work_dir: Optional[Path] = None,
-    n_discard: int = 0
+    n_discard: int = 0,
+    run_registration: bool = True
 ) -> Dict[str, Any]:
     """
     Run complete functional fMRI preprocessing workflow.
@@ -757,10 +755,6 @@ def run_functional_preprocessing(
     - aCompCor extraction (CSF/WM physiological noise components)
     - Comprehensive QC reports for all steps
 
-    Future features (under development):
-    - Registration to anatomical T2w space
-    - Registration to SIGMA atlas
-
     Parameters
     ----------
     config : dict
@@ -781,6 +775,8 @@ def run_functional_preprocessing(
         Working directory (defaults to output_dir/work/{subject}/{session}/func_preproc)
     n_discard : int
         Number of initial volumes to discard (default: 0)
+    run_registration : bool
+        Whether to register BOLD to T2w (default: True, requires t2w_file)
 
     Returns
     -------
@@ -1307,151 +1303,76 @@ def run_functional_preprocessing(
     }
 
     # =========================================================================
-    # STEP 12: Registration to Anatomical Space (DISABLED - Future Feature)
+    # STEP 12: BOLD to T2w Registration
     # =========================================================================
-    # Registration and normalization are under development and disabled by default
-    func_reg_config = func_config.get('registration', {})
-    reg_enabled = func_reg_config.get('enabled', False) and (t2w_file is not None)
+    registration_results = None
 
-    if reg_enabled:
-        print("\n" + "="*60)
-        print("STEP 12: Registration to Anatomical Space")
-        print("="*60)
-
-        # Check if T2w file exists
-        if not t2w_file.exists():
-            print(f"  Warning: T2w file not found: {t2w_file}")
-            print("  Skipping registration")
-            reg_enabled = False
-
-    if reg_enabled:
-        # Create mean BOLD for registration
-        mean_bold_reg = work_dir / f"{subject}_{session}_mean_bold_for_reg.nii.gz"
-        if not mean_bold_reg.exists():
-            shutil.copy(str(brain_ref), str(mean_bold_reg))
-
-        # Register mean BOLD to T2w
-        bold_to_t2w_prefix = work_dir / f"{subject}_{session}_bold_to_t2w_"
-        reg_results = register_within_subject(
-            moving_image=mean_bold_reg,
-            fixed_image=t2w_file,
-            output_prefix=bold_to_t2w_prefix,
-            moving_modality='bold',
-            fixed_modality='T2w',
-            n_cores=config.get('execution', {}).get('n_procs', 4)
-        )
-
-        # Apply transform to 4D BOLD timeseries
-        bold_in_t2w = derivatives_dir / f"{subject}_{session}_space-T2w_bold.nii.gz"
-        print(f"\n  Applying transform to 4D BOLD timeseries...")
-        apply_transforms(
-            input_image=final_bold,
-            reference_image=t2w_file,
-            transforms=[reg_results['composite_transform']],
-            output_image=bold_in_t2w,
-            interpolation='Linear'
-        )
-
-        # Save transform to registry
-        transform_registry.save_ants_composite_transform(
-            composite_file=reg_results['composite_transform'],
-            source_space='bold',
-            target_space='T2w',
-            reference=t2w_file,
-            source_image=mean_bold_reg
-        )
-
-        results['registration'] = {
-            'bold_in_t2w': bold_in_t2w,
-            'transform': reg_results['composite_transform'],
-            'mean_bold_registered': reg_results['warped']
-        }
-
-        print(f"  ✓ BOLD → T2w registration complete")
-        print(f"    Registered BOLD: {bold_in_t2w}")
-
-        # =====================================================================
-        # STEP 13: Registration to SIGMA Atlas (via T2w)
-        # =====================================================================
-        norm_enabled = func_config.get('normalization', {}).get('enabled', True)
-        reuse_transforms = func_config.get('normalization', {}).get('reuse_transforms', True)
-
-        if norm_enabled:
+    if run_registration:
+        if t2w_file is None:
+            print("\n  Registration requested but no T2w file provided - skipping")
+        elif not t2w_file.exists():
+            print(f"\n  T2w file not found: {t2w_file} - skipping registration")
+        else:
             print("\n" + "="*60)
-            print("STEP 13: Registration to SIGMA Atlas")
+            print("STEP 12: BOLD to T2w Registration")
             print("="*60)
 
-            # Check if T2w→SIGMA transform exists in registry
-            if reuse_transforms and transform_registry.has_transform('T2w', 'SIGMA'):
-                print("  Using existing T2w → SIGMA transform from anatomical preprocessing")
+            try:
+                # Compute temporal mean of motion-corrected BOLD + brain mask
+                reg_work_dir = work_dir / 'bold_registration'
+                reg_work_dir.mkdir(parents=True, exist_ok=True)
+                mean_mcf_brain = reg_work_dir / f'{subject}_{session}_mean_mcf_brain.nii.gz'
 
-                # Get T2w → SIGMA transform
-                t2w_to_sigma_transform = transform_registry.get_ants_composite_transform('T2w', 'SIGMA')
+                if not mean_mcf_brain.exists():
+                    print("  Computing temporal mean of motion-corrected BOLD...")
+                    mcf_img = nib.load(bold_mcf)
+                    mcf_data = mcf_img.get_fdata()
+                    mean_data = np.mean(mcf_data, axis=3)
+                    mask_data = nib.load(brain_mask).get_fdata() > 0
+                    mean_data = mean_data * mask_data
+                    nib.save(
+                        nib.Nifti1Image(mean_data.astype(np.float32), mcf_img.affine, mcf_img.header),
+                        mean_mcf_brain
+                    )
 
-                # Get SIGMA template
-                atlas_config = config.get('atlas', {})
-                atlas_manager = AtlasManager(
-                    atlas_name=atlas_config.get('name', 'SIGMA'),
-                    base_path=Path(atlas_config.get('base_path', '/mnt/arborea/atlases/SIGMA_scaled'))
-                )
-                sigma_template = atlas_manager.get_invivo_template()
-
-                # Apply concatenated transforms: BOLD → T2w → SIGMA
-                bold_in_sigma = derivatives_dir / f"{subject}_{session}_space-SIGMA_bold.nii.gz"
-                print(f"\n  Applying chained transforms: BOLD → T2w → SIGMA")
-                apply_transforms(
-                    input_image=final_bold,
-                    reference_image=sigma_template,
-                    transforms=[
-                        t2w_to_sigma_transform,
-                        reg_results['composite_transform']
-                    ],
-                    output_image=bold_in_sigma,
-                    interpolation='Linear'
-                )
-
-                results['normalization'] = {
-                    'bold_in_sigma': bold_in_sigma,
-                    'atlas_template': sigma_template
-                }
-
-                print(f"  ✓ BOLD → SIGMA registration complete")
-                print(f"    SIGMA-space BOLD: {bold_in_sigma}")
-
-                # =============================================================
-                # STEP 14: Registration QC
-                # =============================================================
-                print("\n" + "="*60)
-                print("STEP 14: Generate Registration QC")
-                print("="*60)
-
-                reg_qc_report = generate_registration_qc(
+                registration_results = register_bold_to_t2w(
+                    bold_ref_file=mean_mcf_brain,
+                    t2w_file=t2w_file,
+                    output_dir=output_dir,
                     subject=subject,
                     session=session,
-                    bold_file=brain_ref,
-                    t2w_file=t2w_file,
-                    bold_in_t2w=reg_results['warped'],
-                    atlas_file=sigma_template,
-                    bold_in_atlas=bold_in_sigma,
-                    output_dir=qc_dir
+                    work_dir=reg_work_dir,
+                    n_cores=config.get('execution', {}).get('n_procs', 4)
                 )
 
-                results['qc_reports']['registration'] = reg_qc_report
-                print(f"  ✓ Registration QC: {reg_qc_report}")
+                # Save metadata JSON
+                reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_T2w_registration.json'
+                reg_metadata = {
+                    'bold_ref_file': str(mean_mcf_brain),
+                    'mcf_source': str(bold_mcf),
+                    'brain_mask': str(brain_mask),
+                    't2w_file': str(registration_results['t2w_file']),
+                    'affine_transform': str(registration_results['affine_transform']),
+                    'warped_bold': str(registration_results['warped_bold']) if registration_results.get('warped_bold') else None,
+                    'bold_shape': list(registration_results['bold_shape']),
+                    't2w_shape': list(registration_results['t2w_shape']),
+                }
+                with open(reg_metadata_file, 'w') as f:
+                    json.dump(reg_metadata, f, indent=2)
 
-            else:
-                print("  Warning: T2w → SIGMA transform not found in registry")
-                print("  Run anatomical preprocessing first to create the transform")
-                print("  Skipping atlas normalization")
+                results['registration'] = {
+                    'affine_transform': registration_results['affine_transform'],
+                    'warped_bold': registration_results.get('warped_bold'),
+                    'metadata': reg_metadata_file,
+                }
 
-    else:
-        print("\n" + "="*60)
-        print("STEP 12-14: Registration (Skipped)")
-        print("="*60)
-        if t2w_file is None:
-            print("  No T2w reference provided - registration disabled")
-        else:
-            print("  Registration disabled in config")
+                print(f"\n  Registration complete:")
+                print(f"  - Transform: {registration_results['affine_transform']}")
+                print(f"  - Metadata: {reg_metadata_file}")
+
+            except Exception as e:
+                print(f"\n  Registration failed: {e}")
+                print("  Continuing without registration...")
 
     print("\n" + "="*80)
     print("FUNCTIONAL PREPROCESSING COMPLETE")
@@ -1462,10 +1383,8 @@ def run_functional_preprocessing(
     print(f"Metadata: {metadata_file}")
 
     if 'registration' in results:
-        print(f"\nRegistered BOLD:")
-        print(f"  T2w space: {results['registration']['bold_in_t2w']}")
-        if 'normalization' in results:
-            print(f"  SIGMA space: {results['normalization']['bold_in_sigma']}")
+        print(f"\nRegistration:")
+        print(f"  Transform: {results['registration']['affine_transform']}")
 
     print(f"\nQC Reports:")
     print(f"  Motion QC: {motion_qc_report}")
@@ -1481,8 +1400,6 @@ def run_functional_preprocessing(
         print(f"  Total components: {results['acompcor']['n_components']}")
         print(f"  CSF voxels: {results['acompcor']['n_voxels_csf']}")
         print(f"  WM voxels: {results['acompcor']['n_voxels_wm']}")
-    if 'registration' in results and 'registration' in results['qc_reports']:
-        print(f"  Registration QC: {results['qc_reports']['registration']}")
     print("="*80)
 
     return results
