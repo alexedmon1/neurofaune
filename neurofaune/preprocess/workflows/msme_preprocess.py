@@ -8,7 +8,7 @@ including T2 fitting and Myelin Water Fraction (MWF) calculation using NNLS.
 import nibabel as nib
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import subprocess
 from scipy.optimize import curve_fit, nnls
 import json
@@ -16,6 +16,128 @@ import json
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc import get_subject_qc_dir
+from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
+
+
+def register_msme_to_t2w(
+    msme_ref_file: Path,
+    t2w_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register MSME first echo to T2w within the same subject.
+
+    Uses NCC-based Z initialization (both images have origin at 0,0,0)
+    followed by rigid-only registration. MSME has only 5 slices covering
+    a small portion of the 41-slice T2w, requiring careful Z positioning.
+
+    Parameters
+    ----------
+    msme_ref_file : Path
+        First echo volume (3D, skull-stripped or raw)
+    t2w_file : Path
+        Preprocessed T2w from anatomical pipeline
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("MSME to T2w Registration")
+    print("="*60)
+
+    msme_img = nib.load(msme_ref_file)
+    t2w_img = nib.load(t2w_file)
+    print(f"\n  MSME ref: {msme_img.shape} voxels, {msme_img.header.get_zooms()[:3]} mm")
+    print(f"  T2w: {t2w_img.shape} voxels, {t2w_img.header.get_zooms()[:3]} mm")
+
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'MSME_to_T2w_'
+
+    # Step 1: Find optimal Z offset via NCC scan
+    print("\n  Finding optimal Z offset via NCC scan...")
+    initial_transform, z_offset_info = _find_z_offset_ncc(
+        msme_img, t2w_img, work_dir
+    )
+
+    # Step 2: Rigid registration with conservative shrink factors
+    # (5 slices is very partial — use 2x1x1 to avoid losing Z info)
+    print("\nRunning ANTs Rigid registration (MSME → T2w)...")
+
+    warped_output = Path(str(output_prefix) + 'Warped.nii.gz')
+    cmd = [
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--output', f'[{output_prefix},{warped_output}]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '1',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        '--initial-moving-transform', str(initial_transform),
+        # Rigid only (6 DOF) — 5 slices is too few for affine
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{t2w_file},{msme_ref_file},1,32,Regular,0.25]',
+        '--convergence', '[500x250x100,1e-6,10]',
+        '--shrink-factors', '2x1x1',
+        '--smoothing-sigmas', '1x0x0vox',
+    ]
+
+    print(f"  Moving: {msme_ref_file.name}")
+    print(f"  Fixed: {t2w_file.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("MSME to T2w registration failed")
+
+    # Check outputs
+    rigid_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_msme = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not rigid_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {rigid_transform}")
+
+    print(f"  Rigid transform: {rigid_transform.name}")
+    if warped_msme.exists():
+        print(f"  Warped MSME ref: {warped_msme.name}")
+        # Report coverage
+        warped_data = nib.load(warped_msme).get_fdata()
+        threshold = warped_data.max() * 0.05
+        slices_with_signal = [z for z in range(warped_data.shape[2])
+                              if warped_data[:,:,z].max() > threshold]
+        if slices_with_signal:
+            print(f"  MSME covers T2w slices {slices_with_signal[0]}-{slices_with_signal[-1]} "
+                  f"({len(slices_with_signal)} slices)")
+
+    return {
+        'affine_transform': rigid_transform,
+        'warped_msme': warped_msme if warped_msme.exists() else None,
+        't2w_file': t2w_file,
+        'msme_shape': msme_img.shape,
+        't2w_shape': t2w_img.shape,
+    }
 
 
 def run_msme_preprocessing(
@@ -26,7 +148,9 @@ def run_msme_preprocessing(
     output_dir: Path,
     transform_registry: TransformRegistry,
     te_values: Optional[np.ndarray] = None,
-    work_dir: Optional[Path] = None
+    work_dir: Optional[Path] = None,
+    t2w_file: Optional[Path] = None,
+    run_registration: bool = True
 ) -> Dict[str, Any]:
     """
     Run MSME preprocessing workflow with T2 mapping and MWF calculation.
@@ -40,7 +164,7 @@ def run_msme_preprocessing(
     session : str
         Session identifier
     msme_file : Path
-        Input MSME 4D NIfTI file (echoes in 4th dimension)
+        Input MSME 4D NIfTI file (shape: X, Y, echoes, slices)
     output_dir : Path
         Study root directory
     transform_registry : TransformRegistry
@@ -49,6 +173,10 @@ def run_msme_preprocessing(
         Echo times in ms (if None, assumes 10-320ms in 10ms steps)
     work_dir : Path, optional
         Working directory
+    t2w_file : Path, optional
+        T2w anatomical reference for registration (requires run_registration=True)
+    run_registration : bool
+        Whether to register MSME to T2w (default: True, requires t2w_file)
 
     Returns
     -------
@@ -176,13 +304,83 @@ def run_msme_preprocessing(
     print(f"\n✓ MSME QC report: {qc_results['html_report']}")
 
     # ==========================================================================
+    # Step 4: MSME to T2w Registration
+    # ==========================================================================
+    registration_results = None
+
+    if run_registration:
+        if t2w_file is None:
+            print("\n  Registration requested but no T2w file provided - skipping")
+        elif not t2w_file.exists():
+            print(f"\n  T2w file not found: {t2w_file} - skipping registration")
+        else:
+            print("\n" + "="*80)
+            print("Step 4: MSME to T2w Registration")
+            print("="*80)
+
+            try:
+                # Extract first echo as registration reference
+                # MSME shape: (X, Y, echoes, slices) — echoes in dim 2, slices in dim 3
+                reg_work_dir = work_dir / 'msme_registration'
+                reg_work_dir.mkdir(parents=True, exist_ok=True)
+                msme_ref = reg_work_dir / f'{subject}_{session}_msme_echo1.nii.gz'
+
+                if not msme_ref.exists():
+                    print("  Extracting first echo as registration reference...")
+                    msme_data = img.get_fdata()
+                    first_echo = msme_data[:, :, 0, :]  # First echo, all slices
+
+                    # Create 3D NIfTI with correct spatial header
+                    # Original header has echoes in Z (8mm "voxel size") and slices in T (1mm)
+                    # Correct spatial voxels: in-plane from header, slice thickness = 8mm
+                    in_plane = img.header.get_zooms()[:2]
+                    ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
+                    nib.save(
+                        nib.Nifti1Image(first_echo.astype(np.float32), ref_affine),
+                        msme_ref
+                    )
+                    print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
+
+                registration_results = register_msme_to_t2w(
+                    msme_ref_file=msme_ref,
+                    t2w_file=t2w_file,
+                    output_dir=output_dir,
+                    subject=subject,
+                    session=session,
+                    work_dir=reg_work_dir,
+                    n_cores=config.get('execution', {}).get('n_procs', 4)
+                )
+
+                # Save metadata JSON
+                reg_metadata_file = derivatives_dir / f'{subject}_{session}_MSME_to_T2w_registration.json'
+                reg_metadata = {
+                    'msme_ref_file': str(msme_ref),
+                    'msme_source': str(msme_file),
+                    't2w_file': str(registration_results['t2w_file']),
+                    'affine_transform': str(registration_results['affine_transform']),
+                    'warped_msme': str(registration_results['warped_msme']) if registration_results.get('warped_msme') else None,
+                    'msme_shape': list(registration_results['msme_shape']),
+                    't2w_shape': list(registration_results['t2w_shape']),
+                }
+                with open(reg_metadata_file, 'w') as f:
+                    json.dump(reg_metadata, f, indent=2)
+
+                print(f"\n  Registration complete:")
+                print(f"  - Transform: {registration_results['affine_transform']}")
+                print(f"  - Metadata: {reg_metadata_file}")
+
+            except Exception as e:
+                print(f"\n  Registration failed: {e}")
+                print("  Continuing without registration...")
+
+    # ==========================================================================
     # Workflow complete
     # ==========================================================================
     print("\n" + "="*80)
     print("MSME Preprocessing Complete!")
     print("="*80 + "\n")
 
-    return {
+    results = {
         'mwf': mwf_file,
         'iwf': iwf_file,
         'csf': csf_file,
@@ -190,6 +388,14 @@ def run_msme_preprocessing(
         'brain_mask': brain_mask_file,
         'qc_results': qc_results
     }
+
+    if registration_results:
+        results['registration'] = {
+            'affine_transform': registration_results['affine_transform'],
+            'warped_msme': registration_results.get('warped_msme'),
+        }
+
+    return results
 
 
 def _run_bet(input_file: Path, output_mask: Path, frac: float = 0.3):
