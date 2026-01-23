@@ -1,6 +1,6 @@
 # Project Status
 
-**Last Updated:** 2026-01-22
+**Last Updated:** 2026-01-23
 
 This file tracks the current state of the neurofaune project. Update this file after important milestones or before ending a session.
 
@@ -192,9 +192,13 @@ uv run python scripts/generate_func_qc_retroactive.py /path/to/study
 4. ~~**Batch process DTI data**~~ ✅ COMPLETE (187/187 processed, 181 with QC metrics)
 5. ~~**Batch QC summary system**~~ ✅ COMPLETE (DWI, anatomical, functional)
 6. ~~**Integrate registration into DWI workflow**~~ ✅ COMPLETE - FA→T2w registration in dwi_preprocess.py, batch run for 118 subjects
-7. **Implement TBSS analysis pipeline** - Plan documented in `docs/plans/TBSS_IMPLEMENTATION_PLAN.md`
-   - All transforms now available (FA→T2w→Template→SIGMA)
-   - Use slice-level masking (Strategy B) to preserve data from subjects with isolated bad slices
+7. ~~**Implement TBSS analysis pipeline**~~ ✅ COMPLETE (2026-01-23)
+   - Mask-based VBA approach (no skeleton) - rodent WM tracts too thin for skeletonization
+   - Analysis mask: WM probability + FA >= 0.3 threshold
+   - Modules: prepare_tbss, run_tbss_stats, slice_qc, reporting
+   - Stats utilities: randomise_wrapper, cluster_report
+   - CLI scripts: `scripts/run_tbss_prepare.py`, `scripts/run_tbss_stats.py`
+   - Validated on P90 cohort (47 subjects, 92,798 analysis voxels)
 8. **Integrate registration into functional workflow** - Add func→anat→template→SIGMA chain (use slice correspondence)
 
 ---
@@ -231,6 +235,66 @@ acquisition orientation:
 ---
 
 ## Recent Changes
+
+### 2026-01-23 - WM-Masked Voxel-Based Analysis Pipeline
+
+**Voxel-based DTI analysis pipeline implemented** following neurovrai module structure:
+
+```
+neurofaune/analysis/
+├── __init__.py
+├── tbss/
+│   ├── __init__.py
+│   ├── prepare_tbss.py       # Data preparation: warp→WM mask→analysis mask→masking
+│   ├── run_tbss_stats.py     # FSL randomise + cluster extraction
+│   ├── slice_qc.py           # Slice-level validity masks + imputation
+│   └── reporting.py          # HTML summary reports with SIGMA labels
+└── stats/
+    ├── __init__.py
+    ├── randomise_wrapper.py  # FSL randomise execution
+    └── cluster_report.py     # Cluster extraction with SIGMA labels
+```
+
+**Design decision: mask-based VBA instead of skeleton-based TBSS.**
+Standard TBSS skeletonization was tested but found inappropriate for rodent data:
+- WM tracts are only 1-3 voxels wide (skeleton = the tract itself)
+- Thick coronal slices (8mm) warped to isotropic (1.5mm) create fragmentation
+- Skeleton connectivity fixes either break the CC or create "spiderweb" in basal ganglia
+- Thresholded WM mask provides equivalent spatial specificity for thin rodent tracts
+
+**Key features:**
+- Uses existing transform chain (FA→T2w→Template→SIGMA) instead of FSL tbss_2_reg
+- Analysis mask: interior WM (tissue probability + erosion) ∩ FA >= 0.3
+- Direct metric masking (no projection step needed)
+- Slice-level QC with validity masks and group mean imputation (Strategy B)
+- SIGMA atlas parcellation for anatomical cluster labeling
+- Accepts subject lists from neuroaider design matrices (`--subject-list`)
+- Output structure matches neurovrai (subject_manifest.json, subject_list.txt, stats/)
+
+**Validated on P90 cohort:**
+- 47 subjects included (32 excluded by QC/missing transforms)
+- Analysis mask: 92,798 voxels (FA >= 0.3 within interior WM)
+- 4 metrics prepared: FA, MD, AD, RD (masked 4D volumes ready for randomise)
+
+**CLI scripts created:**
+- `scripts/run_tbss_prepare.py` - Data preparation wrapper
+- `scripts/run_tbss_stats.py` - Statistical analysis wrapper
+
+**Usage:**
+```bash
+# Prepare analysis data
+uv run python -m neurofaune.analysis.tbss.prepare_tbss \
+    --config config.yaml \
+    --output-dir /study/analysis/tbss/ \
+    --cohorts p90 \
+    --analysis-threshold 0.3
+
+# Run statistical analysis
+uv run python -m neurofaune.analysis.tbss.run_tbss_stats \
+    --tbss-dir /study/analysis/tbss/ \
+    --design-dir /study/designs/dose_response/ \
+    --analysis-name dose_p90
+```
 
 ### 2026-01-22 (Session 3) - FA→T2w Registration Complete
 

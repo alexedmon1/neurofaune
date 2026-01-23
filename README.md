@@ -60,6 +60,15 @@ Neurofaune is a comprehensive neuroimaging pipeline designed specifically for ro
 - **Atlas propagation:** SIGMA labels propagated to each subject's T2w space
 - **Registration QC:** Dice coefficient, correlation metrics, edge overlay figures
 
+### ✅ **DTI Voxel-Based Analysis (January 2025)**
+
+- **WM-masked VBA:** Voxel-wise analysis within thresholded WM mask (FA >= 0.3)
+- **Transform chain:** FA → T2w → Template → SIGMA (all pre-computed)
+- **Metrics:** FA, MD, AD, RD (masked 4D volumes ready for FSL randomise)
+- **Design:** Mask-based approach chosen over skeleton-based TBSS since rodent WM tracts are only 1-3 voxels wide
+- **Stats:** FSL randomise with TFCE correction, cluster extraction with SIGMA atlas labels
+- **Slice QC:** Validity masks for partial-coverage artifacts, group mean imputation
+
 ---
 
 ## Workflow Overview
@@ -116,6 +125,31 @@ uv run python scripts/batch_preprocess_func.py \
     --bids-root /path/to/bids \
     --output-root /path/to/study
 ```
+
+### Phase 3: Analysis
+
+Run group-level voxel-based analysis on preprocessed DTI data:
+
+```bash
+# Prepare analysis data (warp to SIGMA, create WM mask, mask metrics)
+uv run python -m neurofaune.analysis.tbss.prepare_tbss \
+    --config /path/to/study/config.yaml \
+    --output-dir /path/to/study/analysis/tbss/ \
+    --cohorts p90 \
+    --analysis-threshold 0.3
+
+# Run statistical analysis (requires design matrices)
+uv run python -m neurofaune.analysis.tbss.run_tbss_stats \
+    --tbss-dir /path/to/study/analysis/tbss/ \
+    --design-dir /path/to/designs/model1/ \
+    --analysis-name dose_response
+```
+
+**What analysis preparation does:**
+1. Discovers subjects with complete transform chains
+2. Warps DTI metrics (FA, MD, AD, RD) to SIGMA space
+3. Creates analysis mask (interior WM with FA >= threshold)
+4. Produces masked 4D volumes ready for FSL randomise
 
 **What anatomical preprocessing does:**
 1. Bias field correction (N4)
