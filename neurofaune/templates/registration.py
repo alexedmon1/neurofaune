@@ -465,3 +465,155 @@ def propagate_atlas_to_dwi(
     print(f"  Unique labels: {n_labels}")
 
     return output_path
+
+
+def propagate_atlas_to_bold(
+    atlas_path: Path,
+    bold_reference: Path,
+    transforms_root: Path,
+    templates_root: Path,
+    subject: str,
+    session: str,
+    output_path: Path
+) -> Path:
+    """
+    Propagate SIGMA atlas to BOLD/fMRI space through the transform chain.
+
+    Uses the multi-stage registration chain:
+        SIGMA → T2w Template → Subject T2w → Subject BOLD
+
+    Parameters
+    ----------
+    atlas_path : Path
+        Path to SIGMA atlas parcellation
+    bold_reference : Path
+        Subject BOLD reference volume (defines output space)
+    transforms_root : Path
+        Root directory for subject transforms
+    templates_root : Path
+        Root directory for templates
+    subject : str
+        Subject ID (e.g., 'sub-Rat1')
+    session : str
+        Session ID (e.g., 'ses-p60')
+    output_path : Path
+        Output path for atlas in BOLD space
+
+    Returns
+    -------
+    Path
+        Path to atlas in BOLD space
+
+    Raises
+    ------
+    FileNotFoundError
+        If required transforms are missing
+    """
+    cohort = session.replace('ses-', '')
+
+    # Locate all required transforms
+    subj_transforms = transforms_root / subject / session
+    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
+
+    # Helper to find transforms with multiple naming patterns
+    def _find(directory, *names):
+        for name in names:
+            p = directory / name
+            if p.exists():
+                return p
+        return None
+
+    # Required transforms (try prefixed and unprefixed patterns)
+    bold_to_t2w = _find(subj_transforms, 'BOLD_to_T2w_0GenericAffine.mat')
+    t2w_to_tpl_affine = _find(
+        subj_transforms,
+        f'{subject}_{session}_T2w_to_template_0GenericAffine.mat',
+        'T2w_to_template_0GenericAffine.mat'
+    )
+    t2w_to_tpl_inv_warp = _find(
+        subj_transforms,
+        f'{subject}_{session}_T2w_to_template_1InverseWarp.nii.gz',
+        'T2w_to_template_1InverseWarp.nii.gz'
+    )
+    tpl_to_sigma_affine = _find(tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat')
+    tpl_to_sigma_inv_warp = _find(tpl_transforms, 'tpl-to-SIGMA_1InverseWarp.nii.gz')
+
+    # Check BOLD→T2w exists
+    if not bold_to_t2w:
+        raise FileNotFoundError(
+            f"BOLD→T2w transform not found in: {subj_transforms}\n"
+            "Run BOLD-to-T2w registration first."
+        )
+
+    # Check T2w→Template exists
+    if not t2w_to_tpl_affine:
+        raise FileNotFoundError(
+            f"T2w→Template transform not found in: {subj_transforms}\n"
+            "Run subject-to-template registration first."
+        )
+
+    # Check Template→SIGMA exists
+    if not tpl_to_sigma_affine:
+        raise FileNotFoundError(
+            f"Template→SIGMA transform not found in: {tpl_transforms}\n"
+            "Run template-to-SIGMA registration first."
+        )
+
+    # Build transform chain for SIGMA → BOLD (inverse direction)
+    # ANTs applies transforms in reverse order, so list from BOLD to SIGMA
+    transform_list = []
+
+    # 1. T2w → BOLD (inverse of BOLD → T2w)
+    transform_list.append(f"[{bold_to_t2w},1]")
+
+    # 2. Template → T2w (inverse of T2w → Template)
+    if t2w_to_tpl_inv_warp.exists():
+        transform_list.append(str(t2w_to_tpl_inv_warp))
+    transform_list.append(f"[{t2w_to_tpl_affine},1]")
+
+    # 3. SIGMA → Template (inverse of Template → SIGMA)
+    if tpl_to_sigma_inv_warp.exists():
+        transform_list.append(str(tpl_to_sigma_inv_warp))
+    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+
+    # Apply transforms
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(atlas_path),
+        '-r', str(bold_reference),
+        '-o', str(output_path),
+        '-n', 'NearestNeighbor',  # Critical for preserving integer labels
+    ]
+
+    for t in transform_list:
+        cmd.extend(['-t', t])
+
+    print(f"\nPropagating atlas to BOLD space...")
+    print(f"  Atlas: {atlas_path.name}")
+    print(f"  Reference: {bold_reference.name}")
+    print(f"  Transform chain: {len(transform_list)} transforms")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Atlas propagation failed!")
+        print(result.stderr)
+        raise RuntimeError("antsApplyTransforms failed")
+
+    # Verify output
+    atlas_img = nib.load(output_path)
+    atlas_data = atlas_img.get_fdata()
+    n_labels = len(set(atlas_data[atlas_data > 0].astype(int)))
+
+    print(f"  Output: {output_path}")
+    print(f"  Unique labels: {n_labels}")
+
+    return output_path

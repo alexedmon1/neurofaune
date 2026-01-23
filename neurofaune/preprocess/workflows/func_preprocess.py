@@ -37,8 +37,6 @@ from neurofaune.preprocess.utils.func.ica_denoising import (
     remove_noise_components,
     generate_ica_denoising_qc
 )
-from neurofaune.preprocess.utils.func.skull_strip import brain_extraction
-from neurofaune.preprocess.utils.func.skull_strip_preprocessed import skull_strip_bold_preprocessed
 from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
 from neurofaune.preprocess.utils.func.acompcor import (
     extract_acompcor_components,
@@ -48,6 +46,113 @@ from neurofaune.preprocess.utils.func.slice_timing import (
     run_slice_timing_correction,
     detect_slice_order
 )
+
+
+def register_bold_to_t2w(
+    bold_ref_file: Path,
+    t2w_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register mean BOLD to T2w within the same subject.
+
+    Registers the brain-extracted BOLD reference volume directly to the full
+    T2w volume, letting ANTs find the optimal 3D alignment including the
+    Z-offset for partial coverage fMRI.
+
+    Parameters
+    ----------
+    bold_ref_file : Path
+        Brain-extracted BOLD reference volume (3D)
+    t2w_file : Path
+        Preprocessed T2w from anatomical pipeline
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("BOLD to T2w Registration")
+    print("="*60)
+
+    # Load images to get info
+    bold_img = nib.load(bold_ref_file)
+    t2w_img = nib.load(t2w_file)
+    print(f"\n  BOLD ref: {bold_img.shape} voxels, {bold_img.header.get_zooms()[:3]} mm")
+    print(f"  T2w: {t2w_img.shape} voxels, {t2w_img.header.get_zooms()[:3]} mm")
+
+    # Register BOLD ref directly to full T2w - let ANTs find optimal alignment
+    print("\nRunning ANTs Affine registration (BOLD → full T2w)...")
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'BOLD_to_T2w_'
+
+    # Use antsRegistrationSyN.sh with affine only
+    cmd = [
+        'antsRegistrationSyN.sh',
+        '-d', '3',
+        '-f', str(t2w_file),
+        '-m', str(bold_ref_file),
+        '-o', str(output_prefix),
+        '-n', str(n_cores),
+        '-t', 'a'  # Affine only
+    ]
+
+    print(f"  Moving: {bold_ref_file.name}")
+    print(f"  Fixed: {t2w_file.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("BOLD to T2w registration failed")
+
+    # Check outputs
+    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_bold = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not affine_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {affine_transform}")
+
+    print(f"  Affine transform: {affine_transform.name}")
+    if warped_bold.exists():
+        print(f"  Warped BOLD ref: {warped_bold.name}")
+
+        # Report which T2w slices have BOLD coverage
+        warped_data = nib.load(warped_bold).get_fdata()
+        slices_with_bold = [z for z in range(warped_data.shape[2])
+                           if np.sum(warped_data[:, :, z] > 0) > 1000]
+        if slices_with_bold:
+            print(f"  BOLD covers T2w slices {slices_with_bold[0]}-{slices_with_bold[-1]} ({len(slices_with_bold)} slices)")
+
+    return {
+        'affine_transform': affine_transform,
+        'warped_bold': warped_bold if warped_bold.exists() else None,
+        't2w_file': t2w_file,
+        'bold_shape': bold_img.shape,
+        't2w_shape': t2w_img.shape,
+    }
 
 
 def discard_initial_volumes(
