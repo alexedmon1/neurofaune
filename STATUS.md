@@ -4,7 +4,7 @@
 
 ---
 
-## Current Phase: 9 - Functional Normalization
+## Current Phase: 10 - MSME Registration
 
 ### Template Building Status
 
@@ -27,8 +27,8 @@
 All modalities share a common registration chain through T2w:
 
 ```
-Subject FA/BOLD → Subject T2w → Cohort Template → SIGMA Atlas
-       Affine/Rigid        SyN                  SyN
+Subject FA/BOLD/MSME → Subject T2w → Cohort Template → SIGMA Atlas
+       Affine/Rigid           SyN                  SyN
 ```
 
 | Component | Status | Notes |
@@ -37,6 +37,7 @@ Subject FA/BOLD → Subject T2w → Cohort Template → SIGMA Atlas
 | Template → SIGMA | Complete (3 cohorts) | ANTs SyN, via study-space atlas |
 | FA → T2w | Complete (118 subjects) | ANTs affine, integrated in dwi_preprocess.py |
 | BOLD → T2w | Complete (6 subjects) | ANTs rigid + NCC Z-init, integrated in func_preprocess.py |
+| MSME → T2w | In progress (1 subject tested) | ANTs rigid + NCC Z-init, skull stripping WIP |
 
 ### DTI Analysis Pipeline
 
@@ -87,7 +88,7 @@ BOLD-to-SIGMA warping:
 | Anatomical (`anat_preprocess.py`) | Complete | T2w→Template (SyN) | Yes |
 | DTI (`dwi_preprocess.py`) | Complete | FA→T2w (Affine) | Yes (Step 7) |
 | Functional (`func_preprocess.py`) | Complete | BOLD→T2w (Rigid) | Yes (Step 12) |
-| MSME (`msme_preprocess.py`) | Complete | Not implemented | No |
+| MSME (`msme_preprocess.py`) | Complete | MSME→T2w (Rigid) | Yes (Step 4), skull stripping WIP |
 
 ---
 
@@ -101,11 +102,39 @@ BOLD-to-SIGMA warping:
 
 ---
 
+### MSME Registration
+
+**Status:** In progress — registration works, skull stripping needs refinement
+
+MSME-to-T2w registration uses:
+- First echo extraction (highest SNR) as registration reference
+- MSME data layout: (X, Y, echoes, slices) — echoes in dim 2, spatial slices in dim 3
+- NCC-based Z initialization (same as BOLD — origins at 0,0,0)
+- Rigid-only registration (6 DOF — only 5 slices, affine over-fits)
+- Conservative shrink factors (2x1x1 — even fewer slices than BOLD)
+- Integrated into `msme_preprocess.py` Step 4
+
+**Skull stripping challenge:** MSME has only 5 thick coronal slices (160x160x5 at 2mm in-plane). Current issues:
+- 3D BET fails (sphere model doesn't fit 160x160x5 flat geometry)
+- Atropos 5-class: selecting top 3 classes removes WM (T2w contrast: WM and skull overlap in intensity)
+- Atropos 3-class: excluding only darkest class is too generous (61% retained, includes skull)
+- Per-slice BET: inconsistent across slices
+- Morphological opening: breaks NCC initialization
+
+Current approach uses Atropos 5-class (top 3 = brain), which gives correct registration placement but imperfect skull stripping. Registration result validated on Rat110 (slices 18-22).
+
+**Tested on:** sub-Rat110/ses-p90
+- MSME: 160x160x5 at 2.0x2.0x8.0mm (5 spatial slices)
+- Covers T2w slices 18-22 (40mm out of 328mm)
+- Transform: `transforms/sub-Rat110/ses-p90/MSME_to_T2w_0GenericAffine.mat`
+
+---
+
 ## Known Issues
 
 1. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
 2. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
-3. **MSME registration not implemented** — no cross-modal registration for T2 mapping yet
+3. **MSME skull stripping** — current Atropos 5-class approach doesn't cleanly separate brain from skull in T2w contrast (WM and skull have overlapping intensities). Registration works despite imperfect masking.
 
 ---
 

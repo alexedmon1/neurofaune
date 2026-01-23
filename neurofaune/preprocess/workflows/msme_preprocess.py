@@ -335,11 +335,23 @@ def run_msme_preprocessing(
                     # Correct spatial voxels: in-plane from header, slice thickness = 8mm
                     in_plane = img.header.get_zooms()[:2]
                     ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
+
+                    msme_ref_raw = reg_work_dir / f'{subject}_{session}_msme_echo1_raw.nii.gz'
                     nib.save(
                         nib.Nifti1Image(first_echo.astype(np.float32), ref_affine),
-                        msme_ref
+                        msme_ref_raw
                     )
+
                     print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
+                    print("  Skull-stripping with Atropos 5-component segmentation...")
+
+                    # Atropos 5-class K-means (same as anatomical pipeline)
+                    # Top 3 classes = brain (WM, GM, CSF)
+                    # Bottom 2 classes = non-brain (background, skull/muscle)
+                    _skull_strip_msme_atropos(
+                        msme_ref_raw, msme_ref, reg_work_dir,
+                        ref_affine, first_echo
+                    )
 
                 registration_results = register_msme_to_t2w(
                     msme_ref_file=msme_ref,
@@ -416,6 +428,91 @@ def _run_bet(input_file: Path, output_mask: Path, frac: float = 0.3):
     if mask_file.exists() and mask_file != output_mask:
         import shutil
         shutil.move(mask_file, output_mask)
+
+
+def _skull_strip_msme_atropos(
+    input_file: Path,
+    output_file: Path,
+    work_dir: Path,
+    affine: np.ndarray,
+    data: np.ndarray,
+    n_classes: int = 5
+):
+    """
+    Skull-strip MSME first echo using Atropos 5-component segmentation.
+
+    Uses Atropos K-means with 5 classes (same as anatomical pipeline),
+    then selects the top 3 brightest classes as brain tissue (WM, GM, CSF).
+    The 2 darkest classes (background/air and skull/muscle) are excluded.
+
+    This approach matches the anatomical pipeline's Atropos 5-component
+    strategy adapted for T2w contrast.
+
+    Parameters
+    ----------
+    input_file : Path
+        Raw first echo volume
+    output_file : Path
+        Output skull-stripped volume
+    work_dir : Path
+        Working directory for Atropos intermediates
+    affine : np.ndarray
+        Affine matrix for output
+    data : np.ndarray
+        First echo data array
+    n_classes : int
+        Number of Atropos classes (default: 5)
+    """
+    # Create initial foreground mask (exclude obvious background)
+    nonzero = data[data > 0]
+    threshold = np.percentile(nonzero, 5)
+    initial_mask = (data > threshold).astype(np.uint8)
+    initial_mask_file = work_dir / 'atropos_initial_mask.nii.gz'
+    nib.save(nib.Nifti1Image(initial_mask, affine), initial_mask_file)
+
+    # Run Atropos K-means segmentation
+    seg_file = work_dir / 'atropos_seg.nii.gz'
+    output_prefix = work_dir / 'atropos_'
+    cmd = [
+        'Atropos', '-d', '3',
+        '-a', str(input_file),
+        '-x', str(initial_mask_file),
+        '-i', f'KMeans[{n_classes}]',
+        '-o', f'[{seg_file},{output_prefix}prob%02d.nii.gz]',
+        '-v', '0'
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Atropos segmentation failed: {result.stderr}")
+
+    seg_data = nib.load(seg_file).get_fdata()
+
+    # Find mean intensity per class
+    class_means = {}
+    for label in range(1, n_classes + 1):
+        mask = seg_data == label
+        if np.sum(mask) > 0:
+            class_means[label] = data[mask].mean()
+            print(f"    Class {label}: {int(np.sum(mask)):,} voxels, mean={class_means[label]:.1f}")
+
+    # Sort classes by intensity: bottom 2 = non-brain, top 3 = brain
+    sorted_classes = sorted(class_means, key=class_means.get)
+    brain_classes = sorted_classes[2:]  # Top 3 brightest (WM, GM, CSF)
+    excluded_classes = sorted_classes[:2]  # Bottom 2 (background, skull/muscle)
+    print(f"    Brain classes: {brain_classes} (excluded: {excluded_classes})")
+
+    # Brain mask = top 3 classes
+    brain_mask = np.zeros_like(seg_data, dtype=np.uint8)
+    for label in brain_classes:
+        brain_mask[seg_data == label] = 1
+
+    n_brain = int(np.sum(brain_mask))
+    print(f"    Brain mask: {n_brain:,} voxels ({100*n_brain/brain_mask.size:.1f}%)")
+
+    # Apply mask and save
+    brain_data = data.astype(np.float32) * brain_mask
+    nib.save(nib.Nifti1Image(brain_data, affine), output_file)
 
 
 def calculate_mwf_nnls(
