@@ -48,6 +48,113 @@ from neurofaune.preprocess.utils.func.slice_timing import (
 )
 
 
+def _find_z_offset_ncc(
+    bold_img: nib.Nifti1Image,
+    t2w_img: nib.Nifti1Image,
+    work_dir: Path
+) -> Tuple[Path, Dict]:
+    """
+    Find optimal Z offset for partial-coverage BOLD to full T2w registration.
+
+    Scans Z translations and computes normalized cross-correlation between
+    resampled BOLD slices and corresponding T2w slices. Writes an ITK-format
+    initial transform encoding the optimal Z translation for use with
+    antsRegistration --initial-moving-transform.
+
+    Parameters
+    ----------
+    bold_img : Nifti1Image
+        BOLD reference volume
+    t2w_img : Nifti1Image
+        T2w volume
+    work_dir : Path
+        Working directory
+
+    Returns
+    -------
+    tuple of (Path, dict)
+        Path to initial transform .mat file, and dict with offset info
+    """
+    from scipy.ndimage import zoom as scipy_zoom
+
+    bold_data = bold_img.get_fdata()
+    t2w_data = t2w_img.get_fdata()
+    bold_zooms = bold_img.header.get_zooms()
+    t2w_zooms = t2w_img.header.get_zooms()
+
+    # Resample BOLD in-plane to T2w resolution
+    scale_xy = float(bold_zooms[0]) / float(t2w_zooms[0])
+    bold_resampled = scipy_zoom(bold_data, (scale_xy, scale_xy, 1), order=1)
+
+    # Z scale: how many T2w slices per BOLD slice
+    z_scale = float(bold_zooms[2]) / float(t2w_zooms[2])
+    n_bold_in_t2w = int(round(bold_data.shape[2] * z_scale))
+
+    # Scan Z offsets
+    best_ncc = -1
+    best_offset = 0
+    max_offset = t2w_data.shape[2] - n_bold_in_t2w
+
+    for z_offset in range(0, max(max_offset, 1)):
+        total_ncc = 0
+        n_valid = 0
+
+        for bz in range(bold_data.shape[2]):
+            t2w_zi = int(round(z_offset + bz * z_scale))
+            if t2w_zi < 0 or t2w_zi >= t2w_data.shape[2]:
+                continue
+
+            # Compare in common region
+            min_x = min(bold_resampled.shape[0], t2w_data.shape[0])
+            min_y = min(bold_resampled.shape[1], t2w_data.shape[1])
+
+            b_slice = bold_resampled[:min_x, :min_y, bz]
+            t_slice = t2w_data[:min_x, :min_y, t2w_zi]
+
+            mask = b_slice > 0
+            if np.sum(mask) < 500:
+                continue
+
+            b_vals = b_slice[mask]
+            t_vals = t_slice[mask]
+
+            b_norm = (b_vals - b_vals.mean()) / (b_vals.std() + 1e-10)
+            t_norm = (t_vals - t_vals.mean()) / (t_vals.std() + 1e-10)
+            ncc = np.mean(b_norm * t_norm)
+            total_ncc += ncc
+            n_valid += 1
+
+        if n_valid > 0:
+            avg_ncc = total_ncc / n_valid
+            if avg_ncc > best_ncc:
+                best_ncc = avg_ncc
+                best_offset = z_offset
+
+    # Convert slice offset to mm
+    z_offset_mm = best_offset * float(t2w_zooms[2])
+    print(f"  Best Z offset: T2w slice {best_offset} ({z_offset_mm:.1f} mm), NCC={best_ncc:.4f}")
+    print(f"  BOLD maps to T2w slices {best_offset}-{best_offset + n_bold_in_t2w}")
+
+    # Write ITK initial transform with Z translation
+    # ANTs transform maps fixed (T2w) → moving (BOLD) coordinates
+    # BOLD Z=0 should map to T2w Z=z_offset_mm, so tz = -z_offset_mm
+    work_dir.mkdir(parents=True, exist_ok=True)
+    initial_transform_file = work_dir / 'initial_z_offset.txt'
+    with open(initial_transform_file, 'w') as f:
+        f.write("#Insight Transform File V1.0\n")
+        f.write("#Transform 0\n")
+        f.write("Transform: AffineTransform_double_3_3\n")
+        f.write(f"Parameters: 1 0 0 0 1 0 0 0 1 0 0 {-z_offset_mm}\n")
+        f.write("FixedParameters: 0 0 0\n")
+
+    return initial_transform_file, {
+        'z_offset_slice': best_offset,
+        'z_offset_mm': z_offset_mm,
+        'ncc': best_ncc,
+        'bold_t2w_range': (best_offset, best_offset + n_bold_in_t2w)
+    }
+
+
 def register_bold_to_t2w(
     bold_ref_file: Path,
     t2w_file: Path,
@@ -96,21 +203,39 @@ def register_bold_to_t2w(
     print(f"\n  BOLD ref: {bold_img.shape} voxels, {bold_img.header.get_zooms()[:3]} mm")
     print(f"  T2w: {t2w_img.shape} voxels, {t2w_img.header.get_zooms()[:3]} mm")
 
-    # Register BOLD ref directly to full T2w - let ANTs find optimal alignment
-    print("\nRunning ANTs Affine registration (BOLD → full T2w)...")
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'BOLD_to_T2w_'
 
-    # Use antsRegistrationSyN.sh with affine only
+    # Step 1: Find optimal Z offset via NCC scan
+    # (needed because partial-coverage BOLD + both origins at 0,0,0 gives
+    #  ANTs a poor starting point for Z translation)
+    print("\n  Finding optimal Z offset via NCC scan...")
+    initial_transform, z_offset_info = _find_z_offset_ncc(
+        bold_img, t2w_img, work_dir
+    )
+
+    # Step 2: Run antsRegistration directly with the original BOLD + initial transform
+    # (antsRegistrationSyN.sh overrides initialization with COM alignment,
+    #  so we call antsRegistration directly to control initialization)
+    print("\nRunning ANTs Rigid registration (BOLD → full T2w)...")
+
+    warped_output = Path(str(output_prefix) + 'Warped.nii.gz')
     cmd = [
-        'antsRegistrationSyN.sh',
-        '-d', '3',
-        '-f', str(t2w_file),
-        '-m', str(bold_ref_file),
-        '-o', str(output_prefix),
-        '-n', str(n_cores),
-        '-t', 'a'  # Affine only
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--output', f'[{output_prefix},{warped_output}]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '1',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        '--initial-moving-transform', str(initial_transform),
+        # Rigid only (6 DOF: translation + rotation)
+        # Affine is too unconstrained for 9-slice partial-coverage data
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{t2w_file},{bold_ref_file},1,32,Regular,0.25]',
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '4x2x1x1',
+        '--smoothing-sigmas', '2x1x0x0vox',
     ]
 
     print(f"  Moving: {bold_ref_file.name}")
@@ -135,7 +260,7 @@ def register_bold_to_t2w(
     if not affine_transform.exists():
         raise RuntimeError(f"Expected transform not found: {affine_transform}")
 
-    print(f"  Affine transform: {affine_transform.name}")
+    print(f"  Rigid transform: {affine_transform.name}")
     if warped_bold.exists():
         print(f"  Warped BOLD ref: {warped_bold.name}")
 
