@@ -335,6 +335,21 @@ spectroscopy:
 
 # MSME (Multi-Slice Multi-Echo) T2 mapping
 msme:
+  # Adaptive slice-wise skull stripping
+  # MSME has only 5 thick slices (160x160x5 at 2.0x2.0x8.0mm)
+  # Standard 3D BET fails on this geometry, so we use per-slice BET
+  # with automatic frac optimization per slice
+  skull_strip:
+    target_ratio: 0.15           # Target 15% extraction per slice
+    frac_min: 0.3                # Minimum frac to test
+    frac_max: 0.8                # Maximum frac to test
+    frac_step: 0.05              # Test frac values in steps
+    # COG estimation: offset from image center (in voxels)
+    # For 160x160 MSME images, center is (80,80). Brain sits lower, so offset_y=-40 → COG at (80,40)
+    # If not specified, defaults to image center (0, 0 offset)
+    cog_offset_x: 0              # X offset from image center (positive = right)
+    cog_offset_y: -40            # Y offset from image center (negative = down/inferior)
+
   # T2 fitting
   fitting:
     method: "nonlinear"  # or "linear" (log-linear)

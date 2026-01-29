@@ -17,6 +17,7 @@ from neurofaune.preprocess.utils.validation import validate_image, print_validat
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
+from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
 
 
 def register_msme_to_t2w(
@@ -221,7 +222,7 @@ def run_msme_preprocessing(
     # Step 1: Skull stripping
     # ==========================================================================
     print("\n" + "="*80)
-    print("Step 1: Skull Stripping")
+    print("Step 1: Skull Stripping (Adaptive Slice-wise)")
     print("="*80)
 
     # Load MSME data
@@ -234,22 +235,52 @@ def run_msme_preprocessing(
         raise ValueError(f"Expected 4D MSME data, got shape: {data.shape}")
 
     # Use first echo for skull stripping
-    first_echo = data[..., 0]
-    first_echo_file = work_dir / f'{subject}_{session}_echo1.nii.gz'
-    nib.save(nib.Nifti1Image(first_echo, img.affine, img.header), first_echo_file)
+    # MSME shape: (X, Y, echoes, slices) — echoes in dim 2, slices in dim 3
+    # Extract first echo (highest SNR) across all spatial slices
+    first_echo = data[:, :, 0, :]  # First echo, all slices → shape (160, 160, 5)
 
-    # BET skull stripping
-    bet_frac = config.get('msme', {}).get('bet', {}).get('frac', 0.3)
-    print(f"\nRunning BET (frac={bet_frac})...")
-    _run_bet(first_echo_file, brain_mask_file, frac=bet_frac)
+    # Create 3D NIfTI with correct spatial header
+    # Original header has echoes in Z (8mm "voxel size") and slices in T (1mm)
+    # Correct spatial voxels: in-plane from header, slice thickness = 8mm
+    in_plane = img.header.get_zooms()[:2]
+    echo1_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
+
+    first_echo_file = work_dir / f'{subject}_{session}_echo1.nii.gz'
+    nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
+    print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
+
+    # Adaptive slice-wise skull stripping
+    brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
+    skull_strip_config = config.get('msme', {}).get('skull_strip', {})
+
+    skull_strip_result = _skull_strip_msme_adaptive(
+        input_file=first_echo_file,
+        output_file=brain_extracted_file,
+        mask_file=brain_mask_file,
+        work_dir=work_dir,
+        target_ratio=skull_strip_config.get('target_ratio', 0.15),
+        frac_range=(
+            skull_strip_config.get('frac_min', 0.30),
+            skull_strip_config.get('frac_max', 0.80)
+        ),
+        frac_step=skull_strip_config.get('frac_step', 0.05),
+        use_R_flag=skull_strip_config.get('use_R_flag', False),
+        cog_offset_x=skull_strip_config.get('cog_offset_x'),
+        cog_offset_y=skull_strip_config.get('cog_offset_y')
+    )
 
     # Apply mask to all echoes
+    # Mask shape: (X, Y, slices) = (160, 160, 5)
+    # Data shape: (X, Y, echoes, slices) = (160, 160, 32, 5)
     mask_img = nib.load(brain_mask_file)
-    mask = mask_img.get_fdata() > 0
+    mask_3d = mask_img.get_fdata() > 0  # Shape: (160, 160, 5)
 
-    data_masked = data.copy()
-    for echo_idx in range(data.shape[3]):
-        data_masked[..., echo_idx] = data[..., echo_idx] * mask
+    # Expand mask to match data dimensions: add echo dimension
+    # mask_3d[:, :, np.newaxis, :] → (160, 160, 1, 5)
+    # Broadcasting with data → (160, 160, 32, 5)
+    mask_4d = mask_3d[:, :, np.newaxis, :]  # Add axis for echoes
+
+    data_masked = data * mask_4d  # Broadcasting applies mask to all echoes
 
     nib.save(nib.Nifti1Image(data_masked, img.affine, img.header), msme_masked_file)
     print(f"Masked MSME saved to: {msme_masked_file}")
@@ -261,17 +292,24 @@ def run_msme_preprocessing(
     print("Step 2: T2 Fitting and MWF Calculation (NNLS)")
     print("="*80)
 
+    # Reorder data from (x, y, echoes, slices) to (x, y, slices, echoes)
+    # calculate_mwf_nnls expects (x, y, z, echoes) format
+    data_reordered = np.transpose(data_masked, (0, 1, 3, 2))
+    print(f"  Data reordered: {data_masked.shape} → {data_reordered.shape}")
+
     mwf_map, iwf_map, csf_map, t2_map, sample_data = calculate_mwf_nnls(
-        data_masked,
-        mask,
+        data_reordered,
+        mask_3d,
         te_values
     )
 
-    # Save output maps
-    nib.save(nib.Nifti1Image(mwf_map, img.affine, img.header), mwf_file)
-    nib.save(nib.Nifti1Image(iwf_map, img.affine, img.header), iwf_file)
-    nib.save(nib.Nifti1Image(csf_map, img.affine, img.header), csf_file)
-    nib.save(nib.Nifti1Image(t2_map, img.affine, img.header), t2_file)
+    # Save output maps with correct spatial affine
+    # Output maps have shape (x, y, slices) = (160, 160, 5)
+    # Use echo1_affine which has correct voxel sizes: (2.0, 2.0, 8.0)mm
+    nib.save(nib.Nifti1Image(mwf_map, echo1_affine), mwf_file)
+    nib.save(nib.Nifti1Image(iwf_map, echo1_affine), iwf_file)
+    nib.save(nib.Nifti1Image(csf_map, echo1_affine), csf_file)
+    nib.save(nib.Nifti1Image(t2_map, echo1_affine), t2_file)
 
     print(f"\nOutput maps created:")
     print(f"  MWF: {mwf_file}")
@@ -343,14 +381,24 @@ def run_msme_preprocessing(
                     )
 
                     print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
-                    print("  Skull-stripping with Atropos 5-component segmentation...")
 
-                    # Atropos 5-class K-means (same as anatomical pipeline)
-                    # Top 3 classes = brain (WM, GM, CSF)
-                    # Bottom 2 classes = non-brain (background, skull/muscle)
-                    _skull_strip_msme_atropos(
-                        msme_ref_raw, msme_ref, reg_work_dir,
-                        ref_affine, first_echo
+                    # Adaptive slice-wise skull stripping (per-slice BET with frac optimization)
+                    msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
+                    reg_skull_strip_config = config.get('msme', {}).get('skull_strip', {})
+                    skull_strip_result = _skull_strip_msme_adaptive(
+                        input_file=msme_ref_raw,
+                        output_file=msme_ref,
+                        mask_file=msme_mask,
+                        work_dir=reg_work_dir,
+                        target_ratio=reg_skull_strip_config.get('target_ratio', 0.15),
+                        frac_range=(
+                            reg_skull_strip_config.get('frac_min', 0.30),
+                            reg_skull_strip_config.get('frac_max', 0.80)
+                        ),
+                        frac_step=reg_skull_strip_config.get('frac_step', 0.05),
+                        use_R_flag=reg_skull_strip_config.get('use_R_flag', False),
+                        cog_offset_x=reg_skull_strip_config.get('cog_offset_x'),
+                        cog_offset_y=reg_skull_strip_config.get('cog_offset_y')
                     )
 
                 registration_results = register_msme_to_t2w(
@@ -428,6 +476,96 @@ def _run_bet(input_file: Path, output_mask: Path, frac: float = 0.3):
     if mask_file.exists() and mask_file != output_mask:
         import shutil
         shutil.move(mask_file, output_mask)
+
+
+def _skull_strip_msme_adaptive(
+    input_file: Path,
+    output_file: Path,
+    mask_file: Path,
+    work_dir: Path,
+    target_ratio: float = 0.15,
+    frac_range: Tuple[float, float] = (0.30, 0.80),
+    frac_step: float = 0.05,
+    invert_intensity: bool = False,
+    use_R_flag: bool = False,
+    cog_offset_x: Optional[int] = None,
+    cog_offset_y: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Adaptive slice-wise skull stripping for MSME data.
+
+    MSME has only 5 thick coronal slices (160x160x5 at 2.0x2.0x8.0mm).
+    Standard 3D BET fails on this geometry. This function runs BET
+    independently on each slice with per-slice frac optimization.
+
+    Parameters
+    ----------
+    input_file : Path
+        Input 3D MSME reference volume (first echo)
+    output_file : Path
+        Output brain-extracted volume
+    mask_file : Path
+        Output brain mask
+    work_dir : Path
+        Working directory for intermediate files
+    target_ratio : float
+        Target extraction ratio per slice (default 0.15 = 15% of slice)
+    frac_range : Tuple[float, float]
+        Range of BET frac values to test (default 0.30-0.80)
+    frac_step : float
+        Step size for frac search (default 0.05)
+    invert_intensity : bool
+        If True, invert intensity before BET (T2w → T1w-like)
+    use_R_flag : bool
+        If True, use BET's -R flag for robust center estimation
+    cog_offset_x : int, optional
+        X offset from image center for COG estimation
+    cog_offset_y : int, optional
+        Y offset from image center for COG estimation (negative = down/inferior)
+
+    Returns
+    -------
+    dict
+        Dictionary with skull stripping results and statistics
+    """
+    print("\n  Running adaptive slice-wise skull stripping for MSME...")
+    print(f"    Target extraction ratio: {target_ratio*100:.0f}%")
+    print(f"    Frac search range: {frac_range[0]:.2f} - {frac_range[1]:.2f}")
+    if cog_offset_x is not None or cog_offset_y is not None:
+        print(f"    COG offset: ({cog_offset_x or 0}, {cog_offset_y or 0})")
+    else:
+        print(f"    COG: intensity-weighted (use_R_flag={use_R_flag})")
+
+    # Run adaptive skull stripping
+    brain_file, mask_out, info = skull_strip_adaptive(
+        input_file=input_file,
+        output_file=output_file,
+        mask_file=mask_file,
+        work_dir=work_dir,
+        target_ratio=target_ratio,
+        frac_range=frac_range,
+        frac_step=frac_step,
+        invert_intensity=invert_intensity,
+        use_R_flag=use_R_flag,
+        cog_offset_x=cog_offset_x,
+        cog_offset_y=cog_offset_y
+    )
+
+    # Report per-slice results
+    print("\n  Per-slice skull stripping results:")
+    for stat in info.get('slice_stats', []):
+        print(f"    Slice {stat['slice']}: frac={stat['optimal_frac']:.2f}, "
+              f"{stat['voxels']:,} voxels ({stat['ratio']*100:.1f}%)")
+
+    print(f"\n  Overall: {info['total_voxels']:,} voxels, "
+          f"extraction ratio={info['extraction_ratio']:.3f}")
+    print(f"  Mean frac: {info['mean_frac']:.3f} ± {info['std_frac']:.3f}")
+
+    return {
+        'brain_file': brain_file,
+        'mask_file': mask_out,
+        'info': info
+    }
 
 
 def _skull_strip_msme_atropos(

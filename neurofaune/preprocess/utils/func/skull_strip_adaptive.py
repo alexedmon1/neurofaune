@@ -216,7 +216,9 @@ def skull_strip_adaptive(
     frac_range: Tuple[float, float] = (0.30, 0.60),
     frac_step: float = 0.05,
     invert_intensity: bool = False,
-    use_R_flag: bool = False
+    use_R_flag: bool = False,
+    cog_offset_x: Optional[int] = None,
+    cog_offset_y: Optional[int] = None
 ) -> Tuple[Path, Path, dict]:
     """
     Perform adaptive slice-wise skull stripping with per-slice frac optimization.
@@ -241,12 +243,20 @@ def skull_strip_adaptive(
         If True, invert intensity before BET (T2w → T1w-like contrast)
     use_R_flag : bool
         If True, use BET's -R flag (robust center estimation) instead of -c flag
+    cog_offset_x : int, optional
+        X offset from image center for COG estimation. If None, calculate from intensity.
+    cog_offset_y : int, optional
+        Y offset from image center for COG estimation. If None, calculate from intensity.
+        Negative values shift COG down (inferior), which is typical for brain positioning.
 
     Returns
     -------
     Tuple[Path, Path, dict]
         (brain_file, mask_file, info_dict)
     """
+    # Determine COG estimation method
+    use_estimated_cog = cog_offset_x is not None or cog_offset_y is not None
+
     print("\n" + "="*80)
     print("ADAPTIVE SLICE-WISE SKULL STRIPPING")
     print("="*80)
@@ -254,7 +264,10 @@ def skull_strip_adaptive(
     print(f"Target extraction per slice: {target_ratio*100:.1f}%")
     print(f"Frac search range: {frac_range[0]:.2f} - {frac_range[1]:.2f} (step: {frac_step:.2f})")
     print(f"Invert intensity (T2w→T1w): {invert_intensity}")
-    print(f"Use BET -R flag (robust center): {use_R_flag}")
+    if use_estimated_cog:
+        print(f"COG estimation: image center + offset ({cog_offset_x or 0}, {cog_offset_y or 0})")
+    else:
+        print(f"COG estimation: intensity-weighted (use_R_flag={use_R_flag})")
 
     # Create slice-specific work directory
     slice_work_dir = work_dir / 'adaptive_slices'
@@ -267,6 +280,16 @@ def skull_strip_adaptive(
     n_slices = data.shape[2]
     print(f"\nProcessing {n_slices} axial slices with adaptive frac...")
 
+    # Calculate estimated COG if using offset method
+    if use_estimated_cog:
+        img_center_x = data.shape[0] // 2
+        img_center_y = data.shape[1] // 2
+        estimated_cog = (
+            img_center_x + (cog_offset_x or 0),
+            img_center_y + (cog_offset_y or 0)
+        )
+        print(f"Image center: ({img_center_x}, {img_center_y}), Estimated COG: {estimated_cog}")
+
     # Initialize combined mask
     combined_mask = np.zeros_like(data, dtype=bool)
 
@@ -275,8 +298,11 @@ def skull_strip_adaptive(
     for z in range(n_slices):
         slice_data = data[:, :, z]
 
-        # Calculate COG
-        cog = calculate_slice_cog(slice_data)
+        # Get COG: either estimated from offset or calculated from intensity
+        if use_estimated_cog:
+            cog = estimated_cog
+        else:
+            cog = calculate_slice_cog(slice_data)
 
         # Find optimal frac for this slice
         print(f"  Slice {z}: COG=({int(cog[0])},{int(cog[1])}) ", end='', flush=True)
