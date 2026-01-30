@@ -4,9 +4,54 @@
 
 ---
 
-## Current Phase: 10 - MSME Registration
+## Current Phase: 10 - Multi-modal Registration & Preprocessing
 
-### Template Building Status
+### Session Summary (2026-01-30)
+
+**Completed this session:**
+1. Created unified skull stripping dispatcher (`neurofaune/preprocess/utils/skull_strip.py`)
+   - Auto-selects method based on slice count: <10 slices → adaptive, ≥10 → atropos_bet
+   - Updated all 4 preprocessing workflows (anat, dwi, func, msme) to use unified interface
+2. Identified and converted 3D isotropic T2w acquisitions
+   - Found 31 subjects (63 sessions) with 3D RARE instead of 2D multi-slice T2w
+   - Created `scripts/convert_3d_rare_to_bids.py` to convert and add to BIDS
+   - **All 141 subjects now have T2w data** (637 2D + 63 3D files)
+3. Updated README with skull stripping documentation and 3D RARE handling
+
+---
+
+## Next Session TODOs
+
+### High Priority
+1. **Run anatomical preprocessing on 3D T2w subjects**
+   - 31 subjects with new 3D T2w need preprocessing
+   - Test that skull stripping and registration work with 3D isotropic data
+   - May need to adjust registration parameters for different FOV/resolution
+
+2. **Complete MSME batch preprocessing**
+   - Currently 24/189 complete (batch was running)
+   - Check results and verify registration quality
+   - Run remaining subjects if needed
+
+3. **Run BOLD preprocessing batch**
+   - Only 33/294 BOLD scans preprocessed
+   - Large backlog needs processing
+
+### Medium Priority
+4. **Verify 3D T2w → Template registration quality**
+   - 3D T2w has different FOV (22×51×22mm vs 32×32×33mm for 2D)
+   - May need registration parameter tuning for 3D subjects
+
+5. **Fix unscaled BOLD headers** for 3 subjects
+   - Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30
+
+### Low Priority
+6. **Generate QC for newly preprocessed subjects**
+7. **Update exclusion lists based on QC**
+
+---
+
+## Template Building Status
 
 | Cohort | T2w Template | SIGMA Registration | Correlation | Tissue Templates | Subjects Used |
 |--------|--------------|-------------------|-------------|------------------|---------------|
@@ -22,7 +67,9 @@
 **Study-space SIGMA atlas:**
 - `atlas/SIGMA_study_space/` - SIGMA reoriented to match study acquisition orientation
 
-### Transform Chain Status
+---
+
+## Transform Chain Status
 
 All modalities share a common registration chain through T2w:
 
@@ -36,60 +83,52 @@ Subject FA/BOLD/MSME → Subject T2w → Cohort Template → SIGMA Atlas
 | T2w → Template | Complete (121 subjects) | ANTs SyN, integrated in anat_preprocess.py |
 | Template → SIGMA | Complete (3 cohorts) | ANTs SyN, via study-space atlas |
 | FA → T2w | Complete (118 subjects) | ANTs affine, integrated in dwi_preprocess.py |
-| BOLD → T2w | Complete (6 subjects) | ANTs rigid + NCC Z-init, integrated in func_preprocess.py |
-| MSME → T2w | In progress (16/189 complete) | ANTs rigid + NCC Z-init, adaptive slice-wise BET |
+| BOLD → T2w | In progress (33 subjects) | ANTs rigid + NCC Z-init, integrated in func_preprocess.py |
+| MSME → T2w | In progress (~24/189) | ANTs rigid + NCC Z-init, adaptive slice-wise BET |
 
-### DTI Analysis Pipeline
+---
 
-**Status:** Complete
-
-- WM-masked VBA (not skeleton-based TBSS — rodent WM tracts too thin)
-- Analysis mask: interior WM + FA >= 0.3
-- Warps subject FA/MD/AD/RD to SIGMA space for group analysis
-- FSL randomise with TFCE, cluster labeling via SIGMA atlas
-- Validated on P90 cohort (47 subjects, 92,798 analysis voxels)
-
-### Functional (BOLD) Normalization
-
-**Status:** Complete (registration) — 6 subjects tested
-
-BOLD-to-T2w registration uses:
-- NCC-based Z initialization (partial-coverage BOLD has no header positioning info)
-- Rigid-only registration (6 DOF — affine over-fits on 9-slice data)
-- Conservative shrink factors (4x2x1x1 — avoids losing Z info at coarse resolution)
-- Integrated into `func_preprocess.py` Step 12
-
-BOLD-to-SIGMA warping:
-- `scripts/batch_warp_bold_to_sigma.py` chains BOLD→T2w→Template→SIGMA
-- Uses `antsApplyTransforms -e 3` for 4D timeseries
-- Produces `space-SIGMA_bold.nii.gz` for group analysis
-
-**3 subjects skipped** (Rat209, Rat228, Rat41) due to unscaled BOLD headers (1.0mm voxels instead of 10x-scaled).
-
-### Preprocessed Data Inventory
+## Preprocessed Data Inventory
 
 **Location:** `/mnt/arborea/bpa-rat/derivatives/`
 
-| Modality | p30 | p60 | p90 | Total |
-|----------|-----|-----|-----|-------|
-| Anatomical T2w | 38 | 34 | 48 | 126 |
-| T2w → Template transforms | 38 | 35 | 48 | 121 |
-| DTI (FA, MD, AD, RD) | - | - | - | 181 sessions |
-| FA → T2w transforms | - | - | - | 118 subjects |
-| Functional BOLD | ~98 | ~98 | ~98 | 294 |
-| BOLD → T2w transforms | - | - | - | 6 subjects |
-| MSME T2 mapping | - | - | - | 16 subjects (batch in progress) |
+| Modality | Available Raw | Preprocessed | Notes |
+|----------|---------------|--------------|-------|
+| Anatomical T2w (2D) | 637 files | 126 subjects | Standard multi-slice |
+| Anatomical T2w (3D) | 63 files | 0 subjects | **NEW** - needs preprocessing |
+| T2w → Template transforms | - | 121 subjects | |
+| DTI (FA, MD, AD, RD) | 181 sessions | 181 sessions | Complete |
+| FA → T2w transforms | - | 118 subjects | |
+| Functional BOLD | 294 sessions | 33 sessions | **Backlog** |
+| BOLD → T2w transforms | - | 33 subjects | |
+| MSME T2 mapping | 189 sessions | ~24 subjects | Batch in progress |
+
+---
+
+## Skull Stripping System
+
+Unified dispatcher with automatic method selection based on image geometry:
+
+| Method | Slice Threshold | Used For | Description |
+|--------|-----------------|----------|-------------|
+| `adaptive` | <10 slices | BOLD (9), MSME (5) | Per-slice BET with iterative frac optimization |
+| `atropos_bet` | ≥10 slices | T2w (41), DTI (11) | Two-pass: Atropos segmentation + BET refinement |
+
+**Configuration:** `neurofaune/preprocess/utils/skull_strip.py`
+- `SLICE_THRESHOLD = 10`
+- Adaptive: target ~15% brain extraction per slice
+- Atropos+BET: returns posteriors for tissue segmentation
 
 ---
 
 ## Workflow Integration Status
 
-| Workflow | Preprocessing | Cross-modal Registration | Integrated |
-|----------|--------------|--------------------------|------------|
-| Anatomical (`anat_preprocess.py`) | Complete | T2w→Template (SyN) | Yes |
-| DTI (`dwi_preprocess.py`) | Complete | FA→T2w (Affine) | Yes (Step 7) |
-| Functional (`func_preprocess.py`) | Complete | BOLD→T2w (Rigid) | Yes (Step 12) |
-| MSME (`msme_preprocess.py`) | Complete | MSME→T2w (Rigid) | Yes (Step 4), skull stripping WIP |
+| Workflow | Preprocessing | Cross-modal Registration | Skull Strip | Integrated |
+|----------|--------------|--------------------------|-------------|------------|
+| Anatomical (`anat_preprocess.py`) | Complete | T2w→Template (SyN) | atropos_bet | Yes |
+| DTI (`dwi_preprocess.py`) | Complete | FA→T2w (Affine) | atropos_bet | Yes |
+| Functional (`func_preprocess.py`) | Complete | BOLD→T2w (Rigid) | adaptive | Yes |
+| MSME (`msme_preprocess.py`) | Complete | MSME→T2w (Rigid) | adaptive | Yes |
 
 ---
 
@@ -99,37 +138,8 @@ BOLD-to-SIGMA warping:
 |----------|----------|----------|-------|
 | DWI | 181 | 40 (22%) | 26 subjects with bad slices |
 | Anatomical | 126 | 7 (6%) | Skull stripping/segmentation metrics |
-| Functional | 2 | 0 | Only 2 subjects fully preprocessed |
-
----
-
-### MSME Preprocessing
-
-**Status:** Batch processing in progress — 16/189 subjects complete (0 failures)
-
-MSME-to-T2w registration uses:
-- First echo extraction (highest SNR) as registration reference
-- MSME data layout: (X, Y, echoes, slices) — echoes in dim 2, spatial slices in dim 3
-- NCC-based Z initialization (same as BOLD — origins at 0,0,0)
-- Rigid-only registration (6 DOF — only 5 slices, affine over-fits)
-- Conservative shrink factors (2x1x1 — even fewer slices than BOLD)
-- Integrated into `msme_preprocess.py` Step 4
-
-**Skull stripping solution:** Adaptive slice-wise BET
-- Per-slice BET with iterative frac optimization targeting ~15% brain extraction
-- COG offset config (`cog_offset_x=0, cog_offset_y=-40`) for brain positioned lower in coronal FOV
-- Consistent 14-16% extraction across p30, p60, p90 cohorts
-- NCC 0.64-0.74 for MSME-to-T2w registration
-
-**Batch processing:**
-- Script: `scripts/batch_preprocess_msme.py`
-- 189 MSME scans total, 126 with T2w available for registration
-- Parallel processing with 4 workers
-- Outputs: T2 maps, MWF maps, MSME→T2w transforms
-
-**QC visualization:** `scripts/visualize_msme_skull_strip.py`
-- Brain mask outline overlay on first echo
-- Registration result with MSME edges on T2w background
+| Functional | 33 | TBD | Needs QC generation |
+| MSME | ~24 | TBD | Needs QC generation |
 
 ---
 
@@ -137,6 +147,7 @@ MSME-to-T2w registration uses:
 
 1. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
 2. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
+3. **3D T2w subjects untested** — registration to 2D-based templates may need parameter tuning
 
 ---
 
@@ -144,7 +155,7 @@ MSME-to-T2w registration uses:
 
 ```
 /mnt/arborea/bpa-rat/
-├── raw/bids/                       # Input BIDS data (141 subjects)
+├── raw/bids/                       # Input BIDS data (141 subjects, 100% T2w coverage)
 ├── derivatives/                    # Preprocessed outputs
 ├── templates/anat/{cohort}/        # Age-specific T2w templates
 ├── atlas/SIGMA_study_space/        # Study-space SIGMA atlas (reoriented)
@@ -154,4 +165,18 @@ MSME-to-T2w registration uses:
 └── work/                           # Temporary files
 
 /mnt/arborea/atlases/SIGMA_scaled/  # Original SIGMA atlas (scaled 10x)
+/mnt/arborea/bruker/                # Raw Bruker data (Cohort1-8)
 ```
+
+---
+
+## Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/batch_preprocess_anat.py` | Anatomical T2w preprocessing |
+| `scripts/batch_preprocess_dwi.py` | DTI preprocessing |
+| `scripts/batch_preprocess_func.py` | Functional BOLD preprocessing |
+| `scripts/batch_preprocess_msme.py` | MSME T2 mapping preprocessing |
+| `scripts/convert_3d_rare_to_bids.py` | Convert 3D isotropic RARE to BIDS T2w |
+| `scripts/visualize_msme_skull_strip.py` | MSME skull stripping QC visualization |
