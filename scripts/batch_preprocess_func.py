@@ -22,27 +22,93 @@ from neurofaune.preprocess.workflows.func_preprocess import run_functional_prepr
 from neurofaune.utils.transforms import create_transform_registry
 
 
-def find_all_bold_scans(bids_root: Path):
-    """Find all BOLD scans in BIDS directory."""
+def find_all_bold_scans(bids_root: Path, min_volumes: int = 2):
+    """
+    Find all BOLD scans in BIDS directory.
+
+    Parameters
+    ----------
+    bids_root : Path
+        BIDS root directory
+    min_volumes : int
+        Minimum number of volumes required (default: 2, excludes localizers)
+
+    Returns
+    -------
+    list
+        List of scan dictionaries with path, subject, session, run, key, n_volumes
+    """
+    import nibabel as nib
+
     bold_scans = list(bids_root.glob('sub-*/ses-*/func/*_bold.nii.gz'))
 
-    # Parse into structured list
+    # Parse into structured list, filtering by volume count
     scans = []
+    skipped_low_volumes = 0
+    skipped_unscaled = 0
+
     for bold_path in bold_scans:
         parts = bold_path.stem.replace('_bold.nii', '').split('_')
         subject = parts[0]
         session = parts[1]
         run = next((p for p in parts if p.startswith('run-')), None)
 
+        # Check number of volumes
+        try:
+            img = nib.load(bold_path)
+            shape = img.shape
+            n_volumes = shape[3] if len(shape) > 3 else 1
+
+            if n_volumes < min_volumes:
+                skipped_low_volumes += 1
+                continue
+
+            # Check for unscaled voxel sizes (all < 5mm suggests missing 10x scaling)
+            zooms = img.header.get_zooms()[:3]
+            if all(z < 5.0 for z in zooms):
+                skipped_unscaled += 1
+                print(f"  Warning: Skipping {subject}/{session} - unscaled voxels {zooms}")
+                continue
+
+        except Exception as e:
+            print(f"  Warning: Could not load {bold_path}: {e}")
+            continue
+
         scans.append({
             'path': bold_path,
             'subject': subject,
             'session': session,
             'run': run,
-            'key': f"{subject}_{session}_{run}"
+            'key': f"{subject}_{session}_{run}",
+            'n_volumes': n_volumes
         })
 
+    if skipped_low_volumes > 0:
+        print(f"  Skipped {skipped_low_volumes} scans with < {min_volumes} volumes (localizers)")
+    if skipped_unscaled > 0:
+        print(f"  Skipped {skipped_unscaled} scans with unscaled voxel headers")
+
     return scans
+
+
+def find_t2w_file(output_root: Path, subject: str, session: str) -> Path:
+    """
+    Find preprocessed T2w file for BOLD registration.
+
+    Looks for preprocessed T2w in derivatives first, then raw BIDS.
+    """
+    # First check derivatives for preprocessed T2w
+    preproc_t2w = output_root / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+    if preproc_t2w.exists():
+        return preproc_t2w
+
+    # Fallback: check raw BIDS (may have multiple runs, take first)
+    bids_root = output_root / 'raw' / 'bids'
+    t2w_files = list(bids_root.glob(f'{subject}/{session}/anat/*_T2w.nii.gz'))
+    if t2w_files:
+        return sorted(t2w_files)[0]
+
+    return None
 
 
 def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
@@ -81,6 +147,9 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
         # Create transform registry
         registry = create_transform_registry(config, subject, cohort=cohort)
 
+        # Find T2w file for registration
+        t2w_file = find_t2w_file(output_root, subject, session)
+
         # Run preprocessing
         results = run_functional_preprocessing(
             config=config,
@@ -89,18 +158,29 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
             bold_file=bold_file,
             output_dir=output_root,
             transform_registry=registry,
+            t2w_file=t2w_file,
             n_discard=n_discard
         )
 
-        return {
+        result = {
             'status': 'success',
             'key': key,
             'subject': subject,
             'session': session,
             'preprocessed_bold': str(results.get('preprocessed_bold', '')),
             'brain_mask': str(results.get('brain_mask', '')),
-            'confounds': str(results.get('confounds', ''))
+            'confounds': str(results.get('confounds', '')),
+            't2w_file': str(t2w_file) if t2w_file else None
         }
+
+        # Add registration info if available
+        if 'registration' in results:
+            result['registration'] = {
+                'transform': str(results['registration'].get('affine_transform', '')),
+                'metadata': str(results['registration'].get('metadata', ''))
+            }
+
+        return result
 
     except Exception as e:
         return {
@@ -157,20 +237,33 @@ def main():
         action='store_true',
         help='List scans without processing'
     )
+    parser.add_argument(
+        '--min-volumes',
+        type=int,
+        default=50,
+        help='Minimum number of volumes required (default: 50, excludes localizers)'
+    )
 
     args = parser.parse_args()
 
     # Find all scans
     print(f"Scanning for BOLD images in {args.bids_root}...")
-    scans = find_all_bold_scans(args.bids_root)
-    print(f"Found {len(scans)} BOLD scans")
+    scans = find_all_bold_scans(args.bids_root, min_volumes=args.min_volumes)
+    print(f"Found {len(scans)} valid BOLD scans (>= {args.min_volumes} volumes)")
 
     if args.dry_run:
         print("\nScans to process:")
         for scan in scans[:20]:
-            print(f"  {scan['key']}: {scan['path']}")
+            print(f"  {scan['key']} ({scan['n_volumes']} vols): {scan['path'].name}")
         if len(scans) > 20:
             print(f"  ... and {len(scans) - 20} more")
+
+        # Summary by cohort
+        from collections import Counter
+        cohort_counts = Counter(s['session'] for s in scans)
+        print(f"\nBy cohort:")
+        for cohort, count in sorted(cohort_counts.items()):
+            print(f"  {cohort}: {count} scans")
         return 0
 
     # Create log directory
@@ -186,6 +279,7 @@ def main():
     print(f"  Output root: {args.output_root}")
     print(f"  Config: {args.config}")
     print(f"  Workers: {args.n_workers}")
+    print(f"  Min volumes: {args.min_volumes}")
     print(f"  Discard volumes: {args.n_discard}")
     print(f"  Force reprocessing: {args.force}")
     print(f"  Log file: {log_file}")
