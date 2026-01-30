@@ -1,6 +1,6 @@
 # Project Status
 
-**Last Updated:** 2026-01-23
+**Last Updated:** 2026-01-30
 
 ---
 
@@ -37,7 +37,7 @@ Subject FA/BOLD/MSME → Subject T2w → Cohort Template → SIGMA Atlas
 | Template → SIGMA | Complete (3 cohorts) | ANTs SyN, via study-space atlas |
 | FA → T2w | Complete (118 subjects) | ANTs affine, integrated in dwi_preprocess.py |
 | BOLD → T2w | Complete (6 subjects) | ANTs rigid + NCC Z-init, integrated in func_preprocess.py |
-| MSME → T2w | In progress (1 subject tested) | ANTs rigid + NCC Z-init, skull stripping WIP |
+| MSME → T2w | In progress (16/189 complete) | ANTs rigid + NCC Z-init, adaptive slice-wise BET |
 
 ### DTI Analysis Pipeline
 
@@ -78,6 +78,7 @@ BOLD-to-SIGMA warping:
 | FA → T2w transforms | - | - | - | 118 subjects |
 | Functional BOLD | ~98 | ~98 | ~98 | 294 |
 | BOLD → T2w transforms | - | - | - | 6 subjects |
+| MSME T2 mapping | - | - | - | 16 subjects (batch in progress) |
 
 ---
 
@@ -102,9 +103,9 @@ BOLD-to-SIGMA warping:
 
 ---
 
-### MSME Registration
+### MSME Preprocessing
 
-**Status:** In progress — registration works, skull stripping needs refinement
+**Status:** Batch processing in progress — 16/189 subjects complete (0 failures)
 
 MSME-to-T2w registration uses:
 - First echo extraction (highest SNR) as registration reference
@@ -114,19 +115,21 @@ MSME-to-T2w registration uses:
 - Conservative shrink factors (2x1x1 — even fewer slices than BOLD)
 - Integrated into `msme_preprocess.py` Step 4
 
-**Skull stripping challenge:** MSME has only 5 thick coronal slices (160x160x5 at 2mm in-plane). Current issues:
-- 3D BET fails (sphere model doesn't fit 160x160x5 flat geometry)
-- Atropos 5-class: selecting top 3 classes removes WM (T2w contrast: WM and skull overlap in intensity)
-- Atropos 3-class: excluding only darkest class is too generous (61% retained, includes skull)
-- Per-slice BET: inconsistent across slices
-- Morphological opening: breaks NCC initialization
+**Skull stripping solution:** Adaptive slice-wise BET
+- Per-slice BET with iterative frac optimization targeting ~15% brain extraction
+- COG offset config (`cog_offset_x=0, cog_offset_y=-40`) for brain positioned lower in coronal FOV
+- Consistent 14-16% extraction across p30, p60, p90 cohorts
+- NCC 0.64-0.74 for MSME-to-T2w registration
 
-Current approach uses Atropos 5-class (top 3 = brain), which gives correct registration placement but imperfect skull stripping. Registration result validated on Rat110 (slices 18-22).
+**Batch processing:**
+- Script: `scripts/batch_preprocess_msme.py`
+- 189 MSME scans total, 126 with T2w available for registration
+- Parallel processing with 4 workers
+- Outputs: T2 maps, MWF maps, MSME→T2w transforms
 
-**Tested on:** sub-Rat110/ses-p90
-- MSME: 160x160x5 at 2.0x2.0x8.0mm (5 spatial slices)
-- Covers T2w slices 18-22 (40mm out of 328mm)
-- Transform: `transforms/sub-Rat110/ses-p90/MSME_to_T2w_0GenericAffine.mat`
+**QC visualization:** `scripts/visualize_msme_skull_strip.py`
+- Brain mask outline overlay on first echo
+- Registration result with MSME edges on T2w background
 
 ---
 
@@ -134,7 +137,6 @@ Current approach uses Atropos 5-class (top 3 = brain), which gives correct regis
 
 1. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
 2. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
-3. **MSME skull stripping** — current Atropos 5-class approach doesn't cleanly separate brain from skull in T2w contrast (WM and skull have overlapping intensities). Registration works despite imperfect masking.
 
 ---
 
