@@ -116,6 +116,14 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path, f
     dict
         Processing result with status, subject/session info, and any errors
     """
+    import os
+    import sys
+
+    # Suppress stdout in worker processes to avoid broken pipe errors
+    # when running with ProcessPoolExecutor
+    sys.stdout = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w')
+
     subject = scan_info['subject']
     session = scan_info['session']
     msme_file = scan_info['path']
