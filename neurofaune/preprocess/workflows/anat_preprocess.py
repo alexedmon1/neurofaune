@@ -21,6 +21,7 @@ import subprocess
 
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
+from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
@@ -950,20 +951,34 @@ def run_anatomical_preprocessing(
     bias_field_correction(t2w_input, t2w_n4_file, mask_file=None)
 
     # Step 3: Skull stripping (after bias correction)
-    print(f"Skull stripping with cohort={cohort} using Atropos 5-component segmentation...")
+    # T2w has ~41 slices, so auto-selects atropos_bet two-pass method
+    print(f"Skull stripping with cohort={cohort} (auto-selects method based on slice count)...")
     brain_file = work_dir / f'{subject}_{session}_brain.nii.gz'
-    brain_file, mask_file, atropos_posteriors = skull_strip_rodent(
+    mask_file = work_dir / f'{subject}_{session}_brain_mask.nii.gz'
+    skull_strip_work_dir = work_dir / 'skull_strip'
+    skull_strip_work_dir.mkdir(exist_ok=True)
+
+    brain_file, mask_file, skull_strip_info = skull_strip(
         input_file=t2w_n4_file,
         output_file=brain_file,
+        mask_file=mask_file,
+        work_dir=skull_strip_work_dir,
+        method='auto',  # Will select 'atropos_bet' for 41-slice T2w
         cohort=cohort,
-        method='atropos'
     )
+    print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
+    print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
+
+    # Get posteriors for tissue segmentation (from atropos_bet method)
+    atropos_posteriors = skull_strip_info.get('posteriors')
+    if atropos_posteriors:
+        atropos_posteriors = [Path(p) for p in atropos_posteriors]
 
     # Check if posteriors are available
-    if atropos_posteriors is None:
+    if not atropos_posteriors:
         raise ValueError(
             "Atropos posteriors not available. "
-            "Tissue segmentation currently requires method='atropos' for skull stripping."
+            "Tissue segmentation requires method='atropos_bet' which returns posteriors."
         )
 
     # Step 4: Tissue segmentation (GM, WM, CSF)

@@ -34,7 +34,7 @@ from neurofaune.preprocess.utils.func.ica_denoising import (
     remove_noise_components,
     generate_ica_denoising_qc
 )
-from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
+from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.func.acompcor import (
     extract_acompcor_components,
     generate_acompcor_qc
@@ -981,22 +981,24 @@ def run_functional_preprocessing(
     ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
     nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
 
-    print("  Running adaptive per-slice BET optimization...")
-    brain_ref, brain_mask, skull_strip_info = skull_strip_adaptive(
+    print("  Running skull stripping (auto-selects method based on slice count)...")
+    brain_ref, brain_mask, skull_strip_info = skull_strip(
         input_file=ref_norm,
         output_file=brain_ref,
         mask_file=brain_mask,
         work_dir=skull_strip_work_dir,
+        method='auto',  # Will select 'adaptive' for <10 slices
         target_ratio=target_ratio,
         frac_range=frac_range,
         frac_step=frac_step,
         invert_intensity=invert_intensity,
-        use_R_flag=use_R_flag
     )
 
-    print(f"\n  Mask created: {skull_strip_info['total_voxels']:,} voxels")
-    print(f"  Extraction ratio: {skull_strip_info['extraction_ratio']:.3f}")
-    print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info['std_frac']:.3f}")
+    print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
+    print(f"  Mask created: {skull_strip_info.get('total_voxels', 0):,} voxels")
+    print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
+    if 'mean_frac' in skull_strip_info:
+        print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
 
     # Apply mask to full 4D timeseries (each TR separately)
     print("\nApplying mask to 4D timeseries...")

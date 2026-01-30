@@ -19,14 +19,13 @@ from neurofaune.preprocess.utils.dwi_utils import (
     convert_5d_to_4d,
     validate_gradient_table,
     extract_b0_volume,
-    create_brain_mask_from_b0,
-    create_brain_mask_atropos,
     check_dwi_data_quality,
     pad_slices_for_eddy,
     pad_mask_for_eddy,
     crop_slices_after_eddy,
     normalize_dwi_intensity
 )
+from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.orientation import (
     match_orientation_to_reference,
@@ -356,19 +355,24 @@ def run_dwi_preprocessing(
 
     extract_b0_volume(dwi_input, bval_validated, b0_file)
 
-    # Get brain extraction method from config (default: atropos for robustness)
-    # Atropos is more robust for DWI data with unusual intensity ranges
-    # (e.g., from different Bruker ParaVision reconstruction settings)
-    brain_extract_method = config.get('diffusion', {}).get('brain_extraction', {}).get('method', 'atropos')
+    # Create brain mask using unified skull strip dispatcher
+    # DTI has 11 slices (>=10), so will auto-select atropos_bet two-pass method
+    print(f"\nCreating brain mask (auto-selects method based on slice count)...")
+    b0_brain_file = work_dir / f'{subject}_{session}_b0_brain.nii.gz'
+    skull_strip_work_dir = work_dir / 'skull_strip'
+    skull_strip_work_dir.mkdir(exist_ok=True)
 
-    if brain_extract_method == 'atropos':
-        print(f"\nCreating brain mask with Atropos segmentation...")
-        create_brain_mask_atropos(b0_file, brain_mask_file, work_dir)
-    else:
-        # Fall back to BET
-        bet_frac = config.get('diffusion', {}).get('bet', {}).get('frac', 0.3)
-        print(f"\nCreating brain mask with BET (frac={bet_frac})...")
-        create_brain_mask_from_b0(b0_file, brain_mask_file, frac=bet_frac)
+    cohort = session.split('-')[1] if '-' in session else 'p60'
+    _, _, skull_strip_info = skull_strip(
+        input_file=b0_file,
+        output_file=b0_brain_file,
+        mask_file=brain_mask_file,
+        work_dir=skull_strip_work_dir,
+        method='auto',  # Will select 'atropos_bet' for 11-slice DTI
+        cohort=cohort,
+    )
+    print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
+    print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
 
     # ==========================================================================
     # Step 4: GPU-accelerated eddy correction (with slice padding)

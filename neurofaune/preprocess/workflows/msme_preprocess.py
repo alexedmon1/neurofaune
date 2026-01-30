@@ -17,7 +17,7 @@ from neurofaune.preprocess.utils.validation import validate_image, print_validat
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
-from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
+from neurofaune.preprocess.utils.skull_strip import skull_strip
 
 
 def register_msme_to_t2w(
@@ -249,22 +249,22 @@ def run_msme_preprocessing(
     nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
     print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
 
-    # Adaptive slice-wise skull stripping
+    # Skull stripping (auto-selects adaptive for <10 slices)
     brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
     skull_strip_config = config.get('msme', {}).get('skull_strip', {})
 
-    skull_strip_result = _skull_strip_msme_adaptive(
+    brain_file, mask_file_out, skull_strip_result = skull_strip(
         input_file=first_echo_file,
         output_file=brain_extracted_file,
         mask_file=brain_mask_file,
-        work_dir=work_dir,
+        work_dir=work_dir / 'adaptive_slices',
+        method='auto',  # Will select 'adaptive' for 5-slice MSME
         target_ratio=skull_strip_config.get('target_ratio', 0.15),
         frac_range=(
             skull_strip_config.get('frac_min', 0.30),
             skull_strip_config.get('frac_max', 0.80)
         ),
         frac_step=skull_strip_config.get('frac_step', 0.05),
-        use_R_flag=skull_strip_config.get('use_R_flag', False),
         cog_offset_x=skull_strip_config.get('cog_offset_x'),
         cog_offset_y=skull_strip_config.get('cog_offset_y')
     )
@@ -382,21 +382,21 @@ def run_msme_preprocessing(
 
                     print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
 
-                    # Adaptive slice-wise skull stripping (per-slice BET with frac optimization)
+                    # Skull stripping (auto-selects adaptive for <10 slices)
                     msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
                     reg_skull_strip_config = config.get('msme', {}).get('skull_strip', {})
-                    skull_strip_result = _skull_strip_msme_adaptive(
+                    _, _, skull_strip_result = skull_strip(
                         input_file=msme_ref_raw,
                         output_file=msme_ref,
                         mask_file=msme_mask,
-                        work_dir=reg_work_dir,
+                        work_dir=reg_work_dir / 'adaptive_slices',
+                        method='auto',  # Will select 'adaptive' for 5-slice MSME
                         target_ratio=reg_skull_strip_config.get('target_ratio', 0.15),
                         frac_range=(
                             reg_skull_strip_config.get('frac_min', 0.30),
                             reg_skull_strip_config.get('frac_max', 0.80)
                         ),
                         frac_step=reg_skull_strip_config.get('frac_step', 0.05),
-                        use_R_flag=reg_skull_strip_config.get('use_R_flag', False),
                         cog_offset_x=reg_skull_strip_config.get('cog_offset_x'),
                         cog_offset_y=reg_skull_strip_config.get('cog_offset_y')
                     )
