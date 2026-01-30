@@ -91,6 +91,37 @@ raw/bids/sub-Rat001/ses-p60/
 └── msme/sub-Rat001_ses-p60_MSME.nii.gz
 ```
 
+### Handling 3D Isotropic T2w Acquisitions
+
+Some studies may have subjects with **3D isotropic RARE** acquisitions instead of the standard 2D multi-slice T2w. This is common in earlier cohorts where acquisition protocols evolved over time.
+
+| Acquisition | Typical Geometry | Resolution |
+|-------------|-----------------|------------|
+| 2D multi-slice | 256×256×41 | 0.125×0.125×0.8mm |
+| 3D isotropic | 256×140×110 | 0.2×0.2×0.2mm |
+
+The standard BIDS converter may not recognize 3D RARE as T2w. Use the dedicated script to convert these:
+
+```bash
+# Dry run to see what would be converted
+uv run python scripts/convert_3d_rare_to_bids.py \
+    --bruker-root /path/to/bruker \
+    --bids-root /path/to/study/raw/bids \
+    --dry-run
+
+# Run the conversion
+uv run python scripts/convert_3d_rare_to_bids.py \
+    --bruker-root /path/to/bruker \
+    --bids-root /path/to/study/raw/bids
+```
+
+This creates T2w files with the `acq-3D` label to distinguish them:
+```
+raw/bids/sub-Rat001/ses-p60/anat/sub-Rat001_ses-p60_acq-3D_run-6_T2w.nii.gz
+```
+
+The 3D acquisitions can then be processed through the standard anatomical pipeline. ANTs registration handles the different voxel sizes when warping to the cohort template.
+
 ---
 
 ## Step 3: Anatomical Preprocessing
