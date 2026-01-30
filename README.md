@@ -136,8 +136,8 @@ uv run python scripts/batch_preprocess_anat.py \
 
 Per-subject pipeline:
 1. N4 bias field correction
-2. Skull stripping (Atropos 5-component + adaptive BET)
-3. Tissue segmentation (GM, WM, CSF)
+2. Skull stripping (two-pass Atropos+BET for full-coverage T2w)
+3. Tissue segmentation (GM, WM, CSF from Atropos posteriors)
 4. Register T2w to age-matched template (ANTs SyN)
 
 Outputs:
@@ -171,7 +171,7 @@ uv run python scripts/batch_preprocess_dwi.py \
 Pipeline:
 1. 5D to 4D conversion (Bruker multi-average)
 2. Intensity normalization (handles Bruker reconstruction differences)
-3. Brain extraction (Atropos + BET two-pass)
+3. Skull stripping (two-pass Atropos+BET for 11-slice coverage)
 4. Eddy correction with slice padding (GPU when available)
 5. DTI fitting (FA, MD, AD, RD)
 6. QC reports
@@ -193,7 +193,7 @@ uv run python scripts/batch_preprocess_func.py \
 Pipeline:
 1. Volume discarding (T1 equilibration)
 2. Slice timing correction (optional)
-3. Brain extraction (adaptive per-slice BET)
+3. Skull stripping (adaptive slice-wise BET for 9-slice partial coverage)
 4. Motion correction (MCFLIRT)
 5. ICA denoising (MELODIC with rodent-specific classification)
 6. Spatial smoothing
@@ -217,10 +217,12 @@ uv run python scripts/batch_preprocess_msme.py \
 ```
 
 Pipeline:
-1. Multi-echo T2 fitting
-2. Myelin Water Fraction (MWF) via NNLS
-3. T2 compartment analysis (myelin, intra/extracellular, CSF)
-4. QC reports
+1. Skull stripping (adaptive slice-wise BET for 5-slice partial coverage)
+2. Multi-echo T2 fitting
+3. Myelin Water Fraction (MWF) via NNLS
+4. T2 compartment analysis (myelin, intra/extracellular, CSF)
+5. **MSME to T2w registration** (NCC Z-initialization + rigid)
+6. QC reports
 
 ---
 
@@ -342,9 +344,10 @@ neurofaune/
 │   │   ├── anat_preprocess.py       # T2w: N4, skull strip, segment, register
 │   │   ├── dwi_preprocess.py        # DTI: eddy, tensor fit, FA→T2w
 │   │   ├── func_preprocess.py       # fMRI: motion, ICA, filter, BOLD→T2w
-│   │   └── msme_preprocess.py       # MSME: T2 mapping, MWF
+│   │   └── msme_preprocess.py       # MSME: T2 mapping, MWF, MSME→T2w
 │   ├── qc/                          # Quality control (per modality)
-│   └── utils/                       # Preprocessing utilities
+│   └── utils/
+│       └── skull_strip.py           # Unified skull stripping dispatcher
 ├── templates/                       # Template building and registration
 │   ├── builder.py                   # ANTs template construction
 │   ├── registration.py              # Subject→template, atlas propagation
@@ -362,6 +365,90 @@ Key design decisions:
 - **10x voxel scaling** for FSL/ANTs compatibility (sub-mm rodent voxels)
 - **Age cohorts** (p30, p60, p90) with cohort-specific templates
 - **All normalization goes to SIGMA space** (subject data warped up, labels applied there)
+- **Unified skull stripping** with automatic method selection based on image geometry
+
+---
+
+## Skull Stripping
+
+Neurofaune provides a unified skull stripping interface that automatically selects the optimal method based on image geometry. This is critical for rodent MRI where different modalities have vastly different slice coverage.
+
+### The Challenge
+
+Rodent MRI acquisitions vary significantly in slice coverage:
+
+| Modality | Typical Slices | Coverage |
+|----------|---------------|----------|
+| T2w anatomical | 41 | Full brain |
+| DTI diffusion | 11 | Hippocampus-focused |
+| BOLD functional | 9 | Partial brain |
+| MSME T2 mapping | 5 | Very partial |
+
+Standard 3D skull stripping (BET, ANTs) assumes a roughly spherical brain geometry. This fails catastrophically on partial-coverage data like BOLD (9 slices) or MSME (5 slices) where the volume is essentially a flat slab.
+
+### Unified Dispatcher
+
+Neurofaune's `skull_strip()` function automatically selects the appropriate method:
+
+```python
+from neurofaune.preprocess.utils.skull_strip import skull_strip
+
+# Auto-selects method based on slice count
+brain, mask, info = skull_strip(
+    input_file=image_path,
+    output_file=brain_path,
+    mask_file=mask_path,
+    work_dir=work_dir,
+    method='auto',  # <10 slices → adaptive, ≥10 → atropos_bet
+)
+```
+
+### Methods
+
+**Adaptive Slice-wise BET** (for <10 slices: BOLD, MSME)
+- Processes each 2D slice independently
+- Iterative frac optimization to achieve target ~15% brain extraction per slice
+- Configurable center-of-gravity offset for off-center brain positioning
+- Handles the flat-slab geometry where 3D methods fail
+
+**Two-pass Atropos+BET** (for ≥10 slices: T2w, DTI)
+- Pass 1: Atropos 5-component segmentation provides rough brain mask and tissue posteriors
+- Pass 2: BET refinement using Atropos center-of-gravity for initialization
+- Adaptive frac calculation based on image contrast
+- Returns posteriors for tissue segmentation reuse (GM, WM, CSF)
+
+### Configuration
+
+Skull stripping parameters can be configured per modality in `config.yaml`:
+
+```yaml
+functional:
+  skull_strip_adaptive:
+    target_ratio: 0.15      # Target brain extraction per slice
+    frac_range: [0.30, 0.90]
+    frac_step: 0.05
+
+msme:
+  skull_strip:
+    target_ratio: 0.15
+    frac_min: 0.30
+    frac_max: 0.80
+    cog_offset_x: 0         # X offset for COG estimation
+    cog_offset_y: -40       # Y offset (negative = inferior)
+```
+
+### Why This Matters
+
+Without geometry-aware skull stripping:
+- 3D BET on 5-slice MSME data produces empty or nonsensical masks
+- Registration fails because the brain boundary is undefined
+- Downstream analysis (T2 mapping, connectivity) becomes unreliable
+
+With the unified dispatcher:
+- MSME (5 slices) → adaptive method → 14-16% extraction → successful registration
+- BOLD (9 slices) → adaptive method → consistent masks across protocols
+- DTI (11 slices) → atropos_bet → robust extraction with tissue posteriors
+- T2w (41 slices) → atropos_bet → high-quality masks for template building
 
 ---
 
