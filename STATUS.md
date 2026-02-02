@@ -1,14 +1,32 @@
 # Project Status
 
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-02-02
 
 ---
 
 ## Current Phase: 10 - Multi-modal Registration & Preprocessing
 
-### Session Summary (2026-01-30)
+### Session Summary (2026-02-02)
 
 **Completed this session:**
+1. Tested 3D T2w preprocessing on `sub-Rat8/ses-p60`
+   - Created `scripts/test_3d_t2w_preprocess.py` for single-subject testing
+   - Preprocessing workflow successfully handles 3D isotropic data (140×256×110 at 2mm)
+   - Auto-selected Atropos+BET method (110 slices ≥ 10 threshold)
+   - Adaptive BET frac: 0.390, extraction ratio: 8.2%
+   - QC flagged "potential_over_stripping" - may need visual inspection
+   - All outputs generated: preprocessed T2w, brain mask, tissue segmentation
+
+2. Geometry comparison 3D vs 2D T2w:
+   | Property | 2D T2w (standard) | 3D T2w |
+   |----------|-------------------|--------|
+   | Shape | 256×256×41 | 140×256×110 |
+   | Voxel (scaled) | 1.25×1.25×8.0mm | 2.0×2.0×2.0mm |
+   | Type | Anisotropic | Isotropic |
+
+### Session Summary (2026-01-30)
+
+**Completed previously:**
 1. Created unified skull stripping dispatcher (`neurofaune/preprocess/utils/skull_strip.py`)
    - Auto-selects method based on slice count: <10 slices → adaptive, ≥10 → atropos_bet
    - Updated all 4 preprocessing workflows (anat, dwi, func, msme) to use unified interface
@@ -23,10 +41,10 @@
 ## Next Session TODOs
 
 ### High Priority
-1. **Run anatomical preprocessing on 3D T2w subjects**
-   - 31 subjects with new 3D T2w need preprocessing
-   - Test that skull stripping and registration work with 3D isotropic data
-   - May need to adjust registration parameters for different FOV/resolution
+1. **Run full batch preprocessing on 3D T2w subjects**
+   - 31 subjects (63 sessions) with 3D T2w need preprocessing
+   - Test subject (sub-Rat8/ses-p60) completed successfully
+   - Review QC for potential over-stripping before full batch
 
 2. **Complete MSME batch preprocessing**
    - Currently 24/189 complete (batch was running)
@@ -39,7 +57,7 @@
 
 ### Medium Priority
 4. **Verify 3D T2w → Template registration quality**
-   - 3D T2w has different FOV (22×51×22mm vs 32×32×33mm for 2D)
+   - 3D T2w has different FOV than 2D
    - May need registration parameter tuning for 3D subjects
 
 5. **Fix unscaled BOLD headers** for 3 subjects
@@ -95,7 +113,7 @@ Subject FA/BOLD/MSME → Subject T2w → Cohort Template → SIGMA Atlas
 | Modality | Available Raw | Preprocessed | Notes |
 |----------|---------------|--------------|-------|
 | Anatomical T2w (2D) | 637 files | 126 subjects | Standard multi-slice |
-| Anatomical T2w (3D) | 63 files | 0 subjects | **NEW** - needs preprocessing |
+| Anatomical T2w (3D) | 63 sessions | 1 session | Test run complete (sub-Rat8/ses-p60) |
 | T2w → Template transforms | - | 121 subjects | |
 | DTI (FA, MD, AD, RD) | 181 sessions | 181 sessions | Complete |
 | FA → T2w transforms | - | 118 subjects | |
@@ -147,7 +165,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 
 1. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
 2. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
-3. **3D T2w subjects untested** — registration to 2D-based templates may need parameter tuning
+3. **3D T2w preprocessing tested** — QC flagged potential over-stripping, visual review recommended before full batch
 
 ---
 
@@ -179,4 +197,5 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/batch_preprocess_func.py` | Functional BOLD preprocessing |
 | `scripts/batch_preprocess_msme.py` | MSME T2 mapping preprocessing |
 | `scripts/convert_3d_rare_to_bids.py` | Convert 3D isotropic RARE to BIDS T2w |
+| `scripts/test_3d_t2w_preprocess.py` | Test 3D T2w preprocessing on single subject |
 | `scripts/visualize_msme_skull_strip.py` | MSME skull stripping QC visualization |
