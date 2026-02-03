@@ -25,6 +25,83 @@ from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
+def _is_3d_acquisition(t2w_file: Path, img_shape, voxel_sizes) -> bool:
+    """
+    Check if this is a 3D isotropic acquisition rather than standard 2D multi-slice.
+
+    Detection criteria:
+    1. Filename contains 'acq-3D' tag
+    2. Geometry: isotropic-ish voxels (max/min ratio < 2.0) AND many slices (>60 after 10x scaling)
+
+    Parameters
+    ----------
+    t2w_file : Path
+        Path to T2w NIfTI file (used for filename check)
+    img_shape : tuple
+        Image dimensions (x, y, z)
+    voxel_sizes : tuple
+        Voxel dimensions in mm (after any scaling)
+
+    Returns
+    -------
+    bool
+        True if this appears to be a 3D isotropic acquisition
+    """
+    # Check filename for acq-3D tag
+    if 'acq-3D' in t2w_file.name or 'acq-3d' in t2w_file.name:
+        return True
+
+    # Check geometry: isotropic-ish voxels + many slices (>60 after 10x scaling)
+    max_dim = max(voxel_sizes[:3])
+    min_dim = min(voxel_sizes[:3])
+    if min_dim > 0 and max_dim / min_dim < 2.0 and img_shape[2] > 60:
+        return True
+
+    return False
+
+
+def _resample_to_2d_geometry(
+    input_file: Path,
+    reference_file: Path,
+    output_file: Path,
+    interpolation: str = 'Linear'
+) -> Path:
+    """
+    Resample an image to match a reference image geometry using ANTs identity transform.
+
+    Parameters
+    ----------
+    input_file : Path
+        Input image to resample
+    reference_file : Path
+        Reference image defining the target geometry
+    output_file : Path
+        Output resampled image
+    interpolation : str
+        Interpolation method ('Linear', 'NearestNeighbor', 'GenericLabel')
+
+    Returns
+    -------
+    Path
+        Path to resampled output
+    """
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(input_file),
+        '-r', str(reference_file),
+        '-o', str(output_file),
+        '-t', 'identity',
+        '-n', interpolation
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"antsApplyTransforms failed for {input_file.name}: {result.stderr}"
+        )
+    return output_file
+
+
 def check_and_scale_voxel_size(
     input_file: Path,
     output_file: Path,
@@ -994,6 +1071,84 @@ def run_anatomical_preprocessing(
         session=session
     )
 
+    # Step 4b: 3D acquisition detection and resampling
+    # If this is a 3D isotropic acquisition (e.g., 3D TurboRARE), resample all
+    # outputs to match the standard 2D multi-slice geometry using the cohort template.
+    img_for_check = nib.load(brain_file)
+    is_3d = _is_3d_acquisition(t2w_file, img_for_check.shape, img_for_check.header.get_zooms())
+    resampled_to_2d = False
+
+    if is_3d:
+        print("\n" + "="*60)
+        print("STEP 4b: 3D Acquisition Detected - Resampling to 2D Geometry")
+        print("="*60)
+        print(f"  Shape: {img_for_check.shape}")
+        print(f"  Voxel sizes: {img_for_check.header.get_zooms()[:3]}")
+        print(f"  Source file: {t2w_file.name}")
+
+        # Find cohort template as reference geometry
+        template_dir = output_dir / 'templates' / 'anat' / cohort
+        template_candidates = [
+            template_dir / f'tpl-{cohort}_T2w.nii.gz',
+            template_dir / f'tpl-BPARat_{cohort}_T2w.nii.gz',
+        ]
+        template_ref = None
+        for tc in template_candidates:
+            if tc.exists():
+                template_ref = tc
+                break
+
+        if template_ref is None:
+            print(f"  WARNING: No cohort template found in {template_dir}")
+            print(f"  3D data will NOT be resampled to 2D geometry.")
+            print(f"  Build the cohort template first, then reprocess this subject.")
+        else:
+            print(f"  Reference template: {template_ref.name}")
+            ref_img = nib.load(template_ref)
+            print(f"  Target geometry: {ref_img.shape}, voxels: {ref_img.header.get_zooms()[:3]}")
+
+            # Save 3D originals in work dir for reference
+            import shutil as _shutil
+            brain_3d = work_dir / f'{subject}_{session}_desc-skullstrip3D_T2w.nii.gz'
+            mask_3d = work_dir / f'{subject}_{session}_desc-brain3D_mask.nii.gz'
+            _shutil.copy(brain_file, brain_3d)
+            _shutil.copy(mask_file, mask_3d)
+            print(f"  Saved 3D originals: {brain_3d.name}, {mask_3d.name}")
+
+            # Resample brain (Linear interpolation)
+            brain_2d = work_dir / f'{subject}_{session}_brain_2dlike.nii.gz'
+            _resample_to_2d_geometry(brain_file, template_ref, brain_2d, 'Linear')
+            brain_file = brain_2d
+            print(f"  Resampled brain: {brain_2d.name}")
+
+            # Resample mask (NearestNeighbor to preserve binary values)
+            mask_2d = work_dir / f'{subject}_{session}_brain_mask_2dlike.nii.gz'
+            _resample_to_2d_geometry(mask_file, template_ref, mask_2d, 'NearestNeighbor')
+            mask_file = mask_2d
+            print(f"  Resampled mask: {mask_2d.name}")
+
+            # Resample tissue segmentation (NearestNeighbor for discrete labels)
+            seg_2d = work_dir / f'{subject}_{session}_dseg_2dlike.nii.gz'
+            _resample_to_2d_geometry(
+                tissue_results['segmentation'], template_ref, seg_2d, 'NearestNeighbor'
+            )
+            tissue_results['segmentation'] = seg_2d
+            print(f"  Resampled segmentation: {seg_2d.name}")
+
+            # Resample tissue probability maps (Linear for continuous probabilities)
+            for tissue_key, tissue_label in [('gm_prob', 'GM'), ('wm_prob', 'WM'), ('csf_prob', 'CSF')]:
+                prob_2d = work_dir / f'{subject}_{session}_label-{tissue_label}_probseg_2dlike.nii.gz'
+                _resample_to_2d_geometry(
+                    tissue_results[tissue_key], template_ref, prob_2d, 'Linear'
+                )
+                tissue_results[tissue_key] = prob_2d
+                print(f"  Resampled {tissue_label} probability: {prob_2d.name}")
+
+            resampled_to_2d = True
+            resampled_img = nib.load(brain_file)
+            print(f"\n  Resampled geometry: {resampled_img.shape}, "
+                  f"voxels: {resampled_img.header.get_zooms()[:3]}")
+
     # Step 5: Intensity normalization (multiply by 1000)
     print("\n" + "="*60)
     print("STEP 5: Intensity Normalization")
@@ -1044,10 +1199,14 @@ def run_anatomical_preprocessing(
     print("="*60)
     from neurofaune.preprocess.qc.anat import generate_anatomical_qc_report
 
+    # When 3D was resampled, use the resampled brain as the t2w reference for QC
+    # (original t2w_input has different geometry than the resampled mask/brain)
+    qc_t2w_file = final_brain_skullstrip if resampled_to_2d else t2w_input
+
     qc_report = generate_anatomical_qc_report(
         subject=subject,
         session=session,
-        t2w_file=t2w_input,
+        t2w_file=qc_t2w_file,
         brain_file=final_brain_skullstrip,
         mask_file=final_mask,
         gm_file=final_gm,
@@ -1077,5 +1236,7 @@ def run_anatomical_preprocessing(
         'csf_prob': final_csf,
         'was_scaled': was_scaled,
         'scale_factor': scale_factor,
+        'is_3d': is_3d,
+        'resampled_to_2d': resampled_to_2d,
         'qc_reports': [qc_report]
     }

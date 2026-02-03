@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from neurofaune.config import load_config
 from neurofaune.preprocess.workflows.msme_preprocess import run_msme_preprocessing
 from neurofaune.utils.transforms import create_transform_registry
+from neurofaune.utils.select_anatomical import is_3d_only_subject
 
 
 def find_all_msme_scans(bids_root: Path):
@@ -247,6 +248,11 @@ def main():
         default=None,
         help='Specific subjects to process (e.g., sub-Rat110 sub-Rat111)'
     )
+    parser.add_argument(
+        '--exclude-3d',
+        action='store_true',
+        help='Exclude subjects that only have 3D T2w scans (no 2D available)'
+    )
 
     args = parser.parse_args()
 
@@ -257,6 +263,17 @@ def main():
     # Filter by subjects if specified
     if args.subjects:
         scans = [s for s in scans if s['subject'] in args.subjects]
+
+    # Exclude 3D-only subjects if requested
+    if args.exclude_3d:
+        before = len(scans)
+        scans = [
+            s for s in scans
+            if not is_3d_only_subject(args.bids_root / s['subject'], s['session'])
+        ]
+        n_excluded = before - len(scans)
+        if n_excluded > 0:
+            print(f"Excluding {n_excluded} MSME scans from 3D-only subjects (--exclude-3d)")
 
     print(f"Found {len(scans)} MSME scans")
 

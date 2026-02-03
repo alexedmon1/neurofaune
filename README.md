@@ -120,7 +120,14 @@ This creates T2w files with the `acq-3D` label to distinguish them:
 raw/bids/sub-Rat001/ses-p60/anat/sub-Rat001_ses-p60_acq-3D_run-6_T2w.nii.gz
 ```
 
-The 3D acquisitions can then be processed through the standard anatomical pipeline. ANTs registration handles the different voxel sizes when warping to the cohort template.
+The 3D acquisitions can then be processed through the standard anatomical pipeline (see below for how 3D data is handled during preprocessing).
+
+To list all 3D-only subjects in a BIDS dataset:
+```bash
+uv run python scripts/list_3d_subjects.py /path/to/bids
+uv run python scripts/list_3d_subjects.py /path/to/bids --json    # JSON output
+uv run python scripts/list_3d_subjects.py /path/to/bids --cohort p60
+```
 
 ---
 
@@ -169,7 +176,19 @@ Per-subject pipeline:
 1. N4 bias field correction
 2. Skull stripping (two-pass Atropos+BET for full-coverage T2w)
 3. Tissue segmentation (GM, WM, CSF from Atropos posteriors)
-4. Register T2w to age-matched template (ANTs SyN)
+4. **3D resampling** (if 3D acquisition detected, resample to 2D-like geometry)
+5. Register T2w to age-matched template (ANTs SyN)
+
+#### 3D T2w Resampling
+
+Subjects with 3D isotropic T2w (e.g., 140x256x110 at 2mm isotropic) are automatically detected and resampled to the standard 2D multi-slice geometry (256x256x41 at 1.25x1.25x8mm) using the cohort template as reference. Detection uses the `acq-3D` BIDS tag and geometry heuristics (isotropic voxels + >60 slices). All outputs (brain, mask, GM/WM/CSF probabilities, segmentation) are resampled consistently. 3D originals are preserved in the work directory.
+
+To exclude 3D-only subjects from batch processing:
+```bash
+uv run python scripts/batch_preprocess_anat.py ... --exclude-3d
+```
+
+The `--exclude-3d` flag is available on all batch scripts (`batch_preprocess_anat.py`, `batch_preprocess_dwi.py`, `batch_preprocess_func.py`, `batch_preprocess_msme.py`).
 
 Outputs:
 ```

@@ -265,6 +265,65 @@ def print_scan_ranking(
     print("=" * 80)
 
 
+def is_3d_only_subject(subject_dir: Path, session: str) -> bool:
+    """
+    Check if this subject/session has only 3D T2w scans (no 2D available).
+
+    Detects 3D acquisitions by:
+    1. Checking BIDS filename for 'acq-3D' tag
+    2. Checking JSON sidecar for '3d' or '3D' in ScanName
+
+    Parameters
+    ----------
+    subject_dir : Path
+        Subject directory (e.g., /path/to/sub-Rat207)
+    session : str
+        Session identifier (e.g., 'ses-p60')
+
+    Returns
+    -------
+    bool
+        True if subject/session has only 3D T2w (no 2D scans available)
+    """
+    anat_dir = subject_dir / session / 'anat'
+    if not anat_dir.exists():
+        return False
+
+    t2w_files = list(anat_dir.glob('*_T2w.nii.gz'))
+    if not t2w_files:
+        return False
+
+    has_2d = False
+    has_3d = False
+
+    for f in t2w_files:
+        is_3d = False
+
+        # Check filename for acq-3D tag
+        if 'acq-3D' in f.name or 'acq-3d' in f.name:
+            is_3d = True
+
+        # Check JSON sidecar for 3D in scan name
+        if not is_3d:
+            json_file = f.with_suffix('').with_suffix('.json')
+            if json_file.exists():
+                try:
+                    with open(json_file, 'r') as jf:
+                        metadata = json.load(jf)
+                    scan_name = metadata.get('ScanName', '').lower()
+                    if '3d' in scan_name or 'turborare_3d' in scan_name:
+                        is_3d = True
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+        if is_3d:
+            has_3d = True
+        else:
+            has_2d = True
+
+    return has_3d and not has_2d
+
+
 if __name__ == '__main__':
     import argparse
 

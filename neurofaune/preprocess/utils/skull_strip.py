@@ -269,7 +269,7 @@ def _skull_strip_atropos_bet(
     background_median = np.median(background_intensities)
     contrast = abs(brain_median - background_median) / (brain_median + 1e-6)
 
-    # Map contrast to frac (higher contrast = can use higher frac)
+    # Map contrast to frac (lower frac = more conservative BET, rely on Atropos)
     adaptive_frac = 0.2 + 0.3 * min(contrast, 1.0)
     adaptive_frac = np.clip(adaptive_frac, 0.15, 0.5)
     print(f"  Adaptive BET frac: {adaptive_frac:.3f} (contrast={contrast:.3f})")
@@ -304,8 +304,17 @@ def _skull_strip_atropos_bet(
             final_mask = atropos_mask > 0
 
     # Step 7: Morphological cleanup
+    # Keep only the largest connected component (removes stray non-brain islands)
+    labeled, n_components = ndimage.label(final_mask)
+    if n_components > 1:
+        component_sizes = ndimage.sum(final_mask, labeled, range(1, n_components + 1))
+        largest_label = np.argmax(component_sizes) + 1
+        final_mask = (labeled == largest_label)
+        print(f"  Removed {n_components - 1} disconnected components")
+
+    # Opening (erode then dilate) removes thin protrusions of non-brain tissue
+    final_mask = ndimage.binary_opening(final_mask, iterations=1)
     final_mask = ndimage.binary_fill_holes(final_mask)
-    final_mask = ndimage.binary_closing(final_mask, iterations=2)
 
     # Save final mask
     nib.save(nib.Nifti1Image(final_mask.astype(np.float32), img.affine, img.header), mask_file)

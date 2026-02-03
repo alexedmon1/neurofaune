@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from neurofaune.config import load_config
 from neurofaune.preprocess.workflows.dwi_preprocess import run_dwi_preprocessing
 from neurofaune.utils.transforms import TransformRegistry
+from neurofaune.utils.select_anatomical import is_3d_only_subject
 
 
 def find_dwi_files(bids_root: Path, subjects: Optional[List[str]] = None) -> List[Tuple[str, str, Path]]:
@@ -356,6 +357,11 @@ def main():
         action='store_true',
         help='Skip FA to T2w registration step'
     )
+    parser.add_argument(
+        '--exclude-3d',
+        action='store_true',
+        help='Exclude subjects that only have 3D T2w scans (no 2D available)'
+    )
 
     args = parser.parse_args()
 
@@ -376,6 +382,17 @@ def main():
 
     dwi_files = find_dwi_files(args.bids_root, subjects)
     print(f"Found {len(dwi_files)} DWI files")
+
+    # Exclude 3D-only subjects if requested
+    if args.exclude_3d:
+        before = len(dwi_files)
+        dwi_files = [
+            (subj, sess, path) for subj, sess, path in dwi_files
+            if not is_3d_only_subject(args.bids_root / subj, sess)
+        ]
+        n_excluded = before - len(dwi_files)
+        if n_excluded > 0:
+            print(f"Excluding {n_excluded} DWI files from 3D-only subjects (--exclude-3d)")
 
     if args.max_subjects:
         dwi_files = dwi_files[:args.max_subjects]

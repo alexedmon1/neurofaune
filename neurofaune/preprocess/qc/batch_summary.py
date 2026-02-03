@@ -50,7 +50,7 @@ def get_subject_qc_dir(
     """
     Get the QC output directory for a subject/session/modality.
 
-    Uses the new structure: qc/sub/{subject}/{session}/{modality}/
+    Uses structure: qc/{subject}/{session}/{modality}/
 
     Parameters
     ----------
@@ -68,7 +68,7 @@ def get_subject_qc_dir(
     Path
         QC directory path (creates if doesn't exist)
     """
-    qc_dir = Path(study_root) / 'qc' / 'sub' / subject / session / modality
+    qc_dir = Path(study_root) / 'qc' / subject / session / modality
     qc_dir.mkdir(parents=True, exist_ok=True)
     return qc_dir
 
@@ -556,13 +556,7 @@ def collect_qc_metrics(
     qc_dir = Path(qc_dir)
     records = []
 
-    # Check for new structure (qc/sub/sub-*) or old structure (qc/sub-*)
-    sub_dir = qc_dir / 'sub'
-    if sub_dir.exists():
-        subject_dirs = sorted(sub_dir.glob('sub-*'))
-    else:
-        # Fallback to old structure for backwards compatibility
-        subject_dirs = sorted(qc_dir.glob('sub-*'))
+    subject_dirs = sorted(qc_dir.glob('sub-*'))
 
     for subj_dir in subject_dirs:
         subject = subj_dir.name

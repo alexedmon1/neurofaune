@@ -3,12 +3,11 @@ Quality Control modules for neurofaune preprocessing.
 
 QC Directory Structure:
     {study_root}/qc/
-    ├── sub/                        # Per-subject QC
-    │   └── {subject}/{session}/
-    │       ├── anat/
-    │       ├── dwi/
-    │       ├── func/
-    │       └── msme/
+    ├── {subject}/{session}/        # Per-subject QC
+    │   ├── anat/
+    │   ├── dwi/
+    │   ├── func/
+    │   └── msme/
     └── {modality}_batch_summary/   # Batch summaries
 """
 

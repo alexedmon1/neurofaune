@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from neurofaune.config import load_config
 from neurofaune.preprocess.workflows.func_preprocess import run_functional_preprocessing
 from neurofaune.utils.transforms import create_transform_registry
+from neurofaune.utils.select_anatomical import is_3d_only_subject
 
 
 def find_all_bold_scans(bids_root: Path, min_volumes: int = 2):
@@ -243,6 +244,11 @@ def main():
         default=50,
         help='Minimum number of volumes required (default: 50, excludes localizers)'
     )
+    parser.add_argument(
+        '--exclude-3d',
+        action='store_true',
+        help='Exclude subjects that only have 3D T2w scans (no 2D available)'
+    )
 
     args = parser.parse_args()
 
@@ -250,6 +256,17 @@ def main():
     print(f"Scanning for BOLD images in {args.bids_root}...")
     scans = find_all_bold_scans(args.bids_root, min_volumes=args.min_volumes)
     print(f"Found {len(scans)} valid BOLD scans (>= {args.min_volumes} volumes)")
+
+    # Exclude 3D-only subjects if requested
+    if args.exclude_3d:
+        before = len(scans)
+        scans = [
+            s for s in scans
+            if not is_3d_only_subject(args.bids_root / s['subject'], s['session'])
+        ]
+        n_excluded = before - len(scans)
+        if n_excluded > 0:
+            print(f"Excluding {n_excluded} BOLD scans from 3D-only subjects (--exclude-3d)")
 
     if args.dry_run:
         print("\nScans to process:")

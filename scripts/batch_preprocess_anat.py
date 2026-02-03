@@ -58,6 +58,7 @@ from neurofaune.templates.anat_registration import (
     propagate_atlas_direct
 )
 from neurofaune.templates.registration_qc import generate_template_qc_report
+from neurofaune.utils.select_anatomical import is_3d_only_subject
 
 
 def discover_subjects(bids_dir: Path, cohort: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -110,7 +111,8 @@ def discover_subjects(bids_dir: Path, cohort: Optional[str] = None) -> List[Dict
                 'session': session,
                 'subject_dir': subject_dir,
                 'anat_dir': anat_dir,
-                't2w_files': t2w_files
+                't2w_files': t2w_files,
+                'is_3d_only': is_3d_only_subject(subject_dir, session)
             })
 
     return subjects
@@ -732,6 +734,8 @@ def main():
                         help='Force reprocessing even if outputs exist')
     parser.add_argument('--phase', choices=['1', '2', 'all'], default='all',
                         help='Run specific phase (1=template, 2=full, all=both)')
+    parser.add_argument('--exclude-3d', action='store_true',
+                        help='Exclude subjects that only have 3D T2w scans (no 2D available)')
     parser.add_argument('--n-jobs', type=int, default=1,
                         help='Number of parallel jobs (not yet implemented)')
 
@@ -777,6 +781,19 @@ def main():
 
     subjects = discover_subjects(args.bids_dir, args.cohort)
     print(f"\nDiscovered {len(subjects)} subject/sessions")
+
+    # Filter out 3D-only subjects if requested
+    if args.exclude_3d:
+        n_3d = sum(1 for s in subjects if s.get('is_3d_only', False))
+        if n_3d > 0:
+            subjects = [s for s in subjects if not s.get('is_3d_only', False)]
+            print(f"Excluding {n_3d} 3D-only subject/sessions (--exclude-3d)")
+            print(f"Remaining: {len(subjects)} subject/sessions")
+    else:
+        n_3d = sum(1 for s in subjects if s.get('is_3d_only', False))
+        if n_3d > 0:
+            print(f"Note: {n_3d} subject/sessions have only 3D T2w "
+                  f"(use --exclude-3d to skip them)")
 
     if not subjects:
         print("No subjects found. Check BIDS directory structure.")
