@@ -104,11 +104,10 @@ def substitute_variables(config: Dict[str, Any], context: Optional[Dict[str, Any
     if context is None:
         context = config
 
-    def substitute_string(value: str) -> str:
-        """Substitute variables in a single string."""
-        # Pattern: ${VAR} or ${config.key}
-        pattern = r'\$\{([^}]+)\}'
+    pattern = re.compile(r'\$\{([^}]+)\}')
 
+    def substitute_string(value: str, ctx: Dict[str, Any]) -> str:
+        """Substitute variables in a single string."""
         def replacer(match):
             var_path = match.group(1)
 
@@ -119,7 +118,7 @@ def substitute_variables(config: Dict[str, Any], context: Optional[Dict[str, Any
             # Try config reference (e.g., ${paths.study_root})
             try:
                 parts = var_path.split('.')
-                val = context
+                val = ctx
                 for part in parts:
                     val = val[part]
                 return str(val)
@@ -127,20 +126,28 @@ def substitute_variables(config: Dict[str, Any], context: Optional[Dict[str, Any
                 # Variable not found - leave as is
                 return match.group(0)
 
-        return re.sub(pattern, replacer, value)
+        return pattern.sub(replacer, value)
 
-    def process_value(value: Any) -> Any:
+    def process_value(value: Any, ctx: Dict[str, Any]) -> Any:
         """Recursively process values."""
         if isinstance(value, str):
-            return substitute_string(value)
+            return substitute_string(value, ctx)
         elif isinstance(value, dict):
-            return {k: process_value(v) for k, v in value.items()}
+            return {k: process_value(v, ctx) for k, v in value.items()}
         elif isinstance(value, list):
-            return [process_value(item) for item in value]
+            return [process_value(item, ctx) for item in value]
         else:
             return value
 
-    return process_value(config)
+    # Iterate substitution to resolve chained references (e.g., A -> B -> C)
+    result = config
+    for _ in range(5):
+        resolved = process_value(result, result)
+        if resolved == result:
+            break
+        result = resolved
+
+    return result
 
 
 def validate_config(config: Dict[str, Any]) -> None:
