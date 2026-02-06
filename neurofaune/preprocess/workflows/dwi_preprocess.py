@@ -2,16 +2,14 @@
 DTI/DWI preprocessing workflow.
 
 This module provides a complete preprocessing pipeline for diffusion MRI data,
-including eddy correction and DTI fitting.
-
-NOTE: Registration to study-specific FA template and SIGMA atlas will be added
-separately in template building/registration modules.
+including eddy correction, DTI fitting, FA→Template registration, and
+SIGMA atlas warping.
 """
 
 import nibabel as nib
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 import subprocess
 import json
 
@@ -38,6 +36,211 @@ from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_q
 from neurofaune.preprocess.qc import get_subject_qc_dir
 
 
+def register_fa_to_template(
+    fa_file: Path,
+    template_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register FA directly to the cohort template.
+
+    Registers FA to the age-matched template volume using affine registration,
+    letting ANTs center-of-mass initialization handle the Z-offset for partial
+    coverage DWI. This produces better SIGMA atlas overlap than the old
+    FA→T2w→Template chain.
+
+    Parameters
+    ----------
+    fa_file : Path
+        FA map from DTI fitting
+    template_file : Path
+        Cohort template (e.g., tpl-BPARat_p60_T2w.nii.gz)
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("FA to Template Registration")
+    print("="*60)
+
+    # Load images to get info
+    fa_img = nib.load(fa_file)
+    template_img = nib.load(template_file)
+    print(f"\n  FA: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
+    print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
+
+    # Register FA directly to template - let ANTs find optimal alignment
+    print("\nRunning ANTs Affine registration (FA → Template)...")
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'FA_to_template_'
+
+    # Use antsRegistrationSyN.sh with affine only
+    cmd = [
+        'antsRegistrationSyN.sh',
+        '-d', '3',
+        '-f', str(template_file),
+        '-m', str(fa_file),
+        '-o', str(output_prefix),
+        '-n', str(n_cores),
+        '-t', 'a'  # Affine only
+    ]
+
+    print(f"  Moving: {fa_file.name}")
+    print(f"  Fixed: {template_file.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("FA to Template registration failed")
+
+    # Check outputs
+    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_fa = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not affine_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {affine_transform}")
+
+    print(f"  Affine transform: {affine_transform.name}")
+    if warped_fa.exists():
+        print(f"  Warped FA: {warped_fa.name}")
+
+        # Report which template slices have FA coverage
+        warped_data = nib.load(warped_fa).get_fdata()
+        slices_with_fa = [z for z in range(warped_data.shape[2])
+                         if np.sum(warped_data[:, :, z] > 0.1) > 1000]
+        if slices_with_fa:
+            print(f"  FA covers template slices {slices_with_fa[0]}-{slices_with_fa[-1]} ({len(slices_with_fa)} slices)")
+
+    return {
+        'affine_transform': affine_transform,
+        'warped_fa': warped_fa if warped_fa.exists() else None,
+        'template_file': template_file,
+        'fa_shape': fa_img.shape,
+        'template_shape': template_img.shape,
+    }
+
+
+def warp_dti_to_sigma(
+    metric_files: Dict[str, Path],
+    fa_to_template_affine: Path,
+    tpl_to_sigma_affine: Path,
+    tpl_to_sigma_warp: Optional[Path],
+    sigma_template: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+) -> Dict[str, Path]:
+    """
+    Warp DTI metric maps to SIGMA atlas space.
+
+    Applies the FA→Template + Template→SIGMA transform chain to each DTI
+    metric (FA, MD, AD, RD) to produce SIGMA-space outputs for group analysis.
+
+    Parameters
+    ----------
+    metric_files : dict
+        Mapping of metric name to path, e.g. {'FA': path, 'MD': path, ...}
+    fa_to_template_affine : Path
+        FA_to_template_0GenericAffine.mat from Step 7
+    tpl_to_sigma_affine : Path
+        tpl-to-SIGMA_0GenericAffine.mat (pre-computed)
+    tpl_to_sigma_warp : Path or None
+        tpl-to-SIGMA_1Warp.nii.gz (may not exist for affine-only registrations)
+    sigma_template : Path
+        SIGMA reference image for output geometry
+    output_dir : Path
+        Directory for SIGMA-space outputs (derivatives dwi dir)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+
+    Returns
+    -------
+    dict
+        Mapping of metric name to SIGMA-space output path
+    """
+    print("\n" + "="*60)
+    print("Warp DTI Metrics to SIGMA Space")
+    print("="*60)
+
+    # Build transform chain (ANTs applies in reverse order: last listed = first applied)
+    transforms: List[str] = []
+    if tpl_to_sigma_warp is not None and tpl_to_sigma_warp.exists():
+        transforms.append(str(tpl_to_sigma_warp))
+    transforms.append(str(tpl_to_sigma_affine))
+    transforms.append(str(fa_to_template_affine))
+
+    print(f"\n  Transform chain ({len(transforms)} transforms):")
+    for t in transforms:
+        print(f"    {Path(t).name}")
+    print(f"  Reference: {sigma_template.name}")
+
+    sigma_outputs = {}
+
+    for metric, input_path in metric_files.items():
+        output_path = output_dir / f'{subject}_{session}_space-SIGMA_{metric}.nii.gz'
+
+        if output_path.exists():
+            print(f"\n  {metric}: already exists, skipping")
+            sigma_outputs[metric] = output_path
+            continue
+
+        if not input_path.exists():
+            print(f"\n  {metric}: input not found ({input_path.name}), skipping")
+            continue
+
+        print(f"\n  {metric}: warping to SIGMA space...")
+
+        cmd = [
+            'antsApplyTransforms',
+            '-d', '3',
+            '-i', str(input_path),
+            '-r', str(sigma_template),
+            '-o', str(output_path),
+            '-n', 'Linear',
+        ]
+        for t in transforms:
+            cmd.extend(['-t', t])
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if result.returncode != 0:
+            print(f"    ERROR: antsApplyTransforms failed for {metric}")
+            print(f"    {result.stderr[:500]}")
+            continue
+
+        sigma_outputs[metric] = output_path
+        print(f"    {output_path.name}")
+
+    print(f"\n  Warped {len(sigma_outputs)}/{len(metric_files)} metrics to SIGMA space")
+    return sigma_outputs
+
+
 def register_fa_to_t2w(
     fa_file: Path,
     t2w_file: Path,
@@ -49,6 +252,9 @@ def register_fa_to_t2w(
 ) -> Dict[str, Any]:
     """
     Register FA to T2w within the same subject.
+
+    .. deprecated::
+        Use :func:`register_fa_to_template` instead for better atlas overlap.
 
     Registers FA directly to the full T2w volume, letting ANTs find the
     optimal 3D alignment including the Z-offset for partial coverage DWI.
@@ -75,6 +281,14 @@ def register_fa_to_t2w(
     dict
         Dictionary with transform paths and metadata
     """
+    import warnings
+    warnings.warn(
+        "register_fa_to_t2w() is deprecated. Use register_fa_to_template() "
+        "for better SIGMA atlas overlap.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     print("\n" + "="*60)
     print("FA to T2w Registration")
     print("="*60)
@@ -155,6 +369,7 @@ def run_dwi_preprocessing(
     transform_registry: TransformRegistry,
     work_dir: Optional[Path] = None,
     use_gpu: bool = True,
+    template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
     run_registration: bool = True
 ) -> Dict[str, Any]:
@@ -168,7 +383,8 @@ def run_dwi_preprocessing(
     4. Brain masking from b0 volume
     5. DTI fitting (FA, MD, AD, RD)
     6. Save preprocessed outputs
-    7. (Optional) Register FA to T2w for atlas propagation
+    7. (Optional) Register FA to template for atlas propagation
+    8. (Optional) Warp DTI metrics to SIGMA space via template
 
     Parameters
     ----------
@@ -192,10 +408,12 @@ def run_dwi_preprocessing(
         Working directory (defaults to output_dir/work/{subject}/{session}/dwi_preproc)
     use_gpu : bool
         Use GPU-accelerated eddy_cuda (default: True)
+    template_file : Path, optional
+        Cohort template for direct FA→Template registration (preferred)
     t2w_file : Path, optional
-        Preprocessed T2w from anatomical pipeline (required if run_registration=True)
+        Preprocessed T2w (deprecated, use template_file instead)
     run_registration : bool
-        Whether to run FA→T2w registration (default: True)
+        Whether to run FA→Template registration (default: True)
 
     Returns
     -------
@@ -505,7 +723,7 @@ def run_dwi_preprocessing(
     print(f"  AD: {ad_file}")
     print(f"  RD: {rd_file}")
 
-    # NOTE: SIGMA registration removed - will be done separately in template registration module
+    # SIGMA warping is done in Step 8 (after FA→Template registration in Step 7)
 
     # ==========================================================================
     # Step 6: Quality control
@@ -556,51 +774,137 @@ def run_dwi_preprocessing(
     print(f"  - Basic metrics: {qc_json}")
 
     # ==========================================================================
-    # Step 7: FA to T2w Registration (optional)
+    # Step 7: FA to Template Registration (optional)
     # ==========================================================================
     registration_results = None
 
     if run_registration:
-        if t2w_file is None:
-            print("\n⚠ Registration requested but no T2w file provided - skipping")
-        elif not t2w_file.exists():
-            print(f"\n⚠ T2w file not found: {t2w_file} - skipping registration")
+        # Prefer template_file; fall back to t2w_file (deprecated)
+        reg_target = template_file or t2w_file
+        use_template = template_file is not None
+
+        if reg_target is None:
+            print("\n  Registration requested but no template/T2w file provided - skipping")
+        elif not reg_target.exists():
+            print(f"\n  Registration target not found: {reg_target} - skipping registration")
+        else:
+            if use_template:
+                print("\n" + "="*80)
+                print("Step 7: FA to Template Registration")
+                print("="*80)
+
+                try:
+                    registration_results = register_fa_to_template(
+                        fa_file=fa_file,
+                        template_file=template_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=work_dir,
+                        n_cores=4
+                    )
+
+                    # Save registration metadata to JSON
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_template_registration.json'
+                    reg_metadata = {
+                        'fa_file': str(fa_file),
+                        'template_file': str(registration_results['template_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_fa': str(registration_results['warped_fa']) if registration_results.get('warped_fa') else None,
+                        'fa_shape': list(registration_results['fa_shape']),
+                        'template_shape': list(registration_results['template_shape']),
+                    }
+                    with open(reg_metadata_file, 'w') as f:
+                        json.dump(reg_metadata, f, indent=2)
+
+                    print(f"\n  Registration complete:")
+                    print(f"  - Transform: {registration_results['affine_transform']}")
+                    print(f"  - Metadata: {reg_metadata_file}")
+
+                except Exception as e:
+                    print(f"\n  Registration failed: {e}")
+                    print("  Continuing without registration...")
+            else:
+                # Legacy path: FA → T2w (deprecated)
+                print("\n" + "="*80)
+                print("Step 7: FA to T2w Registration (deprecated)")
+                print("="*80)
+
+                try:
+                    registration_results = register_fa_to_t2w(
+                        fa_file=fa_file,
+                        t2w_file=t2w_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=work_dir,
+                        n_cores=4
+                    )
+
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_T2w_registration.json'
+                    reg_metadata = {
+                        'fa_file': str(fa_file),
+                        't2w_file': str(registration_results['t2w_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_fa': str(registration_results['warped_fa']) if registration_results.get('warped_fa') else None,
+                        'fa_shape': list(registration_results['fa_shape']),
+                        't2w_shape': list(registration_results['t2w_shape']),
+                    }
+                    with open(reg_metadata_file, 'w') as f:
+                        json.dump(reg_metadata, f, indent=2)
+
+                    print(f"\n  Registration complete:")
+                    print(f"  - Transform: {registration_results['affine_transform']}")
+                    print(f"  - Metadata: {reg_metadata_file}")
+
+                except Exception as e:
+                    print(f"\n  Registration failed: {e}")
+                    print("  Continuing without registration...")
+
+    # ==========================================================================
+    # Step 8: Warp DTI metrics to SIGMA space (optional)
+    # ==========================================================================
+    sigma_outputs = None
+
+    if registration_results is not None and template_file is not None:
+        # Resolve template→SIGMA transforms from template directory
+        tpl_transforms_dir = template_file.parent / 'transforms'
+        tpl_to_sigma_affine = tpl_transforms_dir / 'tpl-to-SIGMA_0GenericAffine.mat'
+        tpl_to_sigma_warp = tpl_transforms_dir / 'tpl-to-SIGMA_1Warp.nii.gz'
+
+        # Resolve SIGMA reference image from config
+        sigma_template_path = config.get('atlas', {}).get('study_space', {}).get('template')
+
+        if not tpl_to_sigma_affine.exists():
+            print(f"\n  Step 8: Skipping SIGMA warp (template→SIGMA transform not found: {tpl_to_sigma_affine})")
+        elif not sigma_template_path or not Path(sigma_template_path).exists():
+            print(f"\n  Step 8: Skipping SIGMA warp (SIGMA template not found in config)")
         else:
             print("\n" + "="*80)
-            print("Step 7: FA to T2w Registration")
+            print("Step 8: Warp DTI Metrics to SIGMA Space")
             print("="*80)
 
             try:
-                registration_results = register_fa_to_t2w(
-                    fa_file=fa_file,
-                    t2w_file=t2w_file,
-                    output_dir=output_dir,
+                metric_files = {
+                    'FA': fa_file,
+                    'MD': md_file,
+                    'AD': ad_file,
+                    'RD': rd_file,
+                }
+
+                sigma_outputs = warp_dti_to_sigma(
+                    metric_files=metric_files,
+                    fa_to_template_affine=registration_results['affine_transform'],
+                    tpl_to_sigma_affine=tpl_to_sigma_affine,
+                    tpl_to_sigma_warp=tpl_to_sigma_warp if tpl_to_sigma_warp.exists() else None,
+                    sigma_template=Path(sigma_template_path),
+                    output_dir=derivatives_dir,
                     subject=subject,
                     session=session,
-                    work_dir=work_dir,
-                    n_cores=4
                 )
-
-                # Save registration metadata to JSON
-                reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_T2w_registration.json'
-                reg_metadata = {
-                    'fa_file': str(fa_file),
-                    't2w_file': str(registration_results['t2w_file']),
-                    'affine_transform': str(registration_results['affine_transform']),
-                    'warped_fa': str(registration_results['warped_fa']) if registration_results.get('warped_fa') else None,
-                    'fa_shape': list(registration_results['fa_shape']),
-                    't2w_shape': list(registration_results['t2w_shape']),
-                }
-                with open(reg_metadata_file, 'w') as f:
-                    json.dump(reg_metadata, f, indent=2)
-
-                print(f"\n✓ Registration complete:")
-                print(f"  - Transform: {registration_results['affine_transform']}")
-                print(f"  - Metadata: {reg_metadata_file}")
-
             except Exception as e:
-                print(f"\n✗ Registration failed: {e}")
-                print("  Continuing without registration...")
+                print(f"\n  SIGMA warping failed: {e}")
+                print("  Continuing without SIGMA outputs...")
 
     # ==========================================================================
     # Workflow complete
@@ -615,9 +919,13 @@ def run_dwi_preprocessing(
     print(f"AD map: {ad_file}")
     print(f"RD map: {rd_file}")
     if registration_results is not None:
-        print(f"FA→T2w transform: {registration_results['affine_transform']}")
+        print(f"FA→Template transform: {registration_results['affine_transform']}")
     else:
-        print("\nNOTE: FA→T2w registration was skipped. Run with t2w_file to enable.")
+        print("\nNOTE: FA registration was skipped. Run with template_file to enable.")
+    if sigma_outputs:
+        print(f"SIGMA-space outputs: {len(sigma_outputs)} metrics")
+        for metric, path in sigma_outputs.items():
+            print(f"  {metric}: {path.name}")
     print("="*80 + "\n")
 
     results = {
@@ -635,6 +943,10 @@ def run_dwi_preprocessing(
 
     if registration_results is not None:
         results['registration'] = registration_results
+
+    if sigma_outputs:
+        for metric, path in sigma_outputs.items():
+            results[f'sigma_{metric.lower()}'] = path
 
     return results
 

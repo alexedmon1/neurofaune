@@ -8,7 +8,8 @@ Processes all DWI scans in the BPA-Rat BIDS dataset with:
 - GPU-accelerated eddy correction
 - DTI fitting (FA, MD, AD, RD)
 - Comprehensive QC
-- FA to T2w registration (if T2w is preprocessed)
+- FA to cohort template registration
+- SIGMA atlas warping (FA, MD, AD, RD → SIGMA space)
 
 Usage:
     # Dry run to see what would be processed
@@ -198,10 +199,28 @@ def fix_headers_if_needed(
     return fixed_count
 
 
-def find_t2w_file(study_root: Path, subject: str, session: str) -> Optional[Path]:
-    """Find preprocessed T2w file for FA to T2w registration."""
-    t2w_path = study_root / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
-    return t2w_path if t2w_path.exists() else None
+def find_template_file(study_root: Path, session: str) -> Optional[Path]:
+    """
+    Find cohort template for FA→Template registration.
+
+    Looks for the age-matched template at:
+        {study_root}/templates/anat/{cohort}/tpl-BPARat_{cohort}_T2w.nii.gz
+
+    Parameters
+    ----------
+    study_root : Path
+        Study root directory
+    session : str
+        Session ID (e.g. 'ses-p60')
+
+    Returns
+    -------
+    Path or None
+        Path to cohort template if it exists
+    """
+    cohort = session.replace('ses-', '')
+    template_path = study_root / 'templates' / 'anat' / cohort / f'tpl-BPARat_{cohort}_T2w.nii.gz'
+    return template_path if template_path.exists() else None
 
 
 def preprocess_single_subject(
@@ -249,13 +268,13 @@ def preprocess_single_subject(
         cohort=cohort
     )
 
-    # Find T2w file for registration
-    t2w_file = None
+    # Find cohort template for FA→Template registration (+ SIGMA warping)
+    template_file = None
     run_registration = not skip_registration
     if run_registration:
-        t2w_file = find_t2w_file(study_root, subject, session)
-        if t2w_file is None:
-            print(f"  ⚠ No preprocessed T2w found for {subject}/{session}, registration will be skipped")
+        template_file = find_template_file(study_root, session)
+        if template_file is None:
+            print(f"  No cohort template found for {subject}/{session}, registration will be skipped")
 
     try:
         results = run_dwi_preprocessing(
@@ -268,7 +287,7 @@ def preprocess_single_subject(
             output_dir=study_root,
             transform_registry=registry,
             use_gpu=use_gpu,
-            t2w_file=t2w_file,
+            template_file=template_file,
             run_registration=run_registration
         )
 
@@ -281,6 +300,9 @@ def preprocess_single_subject(
 
         if 'registration' in results:
             result['registration'] = str(results['registration'].get('affine_transform', ''))
+
+        if results.get('sigma_fa'):
+            result['sigma_fa'] = str(results['sigma_fa'])
 
         return result
 
@@ -355,7 +377,7 @@ def main():
     parser.add_argument(
         '--skip-registration',
         action='store_true',
-        help='Skip FA to T2w registration step'
+        help='Skip FA to template registration and SIGMA warping'
     )
     parser.add_argument(
         '--exclude-3d',
@@ -494,6 +516,8 @@ def main():
             print(f"  ✓ FA: {result['fa_path']}")
             if result.get('registration'):
                 print(f"  ✓ Registration: {result['registration']}")
+            if result.get('sigma_fa'):
+                print(f"  ✓ SIGMA FA: {result['sigma_fa']}")
         elif result['status'] == 'skipped':
             print(f"  → Skipped: {result['reason']}")
         else:
