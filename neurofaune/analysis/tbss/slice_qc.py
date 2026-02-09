@@ -326,19 +326,25 @@ def apply_slice_masking(
     }
 
     stats_dir = tbss_dir / 'stats'
-    skeleton_mask = stats_dir / 'mean_FA_skeleton_mask.nii.gz'
+    # Prefer analysis_mask (current), fall back to skeleton_mask (legacy)
+    analysis_mask = stats_dir / 'analysis_mask.nii.gz'
+    if not analysis_mask.exists():
+        analysis_mask = stats_dir / 'mean_FA_skeleton_mask.nii.gz'
 
     for metric in metrics:
-        skel_file = stats_dir / f'all_{metric}_skeletonised.nii.gz'
-        if not skel_file.exists():
-            logger.warning(f"Skeletonised {metric} not found, skipping")
+        # Prefer all_{metric}.nii.gz (current), fall back to _skeletonised (legacy)
+        metric_file = stats_dir / f'all_{metric}.nii.gz'
+        if not metric_file.exists():
+            metric_file = stats_dir / f'all_{metric}_skeletonised.nii.gz'
+        if not metric_file.exists():
+            logger.warning(f"Metric 4D file for {metric} not found, skipping")
             continue
 
         logger.info(f"\n  Processing {metric}...")
         imputed, mask = prepare_data_with_missing(
-            skeletonised_4d=skel_file,
+            skeletonised_4d=metric_file,
             validity_masks=validity_masks,
-            skeleton_mask=skeleton_mask,
+            skeleton_mask=analysis_mask,
             min_valid_fraction=min_valid_fraction,
             output_dir=slice_qc_dir
         )

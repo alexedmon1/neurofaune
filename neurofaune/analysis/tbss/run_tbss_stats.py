@@ -96,29 +96,40 @@ def validate_prepared_data(tbss_dir: Path, metrics: List[str]) -> Dict:
     if not stats_dir.exists():
         raise FileNotFoundError(f"Stats directory not found: {stats_dir}")
 
-    # Validate skeleton files
-    skeleton_mask = stats_dir / "mean_FA_skeleton_mask.nii.gz"
-    if not skeleton_mask.exists():
-        raise FileNotFoundError(f"Skeleton mask not found: {skeleton_mask}")
+    # Validate analysis mask (created by prepare_tbss_data)
+    # Falls back to skeleton mask if analysis mask not found (legacy mode)
+    analysis_mask = stats_dir / "analysis_mask.nii.gz"
+    if not analysis_mask.exists():
+        analysis_mask = stats_dir / "mean_FA_skeleton_mask.nii.gz"
+    if not analysis_mask.exists():
+        raise FileNotFoundError(
+            f"Analysis mask not found in {stats_dir}\n"
+            "Expected analysis_mask.nii.gz or mean_FA_skeleton_mask.nii.gz.\n"
+            "Run prepare_tbss.py first."
+        )
 
-    # Validate skeletonised data for each metric
-    skeletonised_files = {}
+    # Validate metric data for each metric
+    # Supports both masked (all_{metric}.nii.gz) and skeletonised naming
+    metric_files = {}
     for metric in metrics:
-        skel_file = stats_dir / f"all_{metric}_skeletonised.nii.gz"
-        if not skel_file.exists():
+        metric_file = stats_dir / f"all_{metric}.nii.gz"
+        if not metric_file.exists():
+            # Fall back to skeletonised naming (legacy)
+            metric_file = stats_dir / f"all_{metric}_skeletonised.nii.gz"
+        if not metric_file.exists():
             raise FileNotFoundError(
-                f"Skeletonised {metric} not found: {skel_file}\n"
-                f"Run prepare_tbss.py with --metrics {metric}"
+                f"Metric data for {metric} not found in {stats_dir}\n"
+                f"Expected all_{metric}.nii.gz. Run prepare_tbss.py with --metrics {metric}"
             )
-        skeletonised_files[metric] = skel_file
+        metric_files[metric] = metric_file
 
     return {
         'tbss_dir': tbss_dir,
         'stats_dir': stats_dir,
         'manifest': manifest,
         'manifest_file': manifest_file,
-        'skeleton_mask': skeleton_mask,
-        'skeletonised_files': skeletonised_files,
+        'analysis_mask': analysis_mask,
+        'metric_files': metric_files,
         'n_subjects': manifest['subjects_included']
     }
 
@@ -247,7 +258,7 @@ def run_tbss_statistical_analysis(
     logger.info("\n[Step 1] Validating prepared TBSS data...")
     prepared = validate_prepared_data(tbss_dir, metrics)
     logger.info(f"  Subjects: {prepared['n_subjects']}")
-    logger.info(f"  Metrics: {list(prepared['skeletonised_files'].keys())}")
+    logger.info(f"  Metrics: {list(prepared['metric_files'].keys())}")
 
     # Step 2: Validate design files
     logger.info("\n[Step 2] Validating design matrices...")
@@ -272,11 +283,11 @@ def run_tbss_statistical_analysis(
         metric_output = output_dir / f"randomise_{metric}"
 
         randomise_result = run_randomise(
-            input_file=prepared['skeletonised_files'][metric],
+            input_file=prepared['metric_files'][metric],
             design_mat=design['design_mat'],
             contrast_con=design['design_con'],
             output_dir=metric_output,
-            mask=prepared['skeleton_mask'],
+            mask=prepared['analysis_mask'],
             n_permutations=n_permutations,
             tfce=tfce,
             seed=seed

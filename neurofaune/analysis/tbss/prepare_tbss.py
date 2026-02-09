@@ -59,7 +59,9 @@ class SubjectData:
     included: bool = False
     exclusion_reason: Optional[str] = None
     metric_files: Dict[str, Path] = field(default_factory=dict)
-    # Transform paths
+    # Pre-warped SIGMA-space files (from batch_register_dwi.py direct pipeline)
+    sigma_metric_files: Dict[str, Path] = field(default_factory=dict)
+    # Legacy transform paths (only used when use_prewarped=False)
     fa_to_t2w_affine: Optional[Path] = None
     t2w_to_tpl_affine: Optional[Path] = None
     t2w_to_tpl_warp: Optional[Path] = None
@@ -100,10 +102,17 @@ def discover_tbss_subjects(
     cohorts: List[str] = None,
     exclude_file: Optional[Path] = None,
     subject_list: Optional[List[str]] = None,
-    metrics: List[str] = None
+    metrics: List[str] = None,
+    use_prewarped: bool = True
 ) -> List[SubjectData]:
     """
-    Discover subjects with completed DTI preprocessing and full transform chain.
+    Discover subjects with completed DTI preprocessing.
+
+    When use_prewarped=True (default), looks for existing space-SIGMA files
+    in derivatives/ produced by batch_register_dwi.py (direct FA→Template→SIGMA
+    pipeline). This avoids needing the old FA→T2w→Template→SIGMA transform chain.
+
+    When use_prewarped=False, validates the legacy transform chain.
 
     Args:
         config: Configuration dictionary
@@ -111,6 +120,7 @@ def discover_tbss_subjects(
         exclude_file: Path to exclusion list (one subject_session per line)
         subject_list: Explicit subject list (format: 'sub-Rat1_ses-p60' per line)
         metrics: DTI metrics to validate (default: ['FA', 'MD', 'AD', 'RD'])
+        use_prewarped: If True, use existing space-SIGMA files (default: True)
 
     Returns:
         List of SubjectData with validation status
@@ -201,58 +211,84 @@ def discover_tbss_subjects(
         sd = SubjectData(subject=subject, session=session, cohort=cohort)
         dwi_dir = derivatives_dir / subject / session / 'dwi'
 
-        missing_metrics = []
-        for metric in metrics:
-            metric_file = _find_metric_file(dwi_dir, subject, session, metric)
-            if metric_file:
-                sd.metric_files[metric] = metric_file
-            else:
-                missing_metrics.append(metric)
+        if use_prewarped:
+            # Look for existing space-SIGMA files from batch_register_dwi.py
+            missing_sigma = []
+            for metric in metrics:
+                sigma_file = dwi_dir / f'{subject}_{session}_space-SIGMA_{metric}.nii.gz'
+                if sigma_file.exists():
+                    sd.sigma_metric_files[metric] = sigma_file
+                else:
+                    missing_sigma.append(metric)
 
-        if missing_metrics:
-            sd.exclusion_reason = f"Missing metrics: {', '.join(missing_metrics)}"
+            if missing_sigma:
+                sd.exclusion_reason = f"Missing SIGMA-space maps: {', '.join(missing_sigma)}"
+                subjects_data.append(sd)
+                continue
+
+            # Also record native-space files if they exist (for reference)
+            for metric in metrics:
+                metric_file = _find_metric_file(dwi_dir, subject, session, metric)
+                if metric_file:
+                    sd.metric_files[metric] = metric_file
+
+            sd.included = True
             subjects_data.append(sd)
-            continue
 
-        # Validate transforms
-        subj_transforms = transforms_dir / subject / session
-        tpl_transforms = templates_dir / 'anat' / cohort / 'transforms'
+        else:
+            # Legacy mode: validate native metrics + full transform chain
+            missing_metrics = []
+            for metric in metrics:
+                metric_file = _find_metric_file(dwi_dir, subject, session, metric)
+                if metric_file:
+                    sd.metric_files[metric] = metric_file
+                else:
+                    missing_metrics.append(metric)
 
-        sd.fa_to_t2w_affine = _find_transform(
-            subj_transforms, 'FA_to_T2w_0GenericAffine.mat'
-        )
-        sd.t2w_to_tpl_affine = _find_transform(
-            subj_transforms,
-            f'{subject}_{session}_T2w_to_template_0GenericAffine.mat',
-            'T2w_to_template_0GenericAffine.mat'
-        )
-        sd.t2w_to_tpl_warp = _find_transform(
-            subj_transforms,
-            f'{subject}_{session}_T2w_to_template_1Warp.nii.gz',
-            'T2w_to_template_1Warp.nii.gz'
-        )
-        sd.tpl_to_sigma_affine = _find_transform(
-            tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat'
-        )
-        sd.tpl_to_sigma_warp = _find_transform(
-            tpl_transforms, 'tpl-to-SIGMA_1Warp.nii.gz'
-        )
+            if missing_metrics:
+                sd.exclusion_reason = f"Missing metrics: {', '.join(missing_metrics)}"
+                subjects_data.append(sd)
+                continue
 
-        missing_transforms = []
-        if not sd.fa_to_t2w_affine:
-            missing_transforms.append('FA_to_T2w')
-        if not sd.t2w_to_tpl_affine:
-            missing_transforms.append('T2w_to_template_affine')
-        if not sd.tpl_to_sigma_affine:
-            missing_transforms.append('tpl_to_SIGMA_affine')
+            # Validate transforms
+            subj_transforms = transforms_dir / subject / session
+            tpl_transforms = templates_dir / 'anat' / cohort / 'transforms'
 
-        if missing_transforms:
-            sd.exclusion_reason = f"Missing transforms: {', '.join(missing_transforms)}"
+            sd.fa_to_t2w_affine = _find_transform(
+                subj_transforms, 'FA_to_T2w_0GenericAffine.mat'
+            )
+            sd.t2w_to_tpl_affine = _find_transform(
+                subj_transforms,
+                f'{subject}_{session}_T2w_to_template_0GenericAffine.mat',
+                'T2w_to_template_0GenericAffine.mat'
+            )
+            sd.t2w_to_tpl_warp = _find_transform(
+                subj_transforms,
+                f'{subject}_{session}_T2w_to_template_1Warp.nii.gz',
+                'T2w_to_template_1Warp.nii.gz'
+            )
+            sd.tpl_to_sigma_affine = _find_transform(
+                tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat'
+            )
+            sd.tpl_to_sigma_warp = _find_transform(
+                tpl_transforms, 'tpl-to-SIGMA_1Warp.nii.gz'
+            )
+
+            missing_transforms = []
+            if not sd.fa_to_t2w_affine:
+                missing_transforms.append('FA_to_T2w')
+            if not sd.t2w_to_tpl_affine:
+                missing_transforms.append('T2w_to_template_affine')
+            if not sd.tpl_to_sigma_affine:
+                missing_transforms.append('tpl_to_SIGMA_affine')
+
+            if missing_transforms:
+                sd.exclusion_reason = f"Missing transforms: {', '.join(missing_transforms)}"
+                subjects_data.append(sd)
+                continue
+
+            sd.included = True
             subjects_data.append(sd)
-            continue
-
-        sd.included = True
-        subjects_data.append(sd)
 
     included = sum(1 for s in subjects_data if s.included)
     excluded = sum(1 for s in subjects_data if not s.included)
@@ -901,7 +937,8 @@ def prepare_tbss_data(
     skeleton_threshold: float = 0.3,
     wm_prob_threshold: float = 0.3,
     erosion_voxels: int = 2,
-    dry_run: bool = False
+    dry_run: bool = False,
+    use_prewarped: bool = True
 ) -> Dict:
     """
     Main workflow: Prepare TBSS-style analysis from preprocessed DTI data.
@@ -912,7 +949,7 @@ def prepare_tbss_data(
 
     Phases:
     1. Discover and validate subjects
-    2. Warp all metrics to SIGMA space
+    2. Collect SIGMA-space metrics (prewarped) or warp from native space
     3. Create mean FA and WM mask
     4. Create analysis mask (WM mask thresholded at analysis FA level)
     5. Mask metrics with analysis mask
@@ -931,6 +968,8 @@ def prepare_tbss_data(
         wm_prob_threshold: WM probability threshold
         erosion_voxels: Erosion from brain boundary
         dry_run: If True, only discover subjects without processing
+        use_prewarped: If True, use existing space-SIGMA files from
+            batch_register_dwi.py instead of re-warping (default: True)
 
     Returns:
         Dictionary with preparation results
@@ -953,6 +992,7 @@ def prepare_tbss_data(
     logger.info(f"Output: {output_dir}")
     logger.info(f"WM mask FA threshold: {fa_threshold}")
     logger.info(f"Analysis mask FA threshold: {skeleton_threshold}")
+    logger.info(f"Use prewarped SIGMA files: {use_prewarped}")
 
     # Phase 1: Discover subjects
     logger.info("\n[Phase 1] Discovering subjects...")
@@ -961,7 +1001,8 @@ def prepare_tbss_data(
         cohorts=cohorts,
         exclude_file=exclude_file,
         subject_list=subjects,
-        metrics=metrics
+        metrics=metrics,
+        use_prewarped=use_prewarped
     )
 
     included = [s for s in subjects_data if s.included]
@@ -976,39 +1017,64 @@ def prepare_tbss_data(
         logger.info("Dry run complete. Subject manifest generated.")
         return {"success": True, "manifest": manifest, "dry_run": True}
 
-    # Phase 2: Warp metrics to SIGMA space
-    logger.info("\n[Phase 2] Warping metrics to SIGMA space...")
+    # Phase 2: Collect SIGMA-space metrics
     stats_dir = output_dir / 'stats'
     stats_dir.mkdir(parents=True, exist_ok=True)
 
-    for metric in metrics:
-        metric_dir = output_dir / metric
-        metric_dir.mkdir(parents=True, exist_ok=True)
+    if use_prewarped:
+        logger.info("\n[Phase 2] Linking prewarped SIGMA-space metrics...")
+        import shutil
 
-        for i, sd in enumerate(included):
-            out_file = metric_dir / f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
-            if out_file.exists():
-                logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric} (exists)")
-                continue
+        for metric in metrics:
+            metric_dir = output_dir / metric
+            metric_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric}")
-            try:
-                warp_metric_to_sigma(
-                    metric_file=sd.metric_files[metric],
-                    subject_data=sd,
-                    config=config,
-                    output_file=out_file
-                )
-            except Exception as e:
-                logger.error(f"  Failed: {e}")
-                sd.included = False
-                sd.exclusion_reason = f"Warp failed: {e}"
+            for i, sd in enumerate(included):
+                out_file = metric_dir / f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
+                if out_file.exists():
+                    logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric} (exists)")
+                    continue
 
-    # Recompute included after potential warp failures
+                source = sd.sigma_metric_files[metric]
+                logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric}")
+                try:
+                    shutil.copy2(source, out_file)
+                except Exception as e:
+                    logger.error(f"  Failed to copy {source}: {e}")
+                    sd.included = False
+                    sd.exclusion_reason = f"Copy failed: {e}"
+
+    else:
+        logger.info("\n[Phase 2] Warping metrics to SIGMA space...")
+
+        for metric in metrics:
+            metric_dir = output_dir / metric
+            metric_dir.mkdir(parents=True, exist_ok=True)
+
+            for i, sd in enumerate(included):
+                out_file = metric_dir / f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
+                if out_file.exists():
+                    logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric} (exists)")
+                    continue
+
+                logger.info(f"  [{i+1}/{len(included)}] {sd.subject}/{sd.session} {metric}")
+                try:
+                    warp_metric_to_sigma(
+                        metric_file=sd.metric_files[metric],
+                        subject_data=sd,
+                        config=config,
+                        output_file=out_file
+                    )
+                except Exception as e:
+                    logger.error(f"  Failed: {e}")
+                    sd.included = False
+                    sd.exclusion_reason = f"Warp failed: {e}"
+
+    # Recompute included after potential failures
     included = [s for s in subjects_data if s.included]
     if not included:
-        logger.error("No subjects remaining after warping!")
-        return {"success": False, "error": "All subjects failed warping"}
+        logger.error("No subjects remaining after Phase 2!")
+        return {"success": False, "error": "All subjects failed in Phase 2"}
 
     # Phase 3: Create mean FA and WM mask
     logger.info("\n[Phase 3] Creating mean FA and WM mask...")
@@ -1172,6 +1238,8 @@ Examples:
                         help='Erosion from brain boundary in voxels (default: 2)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Only discover subjects, do not process')
+    parser.add_argument('--no-prewarped', action='store_true',
+                        help='Use legacy warp mode instead of prewarped SIGMA files')
 
     args = parser.parse_args()
 
@@ -1197,7 +1265,8 @@ Examples:
         skeleton_threshold=args.skeleton_threshold,
         wm_prob_threshold=args.wm_prob_threshold,
         erosion_voxels=args.erosion_voxels,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        use_prewarped=not args.no_prewarped
     )
 
     exit(0 if result['success'] else 1)
