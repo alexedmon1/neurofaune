@@ -127,7 +127,7 @@ def create_per_pnd_design(
     })
 
     helper = DesignHelper(design_df, subject_column='participant_id')
-    helper.add_categorical('dose', coding='effect', reference='C')
+    helper.add_categorical('dose', coding='dummy', reference='C')
     helper.add_categorical('sex', coding='effect', reference='F')
 
     helper.build_design_matrix()
@@ -135,6 +135,7 @@ def create_per_pnd_design(
     n_cols = len(cols)
 
     # Each dose level vs Control (bidirectional)
+    # With dummy coding, each dose coefficient IS the difference from Control
     for dose_level in ['H', 'L', 'M']:
         col_name = f'dose_{dose_level}'
         idx = cols.index(col_name)
@@ -186,7 +187,7 @@ def create_pooled_design(
     })
 
     helper = DesignHelper(design_df, subject_column='participant_id')
-    helper.add_categorical('dose', coding='effect', reference='C')
+    helper.add_categorical('dose', coding='dummy', reference='C')
     helper.add_categorical('PND', coding='effect', reference='P30')
     helper.add_categorical('sex', coding='effect', reference='F')
     helper.add_interaction('dose', 'PND')
