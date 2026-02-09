@@ -2,10 +2,13 @@
 """
 Prepare FSL randomise design matrices for BPA-Rat TBSS analysis.
 
+Dose is treated as a categorical factor (C=Control, L=Low, M=Medium, H=High)
+to allow detection of non-monotonic dose-response patterns.
+
 Creates 4 sets of design files:
-  - per_pnd_p30: dose-response within P30 subjects (dose + sex)
-  - per_pnd_p60: dose-response within P60 subjects (dose + sex)
-  - per_pnd_p90: dose-response within P90 subjects (dose + sex)
+  - per_pnd_p30: dose group comparisons within P30 (dose + sex)
+  - per_pnd_p60: dose group comparisons within P60 (dose + sex)
+  - per_pnd_p90: dose group comparisons within P90 (dose + sex)
   - pooled: all subjects with dose × PND interaction (dose + PND + sex + dose×PND)
 
 Usage:
@@ -47,7 +50,7 @@ def load_and_merge_data(
     and take dose/sex from the tracker, PND from the TBSS session label.
 
     Returns:
-        DataFrame with columns: subject_key, bids_id, session, PND, sex, dose_code
+        DataFrame with columns: subject_key, bids_id, session, PND, sex, dose
     """
     # Load study tracker
     tracker = pd.read_csv(study_tracker_path)
@@ -82,11 +85,11 @@ def load_and_merge_data(
 
     # Merge on bids_id to get dose/sex (rat-level, not session-level)
     merged = tbss_df.merge(
-        valid[['bids_id', 'sex', 'dose.code']],
+        valid[['bids_id', 'sex', 'dose.level']],
         on='bids_id',
         how='inner'
     )
-    merged = merged.rename(columns={'dose.code': 'dose_code'})
+    merged = merged.rename(columns={'dose.level': 'dose'})
 
     unmatched = len(tbss_df) - len(merged)
     if unmatched > 0:
@@ -119,16 +122,28 @@ def create_per_pnd_design(
     # Prepare DataFrame for DesignHelper
     design_df = pd.DataFrame({
         'participant_id': subset['subject_key'].values,
-        'dose': subset['dose_code'].values.astype(float),
+        'dose': subset['dose'].values,
         'sex': subset['sex'].values,
     })
 
     helper = DesignHelper(design_df, subject_column='participant_id')
-    helper.add_covariate('dose', mean_center=True)
+    helper.add_categorical('dose', coding='effect', reference='C')
     helper.add_categorical('sex', coding='effect', reference='F')
 
-    helper.add_contrast('dose_positive', covariate='dose', direction='+')
-    helper.add_contrast('dose_negative', covariate='dose', direction='-')
+    helper.build_design_matrix()
+    cols = helper.design_column_names
+    n_cols = len(cols)
+
+    # Each dose level vs Control (bidirectional)
+    for dose_level in ['H', 'L', 'M']:
+        col_name = f'dose_{dose_level}'
+        idx = cols.index(col_name)
+        pos_vec = [0.0] * n_cols
+        pos_vec[idx] = 1.0
+        neg_vec = [0.0] * n_cols
+        neg_vec[idx] = -1.0
+        helper.add_contrast(f'{dose_level}_gt_C', vector=pos_vec)
+        helper.add_contrast(f'C_gt_{dose_level}', vector=neg_vec)
 
     helper.build_design_matrix()
     logger.info(f"Columns: {helper.design_column_names}")
@@ -165,32 +180,43 @@ def create_pooled_design(
     # Prepare DataFrame for DesignHelper
     design_df = pd.DataFrame({
         'participant_id': data['subject_key'].values,
-        'dose': data['dose_code'].values.astype(float),
+        'dose': data['dose'].values,
         'PND': data['PND'].values,
         'sex': data['sex'].values,
     })
 
     helper = DesignHelper(design_df, subject_column='participant_id')
-    helper.add_covariate('dose', mean_center=True)
+    helper.add_categorical('dose', coding='effect', reference='C')
     helper.add_categorical('PND', coding='effect', reference='P30')
     helper.add_categorical('sex', coding='effect', reference='F')
     helper.add_interaction('dose', 'PND')
 
-    # Main effect contrasts
-    helper.add_contrast('dose_positive', covariate='dose', direction='+')
-    helper.add_contrast('dose_negative', covariate='dose', direction='-')
-
-    # Interaction contrasts
-    helper.add_contrast('interaction_P60_pos',
-                       interaction='dose×PND', level='P60', direction='+')
-    helper.add_contrast('interaction_P60_neg',
-                       interaction='dose×PND', level='P60', direction='-')
-    helper.add_contrast('interaction_P90_pos',
-                       interaction='dose×PND', level='P90', direction='+')
-    helper.add_contrast('interaction_P90_neg',
-                       interaction='dose×PND', level='P90', direction='-')
-
     helper.build_design_matrix()
+    cols = helper.design_column_names
+    n_cols = len(cols)
+
+    # Main effect contrasts: each dose level vs Control (bidirectional)
+    for dose_level in ['H', 'L', 'M']:
+        col_name = f'dose_{dose_level}'
+        idx = cols.index(col_name)
+        pos_vec = [0.0] * n_cols
+        pos_vec[idx] = 1.0
+        neg_vec = [0.0] * n_cols
+        neg_vec[idx] = -1.0
+        helper.add_contrast(f'{dose_level}_gt_C', vector=pos_vec)
+        helper.add_contrast(f'C_gt_{dose_level}', vector=neg_vec)
+
+    # Interaction contrasts: does the dose-vs-control difference change across PND?
+    for dose_level in ['H', 'L', 'M']:
+        for pnd in ['P60', 'P90']:
+            col_name = f'dose_{dose_level}×PND_{pnd}'
+            idx = cols.index(col_name)
+            pos_vec = [0.0] * n_cols
+            pos_vec[idx] = 1.0
+            neg_vec = [0.0] * n_cols
+            neg_vec[idx] = -1.0
+            helper.add_contrast(f'{dose_level}_x_{pnd}_pos', vector=pos_vec)
+            helper.add_contrast(f'{dose_level}_x_{pnd}_neg', vector=neg_vec)
     logger.info(f"Columns: {helper.design_column_names}")
     logger.info(helper.summary())
 
@@ -246,7 +272,7 @@ def main():
     logger.info("\nData distribution:")
     for pnd in ['P30', 'P60', 'P90']:
         subset = data[data['PND'] == pnd]
-        dose_dist = dict(subset['dose_code'].value_counts().sort_index())
+        dose_dist = dict(subset['dose'].value_counts().sort_index())
         sex_dist = dict(subset['sex'].value_counts().sort_index())
         logger.info(f"  {pnd}: n={len(subset)}, dose={dose_dist}, sex={sex_dist}")
 
