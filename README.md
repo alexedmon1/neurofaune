@@ -303,6 +303,31 @@ Uses WM-masked voxel-based analysis (not skeleton-based TBSS):
 - FSL randomise with TFCE correction
 - Cluster labeling via SIGMA atlas parcellation
 
+### ROI-Level Metric Extraction
+
+```bash
+# Extract DTI ROI means (FA, MD, AD, RD) using SIGMA parcellation
+uv run python scripts/extract_roi_means.py \
+    --derivatives-dir /study/derivatives \
+    --parcellation /study/atlas/SIGMA_study_space/SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz \
+    --labels-csv /path/to/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv \
+    --study-tracker /study/study_tracker.csv \
+    --modality dwi --metrics FA MD AD RD \
+    --output-dir /study/analysis/roi
+
+# Extract MSME metrics (T2, MWF, etc.)
+uv run python scripts/extract_roi_means.py \
+    --modality msme --metrics T2 MWF IWF CSFF \
+    ...  # same parcellation/tracker/output args
+```
+
+Computes mean metric values within each of the 234 SIGMA atlas regions and 11 anatomical territories (volume-weighted). Outputs wide and long (tidy) CSVs with phenotype data merged from the study tracker, ready for mixed models, ANOVA, or other ROI-level statistical analyses.
+
+The module is also available as a library:
+```python
+from neurofaune.analysis.roi import extract_all_subjects, to_long_format
+```
+
 ### Functional Normalization
 
 ```bash
@@ -403,6 +428,7 @@ neurofaune/
 │   ├── registration.py              # Subject→template, atlas propagation
 │   └── slice_registration.py        # Study-space atlas setup
 ├── analysis/                        # Group-level analysis
+│   ├── roi/                         # ROI-level metric extraction (SIGMA atlas)
 │   ├── tbss/                        # WM-masked voxel-based analysis
 │   └── stats/                       # FSL randomise, cluster reports
 ├── registration/                    # Cross-modal registration utilities
