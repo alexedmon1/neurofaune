@@ -280,21 +280,30 @@ Pipeline:
 
 Once subjects are preprocessed and registered, warp data to SIGMA space for group-level analysis.
 
-### DTI Voxel-Based Analysis
+### DTI Voxel-Based Analysis (TBSS)
+
+For a full walkthrough including preprocessing, registration, and statistical analysis, see the **[TBSS Guide](docs/TBSS_GUIDE.md)**.
+
+Quick reference:
 
 ```bash
-# Prepare: warp FA/MD/AD/RD to SIGMA, create WM analysis mask
+# 1. Prepare: collect SIGMA-space metrics, create WM analysis mask, build 4D volumes
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config config.yaml \
     --output-dir /study/analysis/tbss/ \
-    --cohorts p90 \
-    --analysis-threshold 0.3
+    --exclude-file /study/analysis/tbss/exclude_bad_dti.txt
 
-# Run statistics (requires design matrices from neuroaider)
-uv run python -m neurofaune.analysis.tbss.run_tbss_stats \
-    --tbss-dir /study/analysis/tbss/ \
-    --design-dir /study/designs/model1/ \
-    --analysis-name dose_response
+# 2. Create design matrices (requires neuroaider)
+uv run python scripts/prepare_tbss_designs.py \
+    --study-tracker /study/study_tracker.csv \
+    --tbss-dir /study/analysis/tbss \
+    --output-dir /study/analysis/tbss/designs
+
+# 3. Run voxel-wise analysis (FSL randomise, 5000 permutations, TFCE)
+uv run python scripts/run_tbss_analysis.py \
+    --tbss-dir /study/analysis/tbss \
+    --config config.yaml \
+    --n-permutations 5000
 ```
 
 Uses WM-masked voxel-based analysis (not skeleton-based TBSS):
