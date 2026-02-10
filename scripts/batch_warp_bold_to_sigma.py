@@ -2,8 +2,11 @@
 """
 Batch warp preprocessed BOLD to SIGMA atlas space for group-level analysis.
 
-Chains transforms: BOLD → T2w → Template → SIGMA
-Requires: BOLD_to_T2w registration, T2w_to_template registration, tpl-to-SIGMA registration.
+Uses the direct transform chain: BOLD → Template → SIGMA (3 transforms)
+Requires: BOLD_to_template registration, tpl-to-SIGMA registration.
+
+Falls back to legacy chain (BOLD→T2w→Template→SIGMA, 5 transforms) if
+BOLD_to_template transform is not found but BOLD_to_T2w + T2w_to_template exist.
 
 Usage:
     python batch_warp_bold_to_sigma.py
@@ -12,7 +15,6 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 import subprocess
 from pathlib import Path
@@ -50,10 +52,11 @@ def find_warpable_subjects(study_root: Path):
         subj_transforms = transforms_root / subject / session
         tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
-        # Check BOLD → T2w
-        bold_to_t2w = _find_transform(subj_transforms, 'BOLD_to_T2w_0GenericAffine.mat')
+        # Check for direct BOLD → Template transform (preferred)
+        bold_to_template = _find_transform(subj_transforms, 'BOLD_to_template_0GenericAffine.mat')
 
-        # Check T2w → Template (try prefixed and unprefixed)
+        # Check for legacy BOLD → T2w + T2w → Template transforms (fallback)
+        bold_to_t2w = _find_transform(subj_transforms, 'BOLD_to_T2w_0GenericAffine.mat')
         t2w_to_tpl_affine = _find_transform(
             subj_transforms,
             f'{subject}_{session}_T2w_to_template_0GenericAffine.mat',
@@ -69,14 +72,21 @@ def find_warpable_subjects(study_root: Path):
         tpl_to_sigma_affine = _find_transform(tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat')
         tpl_to_sigma_warp = _find_transform(tpl_transforms, 'tpl-to-SIGMA_1Warp.nii.gz')
 
-        # Check which transforms are missing
+        # Determine which pipeline to use
         missing = []
-        if not bold_to_t2w:
-            missing.append('BOLD_to_T2w')
-        if not t2w_to_tpl_affine:
-            missing.append('T2w_to_template')
-        if not tpl_to_sigma_affine:
-            missing.append('tpl_to_SIGMA')
+        pipeline = None
+
+        if bold_to_template and tpl_to_sigma_affine:
+            pipeline = 'direct'  # BOLD → Template → SIGMA (3 transforms)
+        elif bold_to_t2w and t2w_to_tpl_affine and tpl_to_sigma_affine:
+            pipeline = 'legacy'  # BOLD → T2w → Template → SIGMA (5 transforms)
+        else:
+            if not bold_to_template and not bold_to_t2w:
+                missing.append('BOLD_to_template')
+            if not tpl_to_sigma_affine:
+                missing.append('tpl_to_SIGMA')
+            if not bold_to_template and not t2w_to_tpl_affine:
+                missing.append('T2w_to_template')
 
         # Check for existing output
         output_file = derivatives / subject / session / 'func' / f'{subject}_{session}_space-SIGMA_bold.nii.gz'
@@ -86,6 +96,8 @@ def find_warpable_subjects(study_root: Path):
             'session': session,
             'cohort': cohort,
             'bold_file': bold_file,
+            'pipeline': pipeline,
+            'bold_to_template': bold_to_template,
             'bold_to_t2w': bold_to_t2w,
             't2w_to_tpl_affine': t2w_to_tpl_affine,
             't2w_to_tpl_warp': t2w_to_tpl_warp,
@@ -106,24 +118,25 @@ def warp_bold_to_sigma(
     output_file: Path
 ) -> Path:
     """Warp preprocessed 4D BOLD to SIGMA space using transform chain."""
-    # Build transform chain (listed in ANTs order: last-applied first)
-    # Goal: BOLD-space → SIGMA-space
-    # Application order: BOLD→T2w → T2w→Template → Template→SIGMA
-    # ANTs list order: Template→SIGMA, T2w→Template, BOLD→T2w
     transforms = []
 
-    # 3. Template → SIGMA (applied last, listed first)
-    if subject_info['tpl_to_sigma_warp']:
-        transforms.append(str(subject_info['tpl_to_sigma_warp']))
-    transforms.append(str(subject_info['tpl_to_sigma_affine']))
-
-    # 2. T2w → Template
-    if subject_info['t2w_to_tpl_warp']:
-        transforms.append(str(subject_info['t2w_to_tpl_warp']))
-    transforms.append(str(subject_info['t2w_to_tpl_affine']))
-
-    # 1. BOLD → T2w (applied first, listed last)
-    transforms.append(str(subject_info['bold_to_t2w']))
+    if subject_info['pipeline'] == 'direct':
+        # Direct: BOLD → Template → SIGMA (3 transforms)
+        if subject_info['tpl_to_sigma_warp']:
+            transforms.append(str(subject_info['tpl_to_sigma_warp']))
+        transforms.append(str(subject_info['tpl_to_sigma_affine']))
+        transforms.append(str(subject_info['bold_to_template']))
+        print(f"  Using direct pipeline (3 transforms)")
+    else:
+        # Legacy: BOLD → T2w → Template → SIGMA (5 transforms)
+        if subject_info['tpl_to_sigma_warp']:
+            transforms.append(str(subject_info['tpl_to_sigma_warp']))
+        transforms.append(str(subject_info['tpl_to_sigma_affine']))
+        if subject_info['t2w_to_tpl_warp']:
+            transforms.append(str(subject_info['t2w_to_tpl_warp']))
+        transforms.append(str(subject_info['t2w_to_tpl_affine']))
+        transforms.append(str(subject_info['bold_to_t2w']))
+        print(f"  Using legacy pipeline ({len(transforms)} transforms)")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -176,12 +189,18 @@ def main():
     ready = [s for s in subjects if not s['missing_transforms']]
     missing = [s for s in subjects if s['missing_transforms']]
 
+    # Count pipeline types
+    direct_count = sum(1 for s in ready if s['pipeline'] == 'direct')
+    legacy_count = sum(1 for s in ready if s['pipeline'] == 'legacy')
+
     if missing:
         print(f"\n  Missing transforms ({len(missing)} subjects):")
         for s in missing[:5]:
             print(f"    {s['subject']}/{s['session']}: {', '.join(s['missing_transforms'])}")
         if len(missing) > 5:
             print(f"    ... and {len(missing) - 5} more")
+
+    print(f"\n  Ready: {len(ready)} ({direct_count} direct, {legacy_count} legacy)")
 
     # Filter: skip already done
     if args.force:
@@ -192,12 +211,12 @@ def main():
         if already_done > 0:
             print(f"  Already warped: {already_done} (use --force to redo)")
 
-    print(f"  Ready to process: {len(to_process)}")
+    print(f"  To process: {len(to_process)}")
 
     if args.dry_run:
         print("\n[DRY RUN] Would process:")
         for s in to_process:
-            print(f"  {s['subject']}/{s['session']} ({s['cohort']})")
+            print(f"  {s['subject']}/{s['session']} ({s['cohort']}, {s['pipeline']})")
         return
 
     if not to_process:

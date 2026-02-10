@@ -152,6 +152,127 @@ def _find_z_offset_ncc(
     }
 
 
+def register_bold_to_template(
+    bold_ref_file: Path,
+    template_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register mean BOLD directly to the cohort template.
+
+    Registers the brain-extracted BOLD reference volume to the age-matched
+    template volume using NCC-based Z initialization and rigid registration.
+    This produces better SIGMA atlas overlap than the old BOLD→T2w→Template
+    chain.
+
+    Parameters
+    ----------
+    bold_ref_file : Path
+        Brain-extracted BOLD reference volume (3D)
+    template_file : Path
+        Cohort template (e.g., tpl-BPARat_p60_T2w.nii.gz)
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("BOLD to Template Registration")
+    print("="*60)
+
+    # Load images to get info
+    bold_img = nib.load(bold_ref_file)
+    template_img = nib.load(template_file)
+    print(f"\n  BOLD ref: {bold_img.shape} voxels, {bold_img.header.get_zooms()[:3]} mm")
+    print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
+
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'BOLD_to_template_'
+
+    # Step 1: Find optimal Z offset via NCC scan
+    print("\n  Finding optimal Z offset via NCC scan...")
+    initial_transform, z_offset_info = _find_z_offset_ncc(
+        bold_img, template_img, work_dir
+    )
+
+    # Step 2: Run antsRegistration directly with the original BOLD + initial transform
+    print("\nRunning ANTs Rigid registration (BOLD → Template)...")
+
+    warped_output = Path(str(output_prefix) + 'Warped.nii.gz')
+    cmd = [
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--output', f'[{output_prefix},{warped_output}]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '1',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        '--initial-moving-transform', str(initial_transform),
+        # Rigid only (6 DOF: translation + rotation)
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{template_file},{bold_ref_file},1,32,Regular,0.25]',
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '4x2x1x1',
+        '--smoothing-sigmas', '2x1x0x0vox',
+    ]
+
+    print(f"  Moving: {bold_ref_file.name}")
+    print(f"  Fixed: {template_file.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("BOLD to Template registration failed")
+
+    # Check outputs
+    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_bold = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not affine_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {affine_transform}")
+
+    print(f"  Rigid transform: {affine_transform.name}")
+    if warped_bold.exists():
+        print(f"  Warped BOLD ref: {warped_bold.name}")
+
+        # Report which template slices have BOLD coverage
+        warped_data = nib.load(warped_bold).get_fdata()
+        slices_with_bold = [z for z in range(warped_data.shape[2])
+                           if np.sum(warped_data[:, :, z] > 0) > 1000]
+        if slices_with_bold:
+            print(f"  BOLD covers template slices {slices_with_bold[0]}-{slices_with_bold[-1]} ({len(slices_with_bold)} slices)")
+
+    return {
+        'affine_transform': affine_transform,
+        'warped_bold': warped_bold if warped_bold.exists() else None,
+        'template_file': template_file,
+        'bold_shape': bold_img.shape,
+        'template_shape': template_img.shape,
+    }
+
+
 def register_bold_to_t2w(
     bold_ref_file: Path,
     t2w_file: Path,
@@ -163,6 +284,9 @@ def register_bold_to_t2w(
 ) -> Dict[str, Any]:
     """
     Register mean BOLD to T2w within the same subject.
+
+    .. deprecated::
+        Use :func:`register_bold_to_template` instead for better atlas overlap.
 
     Registers the brain-extracted BOLD reference volume directly to the full
     T2w volume, letting ANTs find the optimal 3D alignment including the
@@ -190,6 +314,14 @@ def register_bold_to_t2w(
     dict
         Dictionary with transform paths and metadata
     """
+    import warnings
+    warnings.warn(
+        "register_bold_to_t2w() is deprecated. Use register_bold_to_template() "
+        "for better SIGMA atlas overlap.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     print("\n" + "="*60)
     print("BOLD to T2w Registration")
     print("="*60)
@@ -730,6 +862,7 @@ def run_functional_preprocessing(
     bold_file: Path,
     output_dir: Path,
     transform_registry: TransformRegistry,
+    template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
     work_dir: Optional[Path] = None,
     n_discard: int = 0,
@@ -769,14 +902,16 @@ def run_functional_preprocessing(
         Study root directory (will create derivatives/{subject}/{session}/func/)
     transform_registry : TransformRegistry
         Transform registry for saving spatial transforms
+    template_file : Path, optional
+        Cohort template for direct BOLD→Template registration (preferred)
     t2w_file : Path, optional
-        T2w anatomical reference for registration (if provided, enables registration)
+        T2w anatomical reference (deprecated, use template_file instead)
     work_dir : Path, optional
         Working directory (defaults to output_dir/work/{subject}/{session}/func_preproc)
     n_discard : int
         Number of initial volumes to discard (default: 0)
     run_registration : bool
-        Whether to register BOLD to T2w (default: True, requires t2w_file)
+        Whether to register BOLD to template (default: True, requires template_file or t2w_file)
 
     Returns
     -------
@@ -1305,76 +1440,124 @@ def run_functional_preprocessing(
     }
 
     # =========================================================================
-    # STEP 12: BOLD to T2w Registration
+    # STEP 12: BOLD to Template Registration
     # =========================================================================
     registration_results = None
 
     if run_registration:
-        if t2w_file is None:
-            print("\n  Registration requested but no T2w file provided - skipping")
-        elif not t2w_file.exists():
-            print(f"\n  T2w file not found: {t2w_file} - skipping registration")
+        # Prefer template_file; fall back to t2w_file (deprecated)
+        reg_target = template_file or t2w_file
+        use_template = template_file is not None
+
+        if reg_target is None:
+            print("\n  Registration requested but no template/T2w file provided - skipping")
+        elif not reg_target.exists():
+            print(f"\n  Registration target not found: {reg_target} - skipping registration")
         else:
-            print("\n" + "="*60)
-            print("STEP 12: BOLD to T2w Registration")
-            print("="*60)
+            # Compute temporal mean of motion-corrected BOLD + brain mask
+            reg_work_dir = work_dir / 'bold_registration'
+            reg_work_dir.mkdir(parents=True, exist_ok=True)
+            mean_mcf_brain = reg_work_dir / f'{subject}_{session}_mean_mcf_brain.nii.gz'
 
-            try:
-                # Compute temporal mean of motion-corrected BOLD + brain mask
-                reg_work_dir = work_dir / 'bold_registration'
-                reg_work_dir.mkdir(parents=True, exist_ok=True)
-                mean_mcf_brain = reg_work_dir / f'{subject}_{session}_mean_mcf_brain.nii.gz'
-
-                if not mean_mcf_brain.exists():
-                    print("  Computing temporal mean of motion-corrected BOLD...")
-                    mcf_img = nib.load(bold_mcf)
-                    mcf_data = mcf_img.get_fdata()
-                    mean_data = np.mean(mcf_data, axis=3)
-                    mask_data = nib.load(brain_mask).get_fdata() > 0
-                    mean_data = mean_data * mask_data
-                    nib.save(
-                        nib.Nifti1Image(mean_data.astype(np.float32), mcf_img.affine, mcf_img.header),
-                        mean_mcf_brain
-                    )
-
-                registration_results = register_bold_to_t2w(
-                    bold_ref_file=mean_mcf_brain,
-                    t2w_file=t2w_file,
-                    output_dir=output_dir,
-                    subject=subject,
-                    session=session,
-                    work_dir=reg_work_dir,
-                    n_cores=config.get('execution', {}).get('n_procs', 4)
+            if not mean_mcf_brain.exists():
+                print("  Computing temporal mean of motion-corrected BOLD...")
+                mcf_img = nib.load(bold_mcf)
+                mcf_data = mcf_img.get_fdata()
+                mean_data = np.mean(mcf_data, axis=3)
+                mask_data = nib.load(brain_mask).get_fdata() > 0
+                mean_data = mean_data * mask_data
+                nib.save(
+                    nib.Nifti1Image(mean_data.astype(np.float32), mcf_img.affine, mcf_img.header),
+                    mean_mcf_brain
                 )
 
-                # Save metadata JSON
-                reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_T2w_registration.json'
-                reg_metadata = {
-                    'bold_ref_file': str(mean_mcf_brain),
-                    'mcf_source': str(bold_mcf),
-                    'brain_mask': str(brain_mask),
-                    't2w_file': str(registration_results['t2w_file']),
-                    'affine_transform': str(registration_results['affine_transform']),
-                    'warped_bold': str(registration_results['warped_bold']) if registration_results.get('warped_bold') else None,
-                    'bold_shape': list(registration_results['bold_shape']),
-                    't2w_shape': list(registration_results['t2w_shape']),
-                }
-                with open(reg_metadata_file, 'w') as f:
-                    json.dump(reg_metadata, f, indent=2)
+            if use_template:
+                print("\n" + "="*60)
+                print("STEP 12: BOLD to Template Registration")
+                print("="*60)
 
-                results['registration'] = {
-                    'affine_transform': registration_results['affine_transform'],
-                    'warped_bold': registration_results.get('warped_bold'),
-                    'metadata': reg_metadata_file,
-                }
+                try:
+                    registration_results = register_bold_to_template(
+                        bold_ref_file=mean_mcf_brain,
+                        template_file=template_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=reg_work_dir,
+                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                    )
 
-                print(f"\n  Registration complete:")
-                print(f"  - Transform: {registration_results['affine_transform']}")
-                print(f"  - Metadata: {reg_metadata_file}")
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_template_registration.json'
+                    reg_metadata = {
+                        'bold_ref_file': str(mean_mcf_brain),
+                        'mcf_source': str(bold_mcf),
+                        'brain_mask': str(brain_mask),
+                        'template_file': str(registration_results['template_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_bold': str(registration_results['warped_bold']) if registration_results.get('warped_bold') else None,
+                        'bold_shape': list(registration_results['bold_shape']),
+                        'template_shape': list(registration_results['template_shape']),
+                    }
+                    with open(reg_metadata_file, 'w') as f:
+                        json.dump(reg_metadata, f, indent=2)
 
-            except Exception as e:
-                print(f"\n  Registration failed: {e}")
-                print("  Continuing without registration...")
+                    results['registration'] = {
+                        'affine_transform': registration_results['affine_transform'],
+                        'warped_bold': registration_results.get('warped_bold'),
+                        'metadata': reg_metadata_file,
+                    }
+
+                    print(f"\n  Registration complete:")
+                    print(f"  - Transform: {registration_results['affine_transform']}")
+                    print(f"  - Metadata: {reg_metadata_file}")
+
+                except Exception as e:
+                    print(f"\n  Registration failed: {e}")
+                    print("  Continuing without registration...")
+            else:
+                # Legacy path: BOLD → T2w (deprecated)
+                print("\n" + "="*60)
+                print("STEP 12: BOLD to T2w Registration (deprecated)")
+                print("="*60)
+
+                try:
+                    registration_results = register_bold_to_t2w(
+                        bold_ref_file=mean_mcf_brain,
+                        t2w_file=t2w_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=reg_work_dir,
+                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                    )
+
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_T2w_registration.json'
+                    reg_metadata = {
+                        'bold_ref_file': str(mean_mcf_brain),
+                        'mcf_source': str(bold_mcf),
+                        'brain_mask': str(brain_mask),
+                        't2w_file': str(registration_results['t2w_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_bold': str(registration_results['warped_bold']) if registration_results.get('warped_bold') else None,
+                        'bold_shape': list(registration_results['bold_shape']),
+                        't2w_shape': list(registration_results['t2w_shape']),
+                    }
+                    with open(reg_metadata_file, 'w') as f:
+                        json.dump(reg_metadata, f, indent=2)
+
+                    results['registration'] = {
+                        'affine_transform': registration_results['affine_transform'],
+                        'warped_bold': registration_results.get('warped_bold'),
+                        'metadata': reg_metadata_file,
+                    }
+
+                    print(f"\n  Registration complete:")
+                    print(f"  - Transform: {registration_results['affine_transform']}")
+                    print(f"  - Metadata: {reg_metadata_file}")
+
+                except Exception as e:
+                    print(f"\n  Registration failed: {e}")
+                    print("  Continuing without registration...")
 
     print("\n" + "="*80)
     print("FUNCTIONAL PREPROCESSING COMPLETE")

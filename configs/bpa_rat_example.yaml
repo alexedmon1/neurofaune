@@ -83,7 +83,7 @@ templates:
   # Subject selection for template building
   selection:
     method: "qc_based"  # or "random"
-    top_percent: 0.25   # Use top 25% of subjects
+    top_percent: 0.333  # Use top 1/3 of subjects
     min_subjects: 10    # Minimum required per cohort
 
   # ANTs template construction parameters

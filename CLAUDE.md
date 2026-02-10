@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build and Development Commands
 
-**Package manager**: Always use `uv` for Python operations, never `pip` directly.
+**Package manager**: Always use `uv` for Python operations, never `pip` directly. All Python invocations must go through `uv run python` (never bare `python`).
 
 ```bash
 # Install in development mode

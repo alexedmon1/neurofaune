@@ -20,6 +20,128 @@ from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 
 
+def register_msme_to_template(
+    msme_ref_file: Path,
+    template_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4
+) -> Dict[str, Any]:
+    """
+    Register MSME first echo directly to the cohort template.
+
+    Uses NCC-based Z initialization followed by rigid-only registration.
+    MSME has only 5 slices covering a small portion of the 41-slice template,
+    requiring careful Z positioning. This produces better SIGMA atlas overlap
+    than the old MSME→T2w→Template chain.
+
+    Parameters
+    ----------
+    msme_ref_file : Path
+        First echo volume (3D, skull-stripped or raw)
+    template_file : Path
+        Cohort template (e.g., tpl-BPARat_p60_T2w.nii.gz)
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+
+    Returns
+    -------
+    dict
+        Dictionary with transform paths and metadata
+    """
+    print("\n" + "="*60)
+    print("MSME to Template Registration")
+    print("="*60)
+
+    msme_img = nib.load(msme_ref_file)
+    template_img = nib.load(template_file)
+    print(f"\n  MSME ref: {msme_img.shape} voxels, {msme_img.header.get_zooms()[:3]} mm")
+    print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
+
+    transforms_dir = output_dir / 'transforms' / subject / session
+    transforms_dir.mkdir(parents=True, exist_ok=True)
+    output_prefix = transforms_dir / 'MSME_to_template_'
+
+    # Step 1: Find optimal Z offset via NCC scan
+    print("\n  Finding optimal Z offset via NCC scan...")
+    initial_transform, z_offset_info = _find_z_offset_ncc(
+        msme_img, template_img, work_dir
+    )
+
+    # Step 2: Rigid registration with conservative shrink factors
+    # (5 slices is very partial — use 2x1x1 to avoid losing Z info)
+    print("\nRunning ANTs Rigid registration (MSME → Template)...")
+
+    warped_output = Path(str(output_prefix) + 'Warped.nii.gz')
+    cmd = [
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--output', f'[{output_prefix},{warped_output}]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '1',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        '--initial-moving-transform', str(initial_transform),
+        # Rigid only (6 DOF) — 5 slices is too few for affine
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{template_file},{msme_ref_file},1,32,Regular,0.25]',
+        '--convergence', '[500x250x100,1e-6,10]',
+        '--shrink-factors', '2x1x1',
+        '--smoothing-sigmas', '1x0x0vox',
+    ]
+
+    print(f"  Moving: {msme_ref_file.name}")
+    print(f"  Fixed: {template_file.name}")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: Registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError("MSME to Template registration failed")
+
+    # Check outputs
+    rigid_transform = Path(str(output_prefix) + '0GenericAffine.mat')
+    warped_msme = Path(str(output_prefix) + 'Warped.nii.gz')
+
+    if not rigid_transform.exists():
+        raise RuntimeError(f"Expected transform not found: {rigid_transform}")
+
+    print(f"  Rigid transform: {rigid_transform.name}")
+    if warped_msme.exists():
+        print(f"  Warped MSME ref: {warped_msme.name}")
+        # Report coverage
+        warped_data = nib.load(warped_msme).get_fdata()
+        threshold = warped_data.max() * 0.05
+        slices_with_signal = [z for z in range(warped_data.shape[2])
+                              if warped_data[:,:,z].max() > threshold]
+        if slices_with_signal:
+            print(f"  MSME covers template slices {slices_with_signal[0]}-{slices_with_signal[-1]} "
+                  f"({len(slices_with_signal)} slices)")
+
+    return {
+        'affine_transform': rigid_transform,
+        'warped_msme': warped_msme if warped_msme.exists() else None,
+        'template_file': template_file,
+        'msme_shape': msme_img.shape,
+        'template_shape': template_img.shape,
+    }
+
+
 def register_msme_to_t2w(
     msme_ref_file: Path,
     t2w_file: Path,
@@ -31,6 +153,9 @@ def register_msme_to_t2w(
 ) -> Dict[str, Any]:
     """
     Register MSME first echo to T2w within the same subject.
+
+    .. deprecated::
+        Use :func:`register_msme_to_template` instead for better atlas overlap.
 
     Uses NCC-based Z initialization (both images have origin at 0,0,0)
     followed by rigid-only registration. MSME has only 5 slices covering
@@ -58,6 +183,14 @@ def register_msme_to_t2w(
     dict
         Dictionary with transform paths and metadata
     """
+    import warnings
+    warnings.warn(
+        "register_msme_to_t2w() is deprecated. Use register_msme_to_template() "
+        "for better SIGMA atlas overlap.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     print("\n" + "="*60)
     print("MSME to T2w Registration")
     print("="*60)
@@ -150,6 +283,7 @@ def run_msme_preprocessing(
     transform_registry: TransformRegistry,
     te_values: Optional[np.ndarray] = None,
     work_dir: Optional[Path] = None,
+    template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
     run_registration: bool = True
 ) -> Dict[str, Any]:
@@ -174,10 +308,12 @@ def run_msme_preprocessing(
         Echo times in ms (if None, assumes 10-320ms in 10ms steps)
     work_dir : Path, optional
         Working directory
+    template_file : Path, optional
+        Cohort template for direct MSME→Template registration (preferred)
     t2w_file : Path, optional
-        T2w anatomical reference for registration (requires run_registration=True)
+        T2w anatomical reference (deprecated, use template_file instead)
     run_registration : bool
-        Whether to register MSME to T2w (default: True, requires t2w_file)
+        Whether to register MSME to template (default: True, requires template_file or t2w_file)
 
     Returns
     -------
@@ -342,23 +478,27 @@ def run_msme_preprocessing(
     print(f"\n✓ MSME QC report: {qc_results['html_report']}")
 
     # ==========================================================================
-    # Step 4: MSME to T2w Registration
+    # Step 4: MSME to Template Registration
     # ==========================================================================
     registration_results = None
 
     if run_registration:
-        if t2w_file is None:
-            print("\n  Registration requested but no T2w file provided - skipping")
-        elif not t2w_file.exists():
-            print(f"\n  T2w file not found: {t2w_file} - skipping registration")
+        # Prefer template_file; fall back to t2w_file (deprecated)
+        reg_target = template_file or t2w_file
+        use_template = template_file is not None
+
+        if reg_target is None:
+            print("\n  Registration requested but no template/T2w file provided - skipping")
+        elif not reg_target.exists():
+            print(f"\n  Registration target not found: {reg_target} - skipping registration")
         else:
+            step_name = "MSME to Template" if use_template else "MSME to T2w (deprecated)"
             print("\n" + "="*80)
-            print("Step 4: MSME to T2w Registration")
+            print(f"Step 4: {step_name} Registration")
             print("="*80)
 
             try:
                 # Extract first echo as registration reference
-                # MSME shape: (X, Y, echoes, slices) — echoes in dim 2, slices in dim 3
                 reg_work_dir = work_dir / 'msme_registration'
                 reg_work_dir.mkdir(parents=True, exist_ok=True)
                 msme_ref = reg_work_dir / f'{subject}_{session}_msme_echo1.nii.gz'
@@ -368,9 +508,6 @@ def run_msme_preprocessing(
                     msme_data = img.get_fdata()
                     first_echo = msme_data[:, :, 0, :]  # First echo, all slices
 
-                    # Create 3D NIfTI with correct spatial header
-                    # Original header has echoes in Z (8mm "voxel size") and slices in T (1mm)
-                    # Correct spatial voxels: in-plane from header, slice thickness = 8mm
                     in_plane = img.header.get_zooms()[:2]
                     ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
 
@@ -390,7 +527,7 @@ def run_msme_preprocessing(
                         output_file=msme_ref,
                         mask_file=msme_mask,
                         work_dir=reg_work_dir / 'adaptive_slices',
-                        method='auto',  # Will select 'adaptive' for 5-slice MSME
+                        method='auto',
                         target_ratio=reg_skull_strip_config.get('target_ratio', 0.15),
                         frac_range=(
                             reg_skull_strip_config.get('frac_min', 0.30),
@@ -401,27 +538,49 @@ def run_msme_preprocessing(
                         cog_offset_y=reg_skull_strip_config.get('cog_offset_y')
                     )
 
-                registration_results = register_msme_to_t2w(
-                    msme_ref_file=msme_ref,
-                    t2w_file=t2w_file,
-                    output_dir=output_dir,
-                    subject=subject,
-                    session=session,
-                    work_dir=reg_work_dir,
-                    n_cores=config.get('execution', {}).get('n_procs', 4)
-                )
+                if use_template:
+                    registration_results = register_msme_to_template(
+                        msme_ref_file=msme_ref,
+                        template_file=template_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=reg_work_dir,
+                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                    )
 
-                # Save metadata JSON
-                reg_metadata_file = derivatives_dir / f'{subject}_{session}_MSME_to_T2w_registration.json'
-                reg_metadata = {
-                    'msme_ref_file': str(msme_ref),
-                    'msme_source': str(msme_file),
-                    't2w_file': str(registration_results['t2w_file']),
-                    'affine_transform': str(registration_results['affine_transform']),
-                    'warped_msme': str(registration_results['warped_msme']) if registration_results.get('warped_msme') else None,
-                    'msme_shape': list(registration_results['msme_shape']),
-                    't2w_shape': list(registration_results['t2w_shape']),
-                }
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_MSME_to_template_registration.json'
+                    reg_metadata = {
+                        'msme_ref_file': str(msme_ref),
+                        'msme_source': str(msme_file),
+                        'template_file': str(registration_results['template_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_msme': str(registration_results['warped_msme']) if registration_results.get('warped_msme') else None,
+                        'msme_shape': list(registration_results['msme_shape']),
+                        'template_shape': list(registration_results['template_shape']),
+                    }
+                else:
+                    registration_results = register_msme_to_t2w(
+                        msme_ref_file=msme_ref,
+                        t2w_file=t2w_file,
+                        output_dir=output_dir,
+                        subject=subject,
+                        session=session,
+                        work_dir=reg_work_dir,
+                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                    )
+
+                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_MSME_to_T2w_registration.json'
+                    reg_metadata = {
+                        'msme_ref_file': str(msme_ref),
+                        'msme_source': str(msme_file),
+                        't2w_file': str(registration_results['t2w_file']),
+                        'affine_transform': str(registration_results['affine_transform']),
+                        'warped_msme': str(registration_results['warped_msme']) if registration_results.get('warped_msme') else None,
+                        'msme_shape': list(registration_results['msme_shape']),
+                        't2w_shape': list(registration_results['t2w_shape']),
+                    }
+
                 with open(reg_metadata_file, 'w') as f:
                     json.dump(reg_metadata, f, indent=2)
 

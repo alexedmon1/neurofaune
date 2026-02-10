@@ -316,6 +316,350 @@ def propagate_labels_to_subject(
     )
 
 
+def propagate_atlas_to_dwi_direct(
+    atlas_path: Path,
+    fa_reference: Path,
+    transforms_root: Path,
+    templates_root: Path,
+    subject: str,
+    session: str,
+    output_path: Path
+) -> Path:
+    """
+    Propagate SIGMA atlas to DTI/FA space via direct FA→Template registration.
+
+    Uses the simplified 2-stage chain:
+        SIGMA → Template → Subject FA
+
+    Only 3 transforms (vs 5 in the old FA→T2w→Template chain), giving
+    better atlas overlap especially for 3D T2w subjects.
+
+    Parameters
+    ----------
+    atlas_path : Path
+        Path to SIGMA atlas parcellation
+    fa_reference : Path
+        Subject FA map (defines output space)
+    transforms_root : Path
+        Root directory for subject transforms
+    templates_root : Path
+        Root directory for templates
+    subject : str
+        Subject ID (e.g., 'sub-Rat1')
+    session : str
+        Session ID (e.g., 'ses-p60')
+    output_path : Path
+        Output path for atlas in FA space
+
+    Returns
+    -------
+    Path
+        Path to atlas in FA space
+
+    Raises
+    ------
+    FileNotFoundError
+        If required transforms are missing
+    """
+    cohort = session.replace('ses-', '')
+
+    # Locate all required transforms
+    subj_transforms = transforms_root / subject / session
+    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
+
+    fa_to_template = subj_transforms / 'FA_to_template_0GenericAffine.mat'
+    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
+    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+
+    if not fa_to_template.exists():
+        raise FileNotFoundError(
+            f"FA→Template transform not found: {fa_to_template}\n"
+            "Run FA-to-template registration first."
+        )
+
+    if not tpl_to_sigma_affine.exists():
+        raise FileNotFoundError(
+            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Run template-to-SIGMA registration first."
+        )
+
+    # Build transform chain for SIGMA → FA (inverse direction)
+    # ANTs applies transforms in reverse order, so list from FA to SIGMA
+    transform_list = []
+
+    # 1. Template → FA (inverse of FA → Template)
+    transform_list.append(f"[{fa_to_template},1]")
+
+    # 2. SIGMA → Template (inverse of Template → SIGMA)
+    if tpl_to_sigma_inv_warp.exists():
+        transform_list.append(str(tpl_to_sigma_inv_warp))
+    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+
+    # Apply transforms
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(atlas_path),
+        '-r', str(fa_reference),
+        '-o', str(output_path),
+        '-n', 'NearestNeighbor',
+    ]
+
+    for t in transform_list:
+        cmd.extend(['-t', t])
+
+    print(f"\nPropagating atlas to FA space (direct)...")
+    print(f"  Atlas: {atlas_path.name}")
+    print(f"  Reference: {fa_reference.name}")
+    print(f"  Transform chain: {len(transform_list)} transforms")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Atlas propagation failed!")
+        print(result.stderr)
+        raise RuntimeError("antsApplyTransforms failed")
+
+    # Verify output
+    atlas_img = nib.load(output_path)
+    atlas_data = atlas_img.get_fdata()
+    n_labels = len(set(atlas_data[atlas_data > 0].astype(int)))
+
+    print(f"  Output: {output_path}")
+    print(f"  Unique labels: {n_labels}")
+
+    return output_path
+
+
+def propagate_atlas_to_bold_direct(
+    atlas_path: Path,
+    bold_reference: Path,
+    transforms_root: Path,
+    templates_root: Path,
+    subject: str,
+    session: str,
+    output_path: Path
+) -> Path:
+    """
+    Propagate SIGMA atlas to BOLD/fMRI space via direct BOLD→Template registration.
+
+    Uses the simplified 2-stage chain:
+        SIGMA → Template → Subject BOLD
+
+    Only 3 transforms (vs 5 in the old BOLD→T2w→Template chain).
+
+    Parameters
+    ----------
+    atlas_path : Path
+        Path to SIGMA atlas parcellation
+    bold_reference : Path
+        Subject BOLD reference volume (defines output space)
+    transforms_root : Path
+        Root directory for subject transforms
+    templates_root : Path
+        Root directory for templates
+    subject : str
+        Subject ID (e.g., 'sub-Rat1')
+    session : str
+        Session ID (e.g., 'ses-p60')
+    output_path : Path
+        Output path for atlas in BOLD space
+
+    Returns
+    -------
+    Path
+        Path to atlas in BOLD space
+    """
+    cohort = session.replace('ses-', '')
+
+    subj_transforms = transforms_root / subject / session
+    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
+
+    bold_to_template = subj_transforms / 'BOLD_to_template_0GenericAffine.mat'
+    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
+    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+
+    if not bold_to_template.exists():
+        raise FileNotFoundError(
+            f"BOLD→Template transform not found: {bold_to_template}\n"
+            "Run BOLD-to-template registration first."
+        )
+
+    if not tpl_to_sigma_affine.exists():
+        raise FileNotFoundError(
+            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Run template-to-SIGMA registration first."
+        )
+
+    transform_list = []
+
+    # 1. Template → BOLD (inverse of BOLD → Template)
+    transform_list.append(f"[{bold_to_template},1]")
+
+    # 2. SIGMA → Template (inverse of Template → SIGMA)
+    if tpl_to_sigma_inv_warp.exists():
+        transform_list.append(str(tpl_to_sigma_inv_warp))
+    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(atlas_path),
+        '-r', str(bold_reference),
+        '-o', str(output_path),
+        '-n', 'NearestNeighbor',
+    ]
+
+    for t in transform_list:
+        cmd.extend(['-t', t])
+
+    print(f"\nPropagating atlas to BOLD space (direct)...")
+    print(f"  Atlas: {atlas_path.name}")
+    print(f"  Reference: {bold_reference.name}")
+    print(f"  Transform chain: {len(transform_list)} transforms")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Atlas propagation failed!")
+        print(result.stderr)
+        raise RuntimeError("antsApplyTransforms failed")
+
+    atlas_img = nib.load(output_path)
+    atlas_data = atlas_img.get_fdata()
+    n_labels = len(set(atlas_data[atlas_data > 0].astype(int)))
+
+    print(f"  Output: {output_path}")
+    print(f"  Unique labels: {n_labels}")
+
+    return output_path
+
+
+def propagate_atlas_to_msme_direct(
+    atlas_path: Path,
+    msme_reference: Path,
+    transforms_root: Path,
+    templates_root: Path,
+    subject: str,
+    session: str,
+    output_path: Path
+) -> Path:
+    """
+    Propagate SIGMA atlas to MSME space via direct MSME→Template registration.
+
+    Uses the simplified 2-stage chain:
+        SIGMA → Template → Subject MSME
+
+    Only 3 transforms (vs 5 in the old MSME→T2w→Template chain).
+
+    Parameters
+    ----------
+    atlas_path : Path
+        Path to SIGMA atlas parcellation
+    msme_reference : Path
+        Subject MSME reference volume (defines output space)
+    transforms_root : Path
+        Root directory for subject transforms
+    templates_root : Path
+        Root directory for templates
+    subject : str
+        Subject ID (e.g., 'sub-Rat1')
+    session : str
+        Session ID (e.g., 'ses-p60')
+    output_path : Path
+        Output path for atlas in MSME space
+
+    Returns
+    -------
+    Path
+        Path to atlas in MSME space
+    """
+    cohort = session.replace('ses-', '')
+
+    subj_transforms = transforms_root / subject / session
+    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
+
+    msme_to_template = subj_transforms / 'MSME_to_template_0GenericAffine.mat'
+    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
+    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+
+    if not msme_to_template.exists():
+        raise FileNotFoundError(
+            f"MSME→Template transform not found: {msme_to_template}\n"
+            "Run MSME-to-template registration first."
+        )
+
+    if not tpl_to_sigma_affine.exists():
+        raise FileNotFoundError(
+            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Run template-to-SIGMA registration first."
+        )
+
+    transform_list = []
+
+    # 1. Template → MSME (inverse of MSME → Template)
+    transform_list.append(f"[{msme_to_template},1]")
+
+    # 2. SIGMA → Template (inverse of Template → SIGMA)
+    if tpl_to_sigma_inv_warp.exists():
+        transform_list.append(str(tpl_to_sigma_inv_warp))
+    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        'antsApplyTransforms',
+        '-d', '3',
+        '-i', str(atlas_path),
+        '-r', str(msme_reference),
+        '-o', str(output_path),
+        '-n', 'NearestNeighbor',
+    ]
+
+    for t in transform_list:
+        cmd.extend(['-t', t])
+
+    print(f"\nPropagating atlas to MSME space (direct)...")
+    print(f"  Atlas: {atlas_path.name}")
+    print(f"  Reference: {msme_reference.name}")
+    print(f"  Transform chain: {len(transform_list)} transforms")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Atlas propagation failed!")
+        print(result.stderr)
+        raise RuntimeError("antsApplyTransforms failed")
+
+    atlas_img = nib.load(output_path)
+    atlas_data = atlas_img.get_fdata()
+    n_labels = len(set(atlas_data[atlas_data > 0].astype(int)))
+
+    print(f"  Output: {output_path}")
+    print(f"  Unique labels: {n_labels}")
+
+    return output_path
+
+
 def propagate_atlas_to_dwi(
     atlas_path: Path,
     fa_reference: Path,
@@ -327,6 +671,10 @@ def propagate_atlas_to_dwi(
 ) -> Path:
     """
     Propagate SIGMA atlas to DTI/FA space through the transform chain.
+
+    .. deprecated::
+        Use :func:`propagate_atlas_to_dwi_direct` instead for better overlap
+        with fewer transforms.
 
     Uses the multi-stage registration chain:
         SIGMA → T2w Template → Subject T2w → Subject FA
@@ -478,6 +826,10 @@ def propagate_atlas_to_bold(
 ) -> Path:
     """
     Propagate SIGMA atlas to BOLD/fMRI space through the transform chain.
+
+    .. deprecated::
+        Use :func:`propagate_atlas_to_bold_direct` instead for better overlap
+        with fewer transforms.
 
     Uses the multi-stage registration chain:
         SIGMA → T2w Template → Subject T2w → Subject BOLD

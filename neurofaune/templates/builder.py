@@ -19,7 +19,7 @@ def select_subjects_for_template(
     cohort: str,
     modality: str,
     qc_metrics: Optional[Dict[str, Dict[str, float]]] = None,
-    top_percent: float = 0.25,
+    top_percent: float = 1/3,
     min_subjects: int = 10
 ) -> List[str]:
     """
@@ -52,7 +52,7 @@ def select_subjects_for_template(
     ...     derivatives_dir=Path('/study/derivatives'),
     ...     cohort='p60',
     ...     modality='anat',
-    ...     top_percent=0.25
+    ...     top_percent=1/3
     ... )
     """
     session = f'ses-{cohort}'

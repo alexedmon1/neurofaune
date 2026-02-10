@@ -37,7 +37,7 @@ def build_anatomical_template(
     cohort: str,
     derivatives_dir: Path,
     template_dir: Path,
-    top_percent: float = 0.25,
+    top_percent: float = 1/3,
     n_cores: int = 8
 ):
     """Build T2w anatomical template for a cohort."""
@@ -185,7 +185,7 @@ def build_dti_template(
     cohort: str,
     derivatives_dir: Path,
     template_dir: Path,
-    top_percent: float = 0.25,
+    top_percent: float = 1/3,
     n_cores: int = 8
 ):
     """Build FA template for DTI."""
@@ -258,7 +258,7 @@ def build_func_template(
     cohort: str,
     derivatives_dir: Path,
     template_dir: Path,
-    top_percent: float = 0.25,
+    top_percent: float = 1/3,
     n_cores: int = 8
 ):
     """Build BOLD template for fMRI."""
@@ -349,8 +349,8 @@ def main():
     parser.add_argument('--modality', type=str, required=True,
                         choices=['anat', 'dwi', 'func', 'all'],
                         help='Modality to build template for')
-    parser.add_argument('--top-percent', type=float, default=0.25,
-                        help='Fraction of subjects to use (default: 0.25)')
+    parser.add_argument('--top-percent', type=float, default=1/3,
+                        help='Fraction of subjects to use (default: 1/3)')
     parser.add_argument('--n-cores', type=int, default=8,
                         help='Number of CPU cores (default: 8)')
 
