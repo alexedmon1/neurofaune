@@ -203,6 +203,57 @@ Output Structure:
         print("\nNo batch summaries generated. Check that QC data exists.")
         sys.exit(1)
 
+    # Register with unified reporting system
+    try:
+        from neurofaune.analysis.reporting import register as report_register
+
+        # analysis_root is typically {study_root}/analysis
+        analysis_root = study_root / "analysis"
+        for modality, result in results.items():
+            if not result:
+                continue
+            output_dir = Path(result.get('summary_html', '')).parent
+            stats = {"modality": modality}
+
+            outliers_path = output_dir / "outliers.json"
+            if outliers_path.exists():
+                import json
+                try:
+                    with open(outliers_path) as f:
+                        outlier_data = json.load(f)
+                    if isinstance(outlier_data, list):
+                        stats["n_outliers"] = len(outlier_data)
+                    elif isinstance(outlier_data, dict):
+                        stats["n_outliers"] = len(outlier_data.get("outliers", []))
+                except Exception:
+                    pass
+
+            report_html_rel = None
+            summary_html_path = Path(result.get('summary_html', ''))
+            if summary_html_path.exists():
+                try:
+                    report_html_rel = str(summary_html_path.relative_to(analysis_root))
+                except ValueError:
+                    report_html_rel = str(summary_html_path)
+
+            try:
+                output_dir_rel = str(output_dir.relative_to(analysis_root))
+            except ValueError:
+                output_dir_rel = str(output_dir)
+
+            report_register(
+                analysis_root=analysis_root,
+                entry_id=f"batch_qc_{modality}",
+                analysis_type="batch_qc",
+                display_name=f"Batch QC: {modality.upper()}",
+                output_dir=output_dir_rel,
+                summary_stats=stats,
+                report_html=report_html_rel,
+                auto_generate_index=modality == list(results.keys())[-1],
+            )
+    except Exception as exc:
+        print(f"  Warning: Failed to register with reporting system: {exc}")
+
     print("\nDone!")
 
 

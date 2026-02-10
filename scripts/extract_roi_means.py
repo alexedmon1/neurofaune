@@ -150,6 +150,33 @@ def main():
         json.dump(summary, f, indent=2)
     logger.info(f"Summary: {summary_path}")
 
+    # Register with unified reporting system
+    try:
+        from neurofaune.analysis.reporting import register as report_register
+
+        # Determine analysis root (parent of roi dir)
+        analysis_root = args.output_dir.parent
+        report_register(
+            analysis_root=analysis_root,
+            entry_id=f"roi_extraction_{args.modality}",
+            analysis_type="roi_extraction",
+            display_name=f"ROI Extraction ({args.modality.upper()}: {', '.join(args.metrics)})",
+            output_dir=str(args.output_dir.relative_to(analysis_root)),
+            summary_stats={
+                "modality": args.modality,
+                "n_subjects": max(
+                    (m.get("n_subjects", 0) for m in summary["metrics"].values()),
+                    default=0,
+                ),
+                "metrics": args.metrics,
+                "n_regions": next(iter(summary["metrics"].values()), {}).get("n_regions", 0),
+                "n_territories": next(iter(summary["metrics"].values()), {}).get("n_territories", 0),
+            },
+            source_summary_json=str(summary_path.relative_to(analysis_root)),
+        )
+    except Exception as exc:
+        logger.warning("Failed to register with reporting system: %s", exc)
+
     logger.info("Done.")
 
 

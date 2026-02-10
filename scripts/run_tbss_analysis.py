@@ -458,6 +458,46 @@ Output structure:
             results[analysis] = {'success': False, 'error': str(e)}
             continue
 
+    # Register each successful analysis with unified reporting
+    try:
+        from neurofaune.analysis.reporting import register as report_register
+
+        analysis_root = tbss_dir.parent  # tbss_dir is .../analysis/tbss
+        for analysis, result in results.items():
+            if not result.get('success'):
+                continue
+            output_dir = tbss_dir / "randomise" / analysis
+            summary_json = output_dir / "analysis_summary.json"
+
+            # Count significant contrasts across metrics
+            n_sig = 0
+            for metric_results in result.get('results', {}).values():
+                summary = metric_results.get('summary', {})
+                for c in summary.get('contrasts', []):
+                    if c.get('significant'):
+                        n_sig += 1
+
+            report_register(
+                analysis_root=analysis_root,
+                entry_id=f"tbss_{analysis}",
+                analysis_type="tbss",
+                display_name=f"TBSS: {analysis}",
+                output_dir=str(output_dir.relative_to(analysis_root)),
+                summary_stats={
+                    "n_subjects": result.get('n_subjects', 0),
+                    "metrics": args.metrics,
+                    "n_permutations": args.n_permutations,
+                    "n_significant_contrasts": n_sig,
+                },
+                source_summary_json=(
+                    str(summary_json.relative_to(analysis_root))
+                    if summary_json.exists() else None
+                ),
+                auto_generate_index=analysis == list(results.keys())[-1],
+            )
+    except Exception as exc:
+        logger.warning("Failed to register with reporting system: %s", exc)
+
     # Final summary
     logger.info("\n" + "=" * 80)
     logger.info("ALL ANALYSES COMPLETE")

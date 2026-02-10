@@ -499,8 +499,51 @@ def main():
         all_summaries[metric] = summary
 
     # Save overall summary
-    with open(args.output_dir / "covnet_summary.json", "w") as f:
+    summary_path = args.output_dir / "covnet_summary.json"
+    with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
+
+    # Register with unified reporting system
+    try:
+        from neurofaune.analysis.reporting import register as report_register
+
+        analysis_root = args.output_dir.parent
+        n_subjects = max(
+            (s.get("n_subjects", 0) for s in all_summaries.values() if isinstance(s, dict)),
+            default=0,
+        )
+        n_rois = max(
+            (s.get("n_bilateral_rois", 0) for s in all_summaries.values() if isinstance(s, dict)),
+            default=0,
+        )
+
+        # Collect figure paths
+        figures = []
+        fig_dir = args.output_dir / "figures"
+        if fig_dir.is_dir():
+            for fig in sorted(fig_dir.rglob("*.png"))[:20]:
+                try:
+                    figures.append(str(fig.relative_to(analysis_root)))
+                except ValueError:
+                    pass
+
+        report_register(
+            analysis_root=analysis_root,
+            entry_id="covnet",
+            analysis_type="covnet",
+            display_name=f"CovNet Analysis ({', '.join(args.metrics)})",
+            output_dir=str(args.output_dir.relative_to(analysis_root)),
+            summary_stats={
+                "metrics": args.metrics,
+                "n_subjects": n_subjects,
+                "n_bilateral_rois": n_rois,
+            },
+            figures=figures,
+            source_summary_json=str(summary_path.relative_to(analysis_root)),
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("Failed to register with reporting system: %s", exc)
 
     logger.info(f"\nCovNet analysis complete. Results in: {args.output_dir}")
 
