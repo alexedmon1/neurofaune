@@ -1029,6 +1029,17 @@ def prepare_tbss_data(
             metric_dir = output_dir / metric
             metric_dir.mkdir(parents=True, exist_ok=True)
 
+            # Clean stale files from previous runs that are not in the
+            # current included list, so Phase 3/5 globs stay consistent
+            included_filenames = {
+                f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
+                for sd in included
+            }
+            for existing in metric_dir.glob('*_sigma.nii.gz'):
+                if existing.name not in included_filenames:
+                    existing.unlink()
+                    logger.info(f"  Removed stale: {existing.name}")
+
             for i, sd in enumerate(included):
                 out_file = metric_dir / f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
                 if out_file.exists():
@@ -1079,9 +1090,17 @@ def prepare_tbss_data(
     # Phase 3: Create mean FA and WM mask
     logger.info("\n[Phase 3] Creating mean FA and WM mask...")
 
-    # Build mean FA from warped FA maps
+    # Build mean FA from included subjects (not from globbing, which may
+    # pick up stale files from previous runs)
     fa_dir = output_dir / 'FA'
-    fa_files = sorted(fa_dir.glob('*_FA_sigma.nii.gz'))
+    fa_files = [
+        fa_dir / f'{sd.subject}_{sd.session}_FA_sigma.nii.gz'
+        for sd in included
+    ]
+    missing_fa = [f for f in fa_files if not f.exists()]
+    if missing_fa:
+        logger.error(f"Missing FA files for {len(missing_fa)} included subjects")
+        return {"success": False, "error": f"Missing FA files: {missing_fa[:5]}"}
 
     if not fa_files:
         logger.error("No warped FA files found!")
@@ -1132,14 +1151,18 @@ def prepare_tbss_data(
 
     for metric in metrics:
         metric_dir = output_dir / metric
-        metric_files = sorted(metric_dir.glob('*_sigma.nii.gz'))
-
-        if len(metric_files) != len(included):
+        # Build file list from included subjects to match subject_list order
+        metric_files = [
+            metric_dir / f'{sd.subject}_{sd.session}_{metric}_sigma.nii.gz'
+            for sd in included
+        ]
+        missing = [f for f in metric_files if not f.exists()]
+        if missing:
             logger.warning(
-                f"  {metric}: {len(metric_files)} files vs {len(included)} subjects"
+                f"  {metric}: {len(missing)} missing files for included subjects"
             )
 
-        # Create 4D volume from warped maps
+        # Create 4D volume from warped maps (in subject_list order)
         metric_4d_data = np.zeros((*shape_3d, len(metric_files)), dtype=np.float32)
         for i, f in enumerate(metric_files):
             metric_4d_data[..., i] = nib.load(f).get_fdata()
