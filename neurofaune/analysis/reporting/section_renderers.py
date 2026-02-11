@@ -213,9 +213,32 @@ def render_classification(entry: Dict[str, Any], analysis_root: Path) -> str:
     if best_acc:
         cards.append(_stat_card(f"{best_acc:.1%}", "Best Accuracy"))
 
-    best_r2 = stats.get("best_regression_r2")
+    gallery = _figures_gallery(entry.get("figures", []), analysis_root)
+    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+
+    return (
+        f'<div class="stats-grid">{"".join(cards)}</div>'
+        f"{output_link}"
+        f"{gallery}"
+    )
+
+
+def render_regression(entry: Dict[str, Any], analysis_root: Path) -> str:
+    """Render a Dose-Response Regression entry section."""
+    stats = entry.get("summary_stats", {})
+    cards = [
+        _stat_card(stats.get("n_subjects", "?"), "Subjects"),
+        _stat_card(", ".join(stats.get("metrics", [])), "Metrics"),
+        _stat_card(", ".join(stats.get("feature_sets", [])), "Feature Sets"),
+    ]
+
+    best_r2 = stats.get("best_r2")
     if best_r2 is not None:
-        cards.append(_stat_card(f"{best_r2:.3f}", "Best R² (regression)"))
+        cards.append(_stat_card(f"{best_r2:.3f}", "Best R\u00b2"))
+
+    best_rho = stats.get("best_spearman_rho")
+    if best_rho is not None:
+        cards.append(_stat_card(f"{best_rho:.3f}", "Best Spearman \u03c1"))
 
     gallery = _figures_gallery(entry.get("figures", []), analysis_root)
     output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
@@ -279,6 +302,7 @@ RENDERERS = {
     "roi_extraction": render_roi_extraction,
     "covnet": render_covnet,
     "classification": render_classification,
+    "regression": render_regression,
     "mvpa": render_mvpa,
     "batch_qc": render_batch_qc,
 }

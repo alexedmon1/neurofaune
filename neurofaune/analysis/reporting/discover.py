@@ -196,7 +196,6 @@ def _discover_classification(analysis_root: Path) -> List[Dict[str, Any]]:
     n_subjects = data.get("n_subjects", 0)
     n_sig = data.get("n_significant_permanova", 0)
     best_acc = data.get("best_classification_accuracy", 0)
-    best_r2 = data.get("best_regression_r2")
 
     # Collect figures
     figures = []
@@ -210,14 +209,60 @@ def _discover_classification(analysis_root: Path) -> List[Dict[str, Any]]:
         "n_significant_permanova": n_sig,
         "best_classification_accuracy": best_acc,
     }
-    if best_r2 is not None:
-        summary_stats["best_regression_r2"] = best_r2
 
     entries.append({
         "entry_id": "classification",
         "analysis_type": "classification",
         "display_name": f"Multivariate Classification ({', '.join(metrics)})",
         "output_dir": _rel(clf_dir, analysis_root),
+        "summary_stats": summary_stats,
+        "figures": figures[:20],
+        "source_summary_json": _rel(summary_path, analysis_root),
+    })
+    return entries
+
+
+def _discover_regression(analysis_root: Path) -> List[Dict[str, Any]]:
+    """Discover Dose-Response Regression analysis summaries."""
+    entries = []
+    reg_dir = analysis_root / "regression"
+    if not reg_dir.is_dir():
+        return entries
+
+    summary_path = reg_dir / "regression_summary.json"
+    if not summary_path.exists():
+        return entries
+
+    data = _read_json(summary_path)
+    if data is None:
+        return entries
+
+    metrics = data.get("metrics", [])
+    feature_sets = data.get("feature_sets", [])
+    n_subjects = data.get("n_subjects", 0)
+    best_r2 = data.get("best_r2")
+    best_rho = data.get("best_spearman_rho")
+
+    # Collect figures
+    figures = []
+    for fig in sorted(reg_dir.rglob("*.png")):
+        figures.append(_rel(fig, analysis_root))
+
+    summary_stats = {
+        "metrics": metrics,
+        "feature_sets": feature_sets,
+        "n_subjects": n_subjects,
+    }
+    if best_r2 is not None:
+        summary_stats["best_r2"] = best_r2
+    if best_rho is not None:
+        summary_stats["best_spearman_rho"] = best_rho
+
+    entries.append({
+        "entry_id": "regression",
+        "analysis_type": "regression",
+        "display_name": f"Dose-Response Regression ({', '.join(metrics)})",
+        "output_dir": _rel(reg_dir, analysis_root),
         "summary_stats": summary_stats,
         "figures": figures[:20],
         "source_summary_json": _rel(summary_path, analysis_root),
@@ -359,6 +404,7 @@ def backfill_registry(
     discoveries.extend(_discover_tbss(analysis_root))
     discoveries.extend(_discover_covnet(analysis_root))
     discoveries.extend(_discover_classification(analysis_root))
+    discoveries.extend(_discover_regression(analysis_root))
     discoveries.extend(_discover_mvpa(analysis_root))
     discoveries.extend(_discover_batch_qc(analysis_root))
 

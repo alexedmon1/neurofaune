@@ -420,15 +420,36 @@ Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/ter
 | **PCA** | Unsupervised dimensionality reduction | PC1 vs PC2 scatter with 95% confidence ellipses, scree plot |
 | **LDA** | Supervised dimensionality reduction (maximise group separation) | LD1 vs LD2 scatter, structure correlations, top features |
 | **Classification** | Cross-validated prediction (LOOCV) | SVM + logistic regression accuracy, confusion matrix, permutation p-value |
-| **Regression** | Dose-response trend (LOOCV, dose as ordinal) | SVR, Ridge, PLS: R², MAE, Spearman ρ, predicted-vs-actual scatter |
-
-Classification asks "can we tell groups apart?" while regression asks "is there a linear dose-response relationship?" — both use LOOCV with permutation testing for empirical p-values.
 
 Two feature sets provide a built-in robustness check:
 - **bilateral** (~50 bilateral-averaged ROIs) — fine-grained regional patterns
 - **territory** (~15 territory aggregates) — coarser anatomical groupings
 
 Outputs are organised as `{metric}/{cohort}/{feature_set}/{method}/` with summary JSON and diagnostic figures at each level.
+
+### Dose-Response Regression
+
+Tests whether joint ROI patterns predict ordinal dose level (C=0, L=1, M=2, H=3) — complementing classification (discrete group discrimination) with a continuous dose-response approach:
+
+```bash
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /study/analysis/roi \
+    --output-dir /study/analysis/regression \
+    --exclusion-csv /study/dti_nonstandard_slices.csv \
+    --metrics FA MD AD RD \
+    --feature-sets bilateral territory \
+    --n-permutations 1000 --seed 42
+```
+
+Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/territory):
+
+| Method | Purpose | Output |
+|--------|---------|--------|
+| **SVR** | Linear Support Vector Regression (LOOCV) | R², MAE, Spearman ρ, permutation p-value |
+| **Ridge** | L2-regularised linear regression (LOOCV) | R², MAE, Spearman ρ, permutation p-value |
+| **PLS** | Partial Least Squares regression (LOOCV) | R², MAE, Spearman ρ, predicted-vs-actual scatter |
+
+Classification asks "can we tell groups apart?" while regression asks "is there a linear dose-response relationship?" — both use LOOCV with permutation testing for empirical p-values.
 
 ### MVPA (Multi-Voxel Pattern Analysis)
 
@@ -576,6 +597,7 @@ neurofaune/
 │   ├── tbss/                        # WM-masked voxel-based analysis (DTI + MSME)
 │   ├── covnet/                      # Covariance network (correlation matrices, NBS)
 │   ├── classification/              # Multivariate classification (PERMANOVA, LDA, SVM, PCA)
+│   ├── regression/                  # Dose-response regression (SVR, Ridge, PLS)
 │   ├── mvpa/                        # Multi-Voxel Pattern Analysis (whole-brain decoding, searchlight)
 │   ├── stats/                       # FSL randomise, cluster reports
 │   └── reporting/                   # Unified analysis registry + HTML dashboard

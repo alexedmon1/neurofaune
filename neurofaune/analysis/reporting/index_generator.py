@@ -17,13 +17,14 @@ from neurofaune.analysis.reporting.section_renderers import render_entry
 logger = logging.getLogger(__name__)
 
 # Display order for analysis type groups
-_TYPE_ORDER = ["tbss", "roi_extraction", "covnet", "classification", "mvpa", "batch_qc"]
+_TYPE_ORDER = ["tbss", "roi_extraction", "covnet", "classification", "regression", "mvpa", "batch_qc"]
 
 _TYPE_LABELS = {
     "tbss": "TBSS (Tract-Based Spatial Statistics)",
     "roi_extraction": "ROI Extraction",
     "covnet": "Covariance Network",
     "classification": "Multivariate Classification",
+    "regression": "Dose-Response Regression",
     "mvpa": "MVPA (Voxel-Level Decoding)",
     "batch_qc": "Batch QC",
 }
