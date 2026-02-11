@@ -191,6 +191,38 @@ def render_batch_qc(entry: Dict[str, Any], analysis_root: Path) -> str:
     )
 
 
+def render_classification(entry: Dict[str, Any], analysis_root: Path) -> str:
+    """Render a Multivariate Classification entry section."""
+    stats = entry.get("summary_stats", {})
+    cards = [
+        _stat_card(stats.get("n_subjects", "?"), "Subjects"),
+        _stat_card(", ".join(stats.get("metrics", [])), "Metrics"),
+        _stat_card(", ".join(stats.get("feature_sets", [])), "Feature Sets"),
+    ]
+
+    n_sig = stats.get("n_significant_permanova", 0)
+    sig_colour = "#2E7D32" if n_sig > 0 else "#666"
+    cards.append(
+        f'<div class="stat-card">'
+        f'<div class="stat-value" style="color:{sig_colour}">{n_sig}</div>'
+        f'<div class="stat-label">Sig. PERMANOVA</div>'
+        f"</div>"
+    )
+
+    best_acc = stats.get("best_classification_accuracy", 0)
+    if best_acc:
+        cards.append(_stat_card(f"{best_acc:.1%}", "Best Accuracy"))
+
+    gallery = _figures_gallery(entry.get("figures", []), analysis_root)
+    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+
+    return (
+        f'<div class="stats-grid">{"".join(cards)}</div>'
+        f"{output_link}"
+        f"{gallery}"
+    )
+
+
 def render_generic(entry: Dict[str, Any], analysis_root: Path) -> str:
     """Fallback renderer for unknown analysis types."""
     stats = entry.get("summary_stats", {})
@@ -206,6 +238,7 @@ RENDERERS = {
     "tbss": render_tbss,
     "roi_extraction": render_roi_extraction,
     "covnet": render_covnet,
+    "classification": render_classification,
     "batch_qc": render_batch_qc,
 }
 

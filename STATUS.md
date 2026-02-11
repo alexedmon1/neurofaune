@@ -4,7 +4,32 @@
 
 ---
 
-## Current Phase: 11 - Voxel-Wise Group Analysis (TBSS)
+## Current Phase: 12 - Multivariate Group Analysis
+
+### Session Summary (2026-02-11b)
+
+**Completed this session:**
+
+1. **Multivariate Classification module** — `neurofaune/analysis/classification/`
+   - `data_prep.py`: Loads ROI CSVs (reuses covnet data loading), cohort filtering, bilateral/territory feature sets, StandardScaler
+   - `omnibus.py`: PERMANOVA (custom implementation, ~50 lines, Euclidean distances + permutation) + optional MANOVA (statsmodels)
+   - `pca.py`: Unsupervised PCA — scatter with 95% confidence ellipses, scree plot, feature loadings
+   - `lda.py`: Supervised LDA — LD1 vs LD2 scatter, structure correlations, variance bar chart
+   - `classifiers.py`: LOOCV with linear SVM + logistic regression, permutation p-values, confusion matrices
+   - `visualization.py`: Shared plotting (scatter + ellipses, confusion heatmap, permutation null histogram, scree, loadings bar)
+
+2. **Classification runner script** — `scripts/run_classification_analysis.py`
+   - Loops: metric × cohort (None/p30/p60/p90) × feature_set (bilateral/territory)
+   - Writes `classification_summary.json` + per-combo `summary.json`
+   - Design description, analysis config saved
+   - Registered with unified reporting system
+
+3. **Reporting integration** — classification added to dashboard
+   - `index_generator.py`: Added to `_TYPE_ORDER` and `_TYPE_LABELS`
+   - `section_renderers.py`: `render_classification()` with stat cards (subjects, metrics, sig. PERMANOVA, best accuracy)
+   - `discover.py`: `_discover_classification()` for backfill
+
+4. **README updated** — CovNet and Classification sections added to Group Analysis, architecture tree updated
 
 ### Session Summary (2026-02-11)
 

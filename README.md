@@ -377,6 +377,56 @@ The module is also available as a library:
 from neurofaune.analysis.roi import extract_all_subjects, to_long_format
 ```
 
+### Covariance Network Analysis (CovNet)
+
+Tests whether inter-regional correlation structure differs between experimental groups:
+
+```bash
+uv run python scripts/run_covnet_analysis.py \
+    --roi-dir /study/analysis/roi \
+    --output-dir /study/analysis/covnet \
+    --exclusion-csv /study/dti_nonstandard_slices.csv \
+    --metrics FA MD AD RD \
+    --n-permutations 5000 --seed 42
+```
+
+Methods:
+- **Spearman correlation matrices** per group (PND x dose, full, territory)
+- **Network-Based Statistic (NBS)** — permutation-corrected graph component analysis for treatment vs control
+- **Territory-level Fisher z-tests** with FDR correction
+- **Graph metrics** — clustering, centrality, small-worldness with permutation comparison
+
+Supports bilateral ROI averaging and multiple grouping strategies (dose, PND x dose, sex x PND x dose).
+
+### Multivariate Group Classification
+
+Tests whether joint ROI patterns can discriminate dose groups — complementing TBSS (mass-univariate, per-voxel) and CovNet (correlation structure):
+
+```bash
+uv run python scripts/run_classification_analysis.py \
+    --roi-dir /study/analysis/roi \
+    --output-dir /study/analysis/classification \
+    --exclusion-csv /study/dti_nonstandard_slices.csv \
+    --metrics FA MD AD RD \
+    --feature-sets bilateral territory \
+    --n-permutations 1000 --seed 42
+```
+
+Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/territory):
+
+| Method | Purpose | Output |
+|--------|---------|--------|
+| **PERMANOVA** | Non-parametric omnibus test (do centroids differ?) | Pseudo-F, R², permutation p-value |
+| **PCA** | Unsupervised dimensionality reduction | PC1 vs PC2 scatter with 95% confidence ellipses, scree plot |
+| **LDA** | Supervised dimensionality reduction (maximise group separation) | LD1 vs LD2 scatter, structure correlations, top features |
+| **Classification** | Cross-validated prediction (LOOCV) | SVM + logistic regression accuracy, confusion matrix, permutation p-value |
+
+Two feature sets provide a built-in robustness check:
+- **bilateral** (~50 bilateral-averaged ROIs) — fine-grained regional patterns
+- **territory** (~15 territory aggregates) — coarser anatomical groupings
+
+Outputs are organised as `{metric}/{cohort}/{feature_set}/{method}/` with summary JSON and diagnostic figures at each level.
+
 ### Functional Normalization
 
 ```bash
@@ -479,6 +529,8 @@ neurofaune/
 ├── analysis/                        # Group-level analysis
 │   ├── roi/                         # ROI-level metric extraction (SIGMA atlas)
 │   ├── tbss/                        # WM-masked voxel-based analysis (DTI + MSME)
+│   ├── covnet/                      # Covariance network (correlation matrices, NBS)
+│   ├── classification/              # Multivariate classification (PERMANOVA, LDA, SVM, PCA)
 │   ├── stats/                       # FSL randomise, cluster reports
 │   └── reporting/                   # Unified analysis registry + HTML dashboard
 ├── registration/                    # Cross-modal registration utilities
