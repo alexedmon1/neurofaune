@@ -225,6 +225,53 @@ def _discover_classification(analysis_root: Path) -> List[Dict[str, Any]]:
     return entries
 
 
+def _discover_mvpa(analysis_root: Path) -> List[Dict[str, Any]]:
+    """Discover MVPA analysis summaries."""
+    entries = []
+    mvpa_dir = analysis_root / "mvpa"
+    if not mvpa_dir.is_dir():
+        return entries
+
+    summary_path = mvpa_dir / "mvpa_summary.json"
+    if not summary_path.exists():
+        return entries
+
+    data = _read_json(summary_path)
+    if data is None:
+        return entries
+
+    metrics = data.get("metrics", [])
+    n_subjects = data.get("n_subjects", 0)
+    best_acc = data.get("best_whole_brain_accuracy", 0)
+    best_r2 = data.get("best_whole_brain_r2")
+    n_sig = data.get("searchlight_significant_voxels", 0)
+
+    # Collect figures
+    figures = []
+    for fig in sorted(mvpa_dir.rglob("*.png")):
+        figures.append(_rel(fig, analysis_root))
+
+    summary_stats = {
+        "metrics": metrics,
+        "n_subjects": n_subjects,
+        "best_whole_brain_accuracy": best_acc,
+        "searchlight_significant_voxels": n_sig,
+    }
+    if best_r2 is not None:
+        summary_stats["best_whole_brain_r2"] = best_r2
+
+    entries.append({
+        "entry_id": "mvpa",
+        "analysis_type": "mvpa",
+        "display_name": f"MVPA ({', '.join(metrics)})",
+        "output_dir": _rel(mvpa_dir, analysis_root),
+        "summary_stats": summary_stats,
+        "figures": figures[:20],
+        "source_summary_json": _rel(summary_path, analysis_root),
+    })
+    return entries
+
+
 def _discover_batch_qc(analysis_root: Path) -> List[Dict[str, Any]]:
     """
     Discover batch QC summaries.
@@ -312,6 +359,7 @@ def backfill_registry(
     discoveries.extend(_discover_tbss(analysis_root))
     discoveries.extend(_discover_covnet(analysis_root))
     discoveries.extend(_discover_classification(analysis_root))
+    discoveries.extend(_discover_mvpa(analysis_root))
     discoveries.extend(_discover_batch_qc(analysis_root))
 
     n_added = 0

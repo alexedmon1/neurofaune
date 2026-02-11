@@ -430,6 +430,48 @@ Two feature sets provide a built-in robustness check:
 
 Outputs are organised as `{metric}/{cohort}/{feature_set}/{method}/` with summary JSON and diagnostic figures at each level.
 
+### MVPA (Multi-Voxel Pattern Analysis)
+
+Tests whether spatial *patterns* of brain metrics discriminate dose groups — complementing ROI-level classification (summary statistics) with full voxel-level decoding:
+
+```bash
+# 1. Prepare designs (discovers SIGMA-space NIfTIs, creates NeuroAider design matrices)
+uv run python scripts/prepare_mvpa_designs.py \
+    --study-tracker /study/study_tracker.csv \
+    --derivatives-root /study/derivatives \
+    --output-dir /study/analysis/mvpa/designs \
+    --metrics FA MD AD RD
+
+# 2. Run whole-brain decoding (+ optional searchlight)
+uv run python scripts/run_mvpa_analysis.py \
+    --design-dir /study/analysis/mvpa/designs \
+    --derivatives-root /study/derivatives \
+    --output-dir /study/analysis/mvpa \
+    --mask /study/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Template_Masked.nii.gz \
+    --metrics FA MD AD RD \
+    --n-permutations 1000
+
+# With searchlight mapping (computationally expensive):
+uv run python scripts/run_mvpa_analysis.py \
+    ... \
+    --run-searchlight --searchlight-radius 2.0 --searchlight-n-jobs 4
+```
+
+Runs per metric, per cohort (p30/p60/p90/pooled), with two analysis modes:
+
+| Method | Purpose | Output |
+|--------|---------|--------|
+| **Whole-brain decoding** | nilearn Decoder with ANOVA screening (top 20% voxels) | SVM classification accuracy or Ridge R², permutation p-value, weight maps |
+| **Searchlight** (optional) | Sliding sphere (2mm radius) mapping local discriminability | Accuracy/R² map, FWER-corrected significant voxels |
+
+Two analysis types per design:
+- **Classification**: categorical dose groups (C/L/M/H), StratifiedKFold(5), Linear SVM
+- **Dose-response**: ordinal dose (0/1/2/3), StratifiedKFold(5), Ridge regression
+
+Data source: individual SIGMA-space NIfTIs from derivatives (e.g. `sub-Rat001_ses-p60_space-SIGMA_FA.nii.gz`), stacked with `nilearn.image.concat_imgs()`. No dependency on TBSS 4D volumes.
+
+Outputs are organised as `{metric}/{design}/{analysis_type}/{whole_brain,searchlight}/` with weight maps, glass brain projections, decoding score histograms, and summary JSON at each level.
+
 ### Functional Normalization
 
 ```bash
@@ -534,6 +576,7 @@ neurofaune/
 │   ├── tbss/                        # WM-masked voxel-based analysis (DTI + MSME)
 │   ├── covnet/                      # Covariance network (correlation matrices, NBS)
 │   ├── classification/              # Multivariate classification (PERMANOVA, LDA, SVM, PCA)
+│   ├── mvpa/                        # Multi-Voxel Pattern Analysis (whole-brain decoding, searchlight)
 │   ├── stats/                       # FSL randomise, cluster reports
 │   └── reporting/                   # Unified analysis registry + HTML dashboard
 ├── registration/                    # Cross-modal registration utilities

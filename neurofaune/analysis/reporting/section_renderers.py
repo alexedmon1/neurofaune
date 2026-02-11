@@ -227,6 +227,42 @@ def render_classification(entry: Dict[str, Any], analysis_root: Path) -> str:
     )
 
 
+def render_mvpa(entry: Dict[str, Any], analysis_root: Path) -> str:
+    """Render an MVPA analysis entry section."""
+    stats = entry.get("summary_stats", {})
+    cards = [
+        _stat_card(stats.get("n_subjects", "?"), "Subjects"),
+        _stat_card(", ".join(stats.get("metrics", [])), "Metrics"),
+    ]
+
+    best_acc = stats.get("best_whole_brain_accuracy", 0)
+    if best_acc:
+        cards.append(_stat_card(f"{best_acc:.1%}", "Best WB Accuracy"))
+
+    best_r2 = stats.get("best_whole_brain_r2")
+    if best_r2 is not None:
+        cards.append(_stat_card(f"{best_r2:.3f}", "Best WB R\u00b2"))
+
+    n_sig = stats.get("searchlight_significant_voxels", 0)
+    if n_sig:
+        sig_colour = "#2E7D32" if n_sig > 0 else "#666"
+        cards.append(
+            f'<div class="stat-card">'
+            f'<div class="stat-value" style="color:{sig_colour}">{n_sig}</div>'
+            f'<div class="stat-label">Searchlight Sig. Voxels</div>'
+            f"</div>"
+        )
+
+    gallery = _figures_gallery(entry.get("figures", []), analysis_root)
+    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+
+    return (
+        f'<div class="stats-grid">{"".join(cards)}</div>'
+        f"{output_link}"
+        f"{gallery}"
+    )
+
+
 def render_generic(entry: Dict[str, Any], analysis_root: Path) -> str:
     """Fallback renderer for unknown analysis types."""
     stats = entry.get("summary_stats", {})
@@ -243,6 +279,7 @@ RENDERERS = {
     "roi_extraction": render_roi_extraction,
     "covnet": render_covnet,
     "classification": render_classification,
+    "mvpa": render_mvpa,
     "batch_qc": render_batch_qc,
 }
 
