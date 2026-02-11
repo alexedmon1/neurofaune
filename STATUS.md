@@ -1,10 +1,43 @@
 # Project Status
 
-**Last Updated:** 2026-02-05
+**Last Updated:** 2026-02-11
 
 ---
 
-## Current Phase: 10 - Multi-modal Registration & Preprocessing
+## Current Phase: 11 - Voxel-Wise Group Analysis (TBSS)
+
+### Session Summary (2026-02-11)
+
+**Completed this session:**
+
+1. **MSME TBSS pipeline** — Created `scripts/prepare_msme_tbss.py`
+   - Discovers MSME SIGMA-space maps (MWF, IWF, CSFF, T2) from derivatives
+   - Merges with study tracker: 183 subjects found, 181 matched (2 not in tracker)
+   - Stacks into masked 4D volumes (128×128×218×181) using DTI-derived WM analysis mask (92,435 voxels)
+   - Writes `tbss_config.json`, `subject_list.txt`, `subject_manifest.json`
+
+2. **Provenance safety chain** — Prevents subject/design mismatches across modalities
+   - `prepare_*_tbss.py` → writes `subject_list.txt` + SHA256 hash in `tbss_config.json`
+   - `prepare_tbss_*designs.py` → writes `provenance.json` per design directory (records hash)
+   - `run_tbss_analysis.py` → validates hash at runtime before launching randomise
+   - Backwards-compatible: old designs without `provenance.json` produce a warning
+
+3. **`run_tbss_analysis.py` generalized** — Removed `choices=DTI_METRICS` restriction from `--metrics` argparse, now accepts arbitrary metric names (e.g., MWF, IWF, CSFF, T2)
+
+4. **Generated MSME TBSS designs** — 8 design directories (4 categorical + 4 dose-response), all with provenance, all full-rank
+
+5. **DTI categorical TBSS results (completed)**
+
+   | Analysis | FA | MD | AD | RD |
+   |----------|-----|-----|-----|-----|
+   | per_pnd_p30 (n=45) | ns | ns | ns | ns |
+   | per_pnd_p60 (n=41) | ns | ns | ns | ns |
+   | per_pnd_p90 (n=61) | ns | **C>H 1388 vox** | ns | **C>H 3484 vox** |
+   | pooled (n=147) | ns (18 contrasts) | running | — | — |
+
+   **Notable P90 finding**: High-dose BPA shows lower MD and RD vs control at P90 (TFCE-corrected p<0.05). Lower RD suggests increased myelination — aligns with the rationale for running MSME MWF analysis.
+
+6. **MSME randomise running** — dose-response designs (4 analyses × 4 metrics = 16 randomise calls, 5000 permutations each)
 
 ### Session Summary (2026-02-05)
 
@@ -89,29 +122,29 @@
 ## Next Session TODOs
 
 ### High Priority
-1. **~~Register 3D T2w subjects to cohort templates~~** COMPLETE
-   - 62 registrations completed, correlations 0.63-0.91 (avg 0.72)
+1. **Review MSME TBSS randomise results** (running in background)
+   - 16 randomise jobs (4 dose-response analyses × 4 metrics)
+   - Check significance, generate cluster reports
+   - Cross-reference with DTI P90 MD/RD findings
 
-2. **Complete MSME batch preprocessing**
-   - Currently ~24/189 complete
-   - Check results and verify registration quality
-   - Run remaining subjects if needed
+2. **Run MSME categorical TBSS** (per_pnd + pooled designs already generated)
+   - `run_tbss_analysis.py --analyses per_pnd_p30 per_pnd_p60 per_pnd_p90 pooled`
 
-3. **Run BOLD preprocessing batch**
+3. **Review DTI dose-response and pooled results** (still running)
+   - DTI dose-response: P30+P60+P90+pooled × FA/MD/AD/RD
+   - DTI categorical pooled: MD still running, AD+RD queued
+
+### Medium Priority
+4. **Run BOLD preprocessing batch**
    - Only 33/294 BOLD scans preprocessed
    - Large backlog needs processing
 
-### Medium Priority
-4. **Fix unscaled BOLD headers** for 3 subjects
+5. **Fix unscaled BOLD headers** for 3 subjects
    - Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30
 
-5. **Generate batch QC summary for 3D subjects**
-   - Verify skull stripping quality across all 63 sessions
-   - Check for systematic issues with 3D -> 2D resampling
-
 ### Low Priority
-6. **Update exclusion lists based on QC**
-7. **Assess cross-modal registration for 3D subjects** (DTI/BOLD/MSME -> T2w)
+6. **Generate batch QC summary for 3D subjects**
+7. **Update exclusion lists based on QC**
 
 ---
 
@@ -166,7 +199,35 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | FA -> T2w transforms | - | 118 subjects | |
 | Functional BOLD | 294 sessions | 33 sessions | **Backlog** |
 | BOLD -> T2w transforms | - | 33 subjects | |
-| MSME T2 mapping | 189 sessions | ~24 subjects | Batch in progress |
+| MSME T2 mapping | 189 sessions | 183 subjects | **Complete** (SIGMA-space maps for all) |
+
+---
+
+## TBSS Analysis Status
+
+### DTI TBSS (`/analysis/tbss/`)
+- **Subjects:** 148 (with complete DTI + transforms)
+- **Metrics:** FA, MD, AD, RD
+- **Analysis mask:** 92,435 WM voxels (FA≥0.3, tissue-informed, eroded)
+
+| Design Type | Analyses | Status | Significant Results |
+|-------------|----------|--------|---------------------|
+| Categorical (per-PND) | p30(45), p60(41), p90(61) | **Complete** | P90: MD C>H (1388 vox), RD C>H (3484 vox) |
+| Categorical (pooled) | pooled (147) | Running | FA: ns (all 18 contrasts) |
+| Dose-response (per-PND) | p30(45), p60(41), p90(61) | Running | FA: ns for p30, p60 |
+| Dose-response (pooled) | pooled (147) | Queued | — |
+
+### MSME TBSS (`/analysis/tbss_msme/`)
+- **Subjects:** 181 (more than DTI due to broader MSME coverage)
+- **Metrics:** MWF, IWF, CSFF, T2
+- **Analysis mask:** Same DTI-derived mask (92,435 voxels)
+
+| Design Type | Analyses | Status |
+|-------------|----------|--------|
+| Categorical (per-PND) | p30(54), p60(49), p90(78) | Designs ready |
+| Categorical (pooled) | pooled (181) | Designs ready |
+| Dose-response (per-PND) | p30(54), p60(49), p90(78) | **Running** (5000 perms) |
+| Dose-response (pooled) | pooled (181) | Running |
 
 ---
 
@@ -262,5 +323,9 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/batch_preprocess_msme.py` | MSME T2 mapping preprocessing (supports `--exclude-3d`) |
 | `scripts/convert_3d_rare_to_bids.py` | Convert 3D isotropic RARE to BIDS T2w |
 | `scripts/list_3d_subjects.py` | List 3D-only subjects (text or JSON output) |
+| `scripts/prepare_msme_tbss.py` | Prepare MSME metrics for TBSS (4D volumes + provenance) |
+| `scripts/prepare_tbss_designs.py` | Create categorical design matrices with provenance |
+| `scripts/prepare_tbss_dose_response_designs.py` | Create ordinal dose-response designs with provenance |
+| `scripts/run_tbss_analysis.py` | Run FSL randomise with provenance validation (DTI + MSME) |
 | `scripts/test_3d_t2w_preprocess.py` | Test 3D T2w preprocessing on single subject |
 | `scripts/visualize_msme_skull_strip.py` | MSME skull stripping QC visualization |

@@ -33,6 +33,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -84,6 +85,60 @@ def load_subject_list(path: Path) -> List[str]:
     """Load a subject list file (one subject per line)."""
     with open(path) as f:
         return [line.strip() for line in f if line.strip()]
+
+
+def validate_provenance(
+    tbss_dir: Path,
+    analysis_name: str,
+    logger: logging.Logger,
+) -> None:
+    """
+    Validate that a design's provenance matches the current subject list.
+
+    Computes SHA256 of subject_list.txt and compares against the hash
+    stored in the design's provenance.json. Raises ValueError on mismatch.
+    Warns (but continues) if provenance.json is absent for backwards
+    compatibility with designs created before provenance tracking.
+    """
+    provenance_file = tbss_dir / 'designs' / analysis_name / 'provenance.json'
+
+    if not provenance_file.exists():
+        logger.warning(
+            f"  No provenance.json for {analysis_name} — "
+            "skipping hash validation (design predates provenance tracking)"
+        )
+        return
+
+    with open(provenance_file) as f:
+        provenance = json.load(f)
+
+    expected_hash = provenance.get('subject_list_sha256')
+    if not expected_hash:
+        logger.warning(f"  provenance.json for {analysis_name} has no hash — skipping")
+        return
+
+    # Compute current hash
+    subject_list_path = tbss_dir / 'subject_list.txt'
+    h = hashlib.sha256()
+    with open(subject_list_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
+    current_hash = h.hexdigest()
+
+    if current_hash != expected_hash:
+        raise ValueError(
+            f"Subject list mismatch for design '{analysis_name}'!\n"
+            f"  Current subject_list.txt SHA256:  {current_hash[:16]}...\n"
+            f"  Design provenance expected:       {expected_hash[:16]}...\n"
+            f"  The design was built for a different subject list.\n"
+            f"  Re-run the design preparation script to update."
+        )
+
+    logger.info(
+        f"  Provenance OK for {analysis_name} "
+        f"(hash: {current_hash[:16]}..., "
+        f"n_design={provenance.get('n_subjects_in_design', '?')})"
+    )
 
 
 def subset_4d_volume(
@@ -383,11 +438,11 @@ Output structure:
     parser.add_argument('--config', type=Path,
                         help='Config file (for SIGMA atlas labels)')
     parser.add_argument('--analyses', nargs='+', default=ALL_ANALYSES,
-                        choices=ALL_ANALYSES,
-                        help=f'Analyses to run (default: all)')
+                        help=f'Analyses to run (default: {ALL_ANALYSES}). '
+                             'Each name must have a matching designs/ subdirectory.')
     parser.add_argument('--metrics', nargs='+', default=DTI_METRICS,
-                        choices=DTI_METRICS,
-                        help='Metrics to analyze (default: FA MD AD RD)')
+                        help='Metrics to analyze (default: FA MD AD RD). '
+                             'Use MWF IWF CSFF T2 for MSME.')
     parser.add_argument('--n-permutations', type=int, default=5000,
                         help='Number of permutations (default: 5000)')
     parser.add_argument('--cluster-threshold', type=float, default=0.95,
@@ -435,6 +490,14 @@ Output structure:
         logger.error(f"Stats directory not found: {stats_dir}")
         logger.error("Run run_tbss_prepare.py first.")
         sys.exit(1)
+
+    # Validate provenance for each analysis before running
+    for analysis in args.analyses:
+        try:
+            validate_provenance(tbss_dir, analysis, logger)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
 
     # Run each analysis
     results = {}

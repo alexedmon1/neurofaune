@@ -19,9 +19,12 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 import logging
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +39,37 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def write_provenance(
+    design_dir: Path,
+    tbss_dir: Path,
+    n_subjects_in_design: int,
+    design_type: str,
+) -> None:
+    """Write provenance.json linking design to its TBSS subject list."""
+    subject_list_path = tbss_dir / 'subject_list.txt'
+    h = hashlib.sha256()
+    with open(subject_list_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
+    subject_list_hash = h.hexdigest()
+
+    n_subjects_in_list = sum(
+        1 for line in open(subject_list_path) if line.strip()
+    )
+
+    provenance = {
+        'tbss_dir': str(tbss_dir),
+        'subject_list_sha256': subject_list_hash,
+        'n_subjects_in_list': n_subjects_in_list,
+        'n_subjects_in_design': n_subjects_in_design,
+        'design_type': design_type,
+        'date_created': datetime.now().isoformat(),
+    }
+    with open(design_dir / 'provenance.json', 'w') as f:
+        json.dump(provenance, f, indent=2)
+    logger.info(f"  Wrote provenance.json (hash: {subject_list_hash[:16]}...)")
 
 
 def load_and_merge_data(
@@ -107,6 +141,7 @@ def create_per_pnd_design(
     data: pd.DataFrame,
     pnd: str,
     output_dir: Path,
+    tbss_dir: Path = None,
 ) -> None:
     """Create design files for a single PND timepoint."""
     subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
@@ -166,12 +201,17 @@ def create_per_pnd_design(
         design_dir / 'subject_order.txt', index=False, header=False
     )
 
+    # Write provenance
+    if tbss_dir is not None:
+        write_provenance(design_dir, tbss_dir, n, f'per_pnd_{pnd.lower()}')
+
     logger.info(f"Saved to {design_dir}")
 
 
 def create_pooled_design(
     data: pd.DataFrame,
     output_dir: Path,
+    tbss_dir: Path = None,
 ) -> None:
     """Create pooled design with dose × PND interaction."""
     n = len(data)
@@ -247,6 +287,10 @@ def create_pooled_design(
         design_dir / 'subject_order.txt', index=False, header=False
     )
 
+    # Write provenance
+    if tbss_dir is not None:
+        write_provenance(design_dir, tbss_dir, n, 'pooled')
+
     logger.info(f"Saved to {design_dir}")
 
 
@@ -281,10 +325,10 @@ def main():
 
     # Create per-PND designs
     for pnd in ['P30', 'P60', 'P90']:
-        create_per_pnd_design(data, pnd, args.output_dir)
+        create_per_pnd_design(data, pnd, args.output_dir, tbss_dir=args.tbss_dir)
 
     # Create pooled design
-    create_pooled_design(data, args.output_dir)
+    create_pooled_design(data, args.output_dir, tbss_dir=args.tbss_dir)
 
     logger.info(f"\nAll designs saved to {args.output_dir}")
 

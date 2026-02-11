@@ -280,14 +280,16 @@ Pipeline:
 
 Once subjects are preprocessed and registered, warp data to SIGMA space for group-level analysis.
 
-### DTI Voxel-Based Analysis (TBSS)
+### Voxel-Based Analysis (TBSS-style)
 
-For a full walkthrough including preprocessing, registration, and statistical analysis, see the **[TBSS Guide](docs/TBSS_GUIDE.md)**.
+For a full DTI walkthrough including preprocessing, registration, and statistical analysis, see the **[TBSS Guide](docs/TBSS_GUIDE.md)**.
 
-Quick reference:
+The TBSS pipeline supports **multiple modalities** (DTI and MSME) with a standardized provenance chain that prevents subject/design mismatches.
+
+#### DTI TBSS
 
 ```bash
-# 1. Prepare: collect SIGMA-space metrics, create WM analysis mask, build 4D volumes
+# 1. Prepare: collect SIGMA-space DTI metrics, create WM analysis mask, build 4D volumes
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config config.yaml \
     --output-dir /study/analysis/tbss/ \
@@ -306,11 +308,49 @@ uv run python scripts/run_tbss_analysis.py \
     --n-permutations 5000
 ```
 
+#### MSME TBSS
+
+MSME metrics (MWF, IWF, CSFF, T2) use the same WM analysis mask derived from DTI FA, enabling direct cross-modality comparison:
+
+```bash
+# 1. Prepare: stack SIGMA-space MSME maps into masked 4D volumes
+uv run python scripts/prepare_msme_tbss.py \
+    --derivatives-dir /study/derivatives \
+    --dti-tbss-dir /study/analysis/tbss \
+    --output-dir /study/analysis/tbss_msme \
+    --study-tracker /study/study_tracker.csv
+
+# 2. Create design matrices (same scripts, pointed at MSME TBSS dir)
+uv run python scripts/prepare_tbss_designs.py \
+    --study-tracker /study/study_tracker.csv \
+    --tbss-dir /study/analysis/tbss_msme \
+    --output-dir /study/analysis/tbss_msme/designs
+
+uv run python scripts/prepare_tbss_dose_response_designs.py \
+    --study-tracker /study/study_tracker.csv \
+    --tbss-dir /study/analysis/tbss_msme \
+    --output-dir /study/analysis/tbss_msme/designs
+
+# 3. Run voxel-wise analysis with MSME metrics
+uv run python scripts/run_tbss_analysis.py \
+    --tbss-dir /study/analysis/tbss_msme \
+    --config config.yaml \
+    --metrics MWF T2 IWF CSFF \
+    --analyses dose_response_p30 dose_response_p60 dose_response_p90 dose_response_pooled \
+    --n-permutations 5000
+```
+
+#### Analysis Approach
+
 Uses WM-masked voxel-based analysis (not skeleton-based TBSS):
 - Rodent WM tracts are only 1-3 voxels wide, making skeletonization inappropriate
 - Analysis mask: interior WM (tissue probability + erosion) intersected with FA >= 0.3
 - FSL randomise with TFCE correction
 - Cluster labeling via SIGMA atlas parcellation
+
+#### Provenance Safety
+
+Design scripts write `provenance.json` (containing the SHA256 hash of `subject_list.txt`) into each design directory. Before running randomise, `run_tbss_analysis.py` validates that the current subject list matches what the design was built for, preventing silent subject/design mismatches. Designs created before provenance tracking produce a warning but are still accepted.
 
 ### ROI-Level Metric Extraction
 
@@ -438,8 +478,9 @@ neurofaune/
 │   └── slice_registration.py        # Study-space atlas setup
 ├── analysis/                        # Group-level analysis
 │   ├── roi/                         # ROI-level metric extraction (SIGMA atlas)
-│   ├── tbss/                        # WM-masked voxel-based analysis
-│   └── stats/                       # FSL randomise, cluster reports
+│   ├── tbss/                        # WM-masked voxel-based analysis (DTI + MSME)
+│   ├── stats/                       # FSL randomise, cluster reports
+│   └── reporting/                   # Unified analysis registry + HTML dashboard
 ├── registration/                    # Cross-modal registration utilities
 └── utils/                           # Transforms, exclusions, orientation
 ```
