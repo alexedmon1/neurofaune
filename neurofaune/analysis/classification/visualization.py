@@ -1,9 +1,9 @@
 """
-Shared plotting utilities for multivariate classification analysis.
+Shared plotting utilities for multivariate classification and regression analysis.
 
 Provides scatter plots with confidence ellipses, confusion matrix heatmaps,
-permutation null distribution histograms, scree plots, and feature loading
-bar charts.
+permutation null distribution histograms, scree plots, feature loading
+bar charts, and predicted-vs-actual regression scatter plots.
 """
 
 import logging
@@ -329,4 +329,82 @@ def plot_feature_loadings(
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=_DPI, bbox_inches="tight")
         logger.info("Saved loadings: %s", out_path)
+    plt.close(fig)
+
+
+def plot_predicted_vs_actual(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    label_names: Sequence[str],
+    r_squared: float,
+    spearman_rho: float,
+    title: str = "Predicted vs Actual",
+    out_path: Optional[Path] = None,
+) -> None:
+    """Scatter plot of predicted vs actual dose (ordinal) with identity line.
+
+    Points are jittered horizontally and coloured by true dose group.
+
+    Parameters
+    ----------
+    y_true : ndarray, shape (n_samples,)
+        True ordinal dose values (0, 1, 2, 3).
+    y_pred : ndarray, shape (n_samples,)
+        Predicted dose values (continuous).
+    label_names : sequence of str
+        Group names for colouring (e.g. ['C', 'L', 'M', 'H']).
+    r_squared : float
+        Coefficient of determination.
+    spearman_rho : float
+        Spearman correlation between predicted and true.
+    title : str
+        Plot title.
+    out_path : Path, optional
+        Save figure to this path.
+    """
+    fig, ax = plt.subplots(figsize=(6, 5))
+    colors = _get_colors(label_names)
+
+    # Jitter true values for visibility
+    rng = np.random.default_rng(0)
+    jitter = rng.uniform(-0.15, 0.15, size=len(y_true))
+    x_jittered = y_true + jitter
+
+    unique_vals = np.unique(y_true.astype(int))
+    for val in unique_vals:
+        mask = y_true.astype(int) == val
+        name = label_names[val] if val < len(label_names) else str(val)
+        c = colors[val % len(colors)]
+        ax.scatter(
+            x_jittered[mask], y_pred[mask],
+            c=c, label=name, s=40, alpha=0.7,
+            edgecolors="white", linewidths=0.5,
+        )
+
+    # Identity line
+    lo = min(y_true.min(), y_pred.min()) - 0.3
+    hi = max(y_true.max(), y_pred.max()) + 0.3
+    ax.plot([lo, hi], [lo, hi], "--", color="#888888", linewidth=1, alpha=0.7,
+            label="Identity")
+
+    # Linear regression fit line
+    if len(y_true) > 2:
+        coeffs = np.polyfit(y_true, y_pred, 1)
+        x_fit = np.linspace(y_true.min() - 0.2, y_true.max() + 0.2, 100)
+        ax.plot(x_fit, np.polyval(coeffs, x_fit), "-", color="#1a5276",
+                linewidth=1.5, alpha=0.7)
+
+    ax.set_xlabel("True Dose (ordinal)")
+    ax.set_ylabel("Predicted Dose")
+    ax.set_xticks(range(len(label_names)))
+    ax.set_xticklabels(label_names)
+    ax.set_title(f"{title}\nR²={r_squared:.3f}   ρ={spearman_rho:.3f}", fontsize=11)
+    ax.legend(fontsize=9, loc="upper left")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=_DPI, bbox_inches="tight")
+        logger.info("Saved predicted vs actual: %s", out_path)
     plt.close(fig)

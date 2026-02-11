@@ -29,7 +29,15 @@
    - `section_renderers.py`: `render_classification()` with stat cards (subjects, metrics, sig. PERMANOVA, best accuracy)
    - `discover.py`: `_discover_classification()` for backfill
 
-4. **README updated** — CovNet and Classification sections added to Group Analysis, architecture tree updated
+4. **Regression module** — `neurofaune/analysis/classification/regression.py`
+   - `run_regression()`: LOOCV with SVR (linear), Ridge, and PLS regression
+   - Dose as ordinal (C=0, L=1, M=2, H=3) for dose-response testing
+   - Reports R², MAE, Spearman ρ, permutation p-value per regressor
+   - Predicted-vs-actual scatter plots with identity line, jitter, regression fit
+   - `--skip-regression` flag in runner, Phase 6 in pipeline
+   - Reporting dashboard updated with best R² stat card
+
+5. **README updated** — CovNet, Classification, and Regression sections added to Group Analysis, architecture tree updated
 
 ### Session Summary (2026-02-11)
 

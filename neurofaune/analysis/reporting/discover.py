@@ -196,24 +196,29 @@ def _discover_classification(analysis_root: Path) -> List[Dict[str, Any]]:
     n_subjects = data.get("n_subjects", 0)
     n_sig = data.get("n_significant_permanova", 0)
     best_acc = data.get("best_classification_accuracy", 0)
+    best_r2 = data.get("best_regression_r2")
 
     # Collect figures
     figures = []
     for fig in sorted(clf_dir.rglob("*.png")):
         figures.append(_rel(fig, analysis_root))
 
+    summary_stats = {
+        "metrics": metrics,
+        "feature_sets": feature_sets,
+        "n_subjects": n_subjects,
+        "n_significant_permanova": n_sig,
+        "best_classification_accuracy": best_acc,
+    }
+    if best_r2 is not None:
+        summary_stats["best_regression_r2"] = best_r2
+
     entries.append({
         "entry_id": "classification",
         "analysis_type": "classification",
         "display_name": f"Multivariate Classification ({', '.join(metrics)})",
         "output_dir": _rel(clf_dir, analysis_root),
-        "summary_stats": {
-            "metrics": metrics,
-            "feature_sets": feature_sets,
-            "n_subjects": n_subjects,
-            "n_significant_permanova": n_sig,
-            "best_classification_accuracy": best_acc,
-        },
+        "summary_stats": summary_stats,
         "figures": figures[:20],
         "source_summary_json": _rel(summary_path, analysis_root),
     })

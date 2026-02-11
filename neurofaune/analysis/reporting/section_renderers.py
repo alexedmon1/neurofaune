@@ -213,6 +213,10 @@ def render_classification(entry: Dict[str, Any], analysis_root: Path) -> str:
     if best_acc:
         cards.append(_stat_card(f"{best_acc:.1%}", "Best Accuracy"))
 
+    best_r2 = stats.get("best_regression_r2")
+    if best_r2 is not None:
+        cards.append(_stat_card(f"{best_r2:.3f}", "Best R² (regression)"))
+
     gallery = _figures_gallery(entry.get("figures", []), analysis_root)
     output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
 

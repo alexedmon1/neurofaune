@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Multivariate Group Classification Analysis for ROI-level DTI metrics.
+Multivariate Group Classification and Regression Analysis for ROI-level DTI metrics.
 
-Runs PERMANOVA, LDA, cross-validated classification (SVM + logistic), and
-PCA visualization per metric, cohort, and feature set. Complements TBSS
-(mass-univariate) and CovNet (correlation structure) with multivariate
-discriminative approaches.
+Runs PERMANOVA, LDA, cross-validated classification (SVM + logistic),
+regression (SVR + Ridge + PLS for dose-response), and PCA visualization
+per metric, cohort, and feature set. Complements TBSS (mass-univariate)
+and CovNet (correlation structure) with multivariate discriminative approaches.
 
 Usage:
     uv run python scripts/run_classification_analysis.py \
@@ -34,6 +34,7 @@ from neurofaune.analysis.classification.data_prep import prepare_classification_
 from neurofaune.analysis.classification.lda import run_lda
 from neurofaune.analysis.classification.omnibus import run_manova, run_permanova
 from neurofaune.analysis.classification.pca import run_pca
+from neurofaune.analysis.classification.regression import run_regression
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,7 @@ def run_single_analysis(
     seed: int,
     skip_manova: bool,
     skip_classification: bool,
+    skip_regression: bool,
 ) -> dict:
     """Run full classification pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
@@ -200,6 +202,39 @@ def run_single_analysis(
     else:
         logger.info("[Phase 5] Skipping classification (--skip-classification)")
 
+    # Phase 6: Regression (dose-response)
+    if not skip_regression:
+        logger.info("[Phase 6] Regression (LOOCV dose-response + permutation)...")
+        reg_dir = combo_dir / "regression"
+        y_ordinal = y.astype(float)
+        reg_results = run_regression(
+            X, y_ordinal, label_names, feature_names,
+            n_permutations=n_permutations,
+            seed=seed,
+            output_dir=reg_dir,
+        )
+
+        # Serialise regression results
+        reg_json = {}
+        for reg_name, result in reg_results.items():
+            reg_json[reg_name] = {
+                "r_squared": result["r_squared"],
+                "mae": result["mae"],
+                "spearman_rho": result["spearman_rho"],
+                "permutation_p_value": result["permutation_p_value"],
+            }
+            summary[f"regression_{reg_name}"] = {
+                "r_squared": result["r_squared"],
+                "mae": result["mae"],
+                "spearman_rho": result["spearman_rho"],
+                "permutation_p_value": result["permutation_p_value"],
+            }
+
+        with open(reg_dir / "regression.json", "w") as f:
+            json.dump(reg_json, f, indent=2)
+    else:
+        logger.info("[Phase 6] Skipping regression (--skip-regression)")
+
     # Save per-combo summary
     with open(combo_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
@@ -282,6 +317,17 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
             "",
         ])
 
+    if not args.skip_regression:
+        lines.extend([
+            "6. Regression (LOOCV dose-response + permutation test)",
+            "   - Dose as ordinal: C=0, L=1, M=2, H=3",
+            "   - Linear SVR (C=1.0), Ridge (alpha=1.0), PLS regression",
+            "   - Leave-one-out cross-validation",
+            f"   - Permutation test: {args.n_permutations} shuffles",
+            "   - Reports R², MAE, Spearman rho, predicted vs actual scatter",
+            "",
+        ])
+
     lines.extend([
         "PREPROCESSING",
         "-------------",
@@ -341,6 +387,10 @@ def main():
         "--skip-classification", action="store_true",
         help="Skip LOOCV classification (only run PERMANOVA, PCA, LDA)",
     )
+    parser.add_argument(
+        "--skip-regression", action="store_true",
+        help="Skip LOOCV regression (SVR, Ridge, PLS dose-response)",
+    )
 
     args = parser.parse_args()
 
@@ -362,6 +412,7 @@ def main():
         "seed": args.seed,
         "skip_manova": args.skip_manova,
         "skip_classification": args.skip_classification,
+        "skip_regression": args.skip_regression,
         "timestamp": datetime.now().isoformat(),
     }
     with open(args.output_dir / "analysis_config.json", "w") as f:
@@ -375,6 +426,7 @@ def main():
     all_summaries = {}
     n_significant_permanova = 0
     best_accuracy = 0.0
+    best_regression_r2 = -999.0
     total_n_subjects = 0
 
     for metric in args.metrics:
@@ -401,6 +453,7 @@ def main():
                     seed=args.seed,
                     skip_manova=args.skip_manova,
                     skip_classification=args.skip_classification,
+                    skip_regression=args.skip_regression,
                 )
                 metric_summaries[key] = summary
 
@@ -413,6 +466,9 @@ def main():
                     for clf_key in ["classification_svm", "classification_logistic"]:
                         acc = summary.get(clf_key, {}).get("accuracy", 0.0)
                         best_accuracy = max(best_accuracy, acc)
+                    for reg_key in ["regression_svr", "regression_ridge", "regression_pls"]:
+                        r2 = summary.get(reg_key, {}).get("r_squared", -999.0)
+                        best_regression_r2 = max(best_regression_r2, r2)
 
         all_summaries[metric] = metric_summaries
 
@@ -423,6 +479,7 @@ def main():
         "n_subjects": total_n_subjects,
         "n_significant_permanova": n_significant_permanova,
         "best_classification_accuracy": best_accuracy,
+        "best_regression_r2": best_regression_r2 if best_regression_r2 > -999.0 else None,
         "timestamp": datetime.now().isoformat(),
         "per_metric": all_summaries,
     }
@@ -458,6 +515,7 @@ def main():
                 "n_subjects": total_n_subjects,
                 "n_significant_permanova": n_significant_permanova,
                 "best_classification_accuracy": round(best_accuracy, 3),
+                "best_regression_r2": round(best_regression_r2, 3) if best_regression_r2 > -999.0 else None,
             },
             figures=figures,
             source_summary_json=str(summary_path.relative_to(analysis_root)),

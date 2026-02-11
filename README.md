@@ -420,6 +420,9 @@ Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/ter
 | **PCA** | Unsupervised dimensionality reduction | PC1 vs PC2 scatter with 95% confidence ellipses, scree plot |
 | **LDA** | Supervised dimensionality reduction (maximise group separation) | LD1 vs LD2 scatter, structure correlations, top features |
 | **Classification** | Cross-validated prediction (LOOCV) | SVM + logistic regression accuracy, confusion matrix, permutation p-value |
+| **Regression** | Dose-response trend (LOOCV, dose as ordinal) | SVR, Ridge, PLS: R², MAE, Spearman ρ, predicted-vs-actual scatter |
+
+Classification asks "can we tell groups apart?" while regression asks "is there a linear dose-response relationship?" — both use LOOCV with permutation testing for empirical p-values.
 
 Two feature sets provide a built-in robustness check:
 - **bilateral** (~50 bilateral-averaged ROIs) — fine-grained regional patterns
