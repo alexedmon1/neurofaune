@@ -159,6 +159,7 @@ def create_per_pnd_design(
         design_con_file=design_dir / 'design.con',
         summary_file=design_dir / 'design_summary.json',
     )
+    helper.write_description(design_dir / 'design_description.txt')
 
     # Save subject order for verification
     subset[['subject_key']].to_csv(
@@ -239,6 +240,7 @@ def create_pooled_design(
         design_con_file=design_dir / 'design.con',
         summary_file=design_dir / 'design_summary.json',
     )
+    helper.write_description(design_dir / 'design_description.txt')
 
     # Save subject order for verification
     data[['subject_key']].to_csv(

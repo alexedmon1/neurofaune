@@ -416,6 +416,93 @@ def run_single_metric(
     return summary
 
 
+def write_design_description(args: argparse.Namespace, output_path: Path) -> None:
+    """Write a human-readable description of the CovNet analysis design."""
+    lines = []
+
+    lines.append("ANALYSIS DESCRIPTION")
+    lines.append("====================")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("Analysis: Covariance Network (CovNet)")
+    lines.append("")
+
+    lines.append("DATA SOURCE")
+    lines.append("-----------")
+    lines.append(f"ROI directory: {args.roi_dir}")
+    if args.exclusion_csv:
+        lines.append(f"Exclusion list: {args.exclusion_csv}")
+    else:
+        lines.append("Exclusion list: None")
+    lines.append(f"Metrics: {', '.join(args.metrics)}")
+    lines.append("")
+
+    lines.append("EXPERIMENTAL GROUPS")
+    lines.append("-------------------")
+    lines.append("Primary grouping: PND x Dose (up to 12 groups)")
+    lines.append("  Groups: p30_C, p30_L, p30_M, p30_H, p60_C, p60_L, "
+                  "p60_M, p60_H, p90_C, p90_L, p90_M, p90_H")
+    lines.append("")
+    lines.append("Descriptive grouping: Sex x PND x Dose (up to 24 groups)")
+    lines.append("  Used for visualization only.")
+    lines.append("")
+    lines.append("Territory grouping: PND x Dose at coarse anatomical level")
+    lines.append("")
+
+    lines.append("ROI PROCESSING")
+    lines.append("--------------")
+    lines.append("- Bilateral averaging of L/R ROI pairs")
+    lines.append("- ROIs with >20% zero values excluded")
+    lines.append("- ROIs with all-NaN values excluded")
+    lines.append("")
+
+    lines.append("STATISTICAL METHODS")
+    lines.append("-------------------")
+    lines.append("1. Spearman correlation matrices")
+    lines.append("   - Pairwise complete observations (min 4 per edge)")
+    lines.append("   - Computed per experimental group")
+    lines.append("")
+
+    if not args.skip_nbs:
+        lines.append("2. Network-Based Statistic (NBS)")
+        lines.append("   - Edge-level test: Fisher z-test between group "
+                      "correlation matrices")
+        lines.append(f"   - Suprathreshold edge threshold: |z| >= "
+                      f"{args.nbs_threshold}")
+        lines.append("   - Connected component extraction via graph analysis")
+        lines.append(f"   - Permutation test: {args.n_permutations} "
+                      "permutations for FWER correction")
+        lines.append("   - Comparisons: each dose vs control within each PND")
+        lines.append("")
+    else:
+        lines.append("2. Network-Based Statistic (NBS): SKIPPED")
+        lines.append("")
+
+    lines.append("3. Territory-level edge comparisons")
+    lines.append("   - Fisher z-test per edge")
+    lines.append("   - Benjamini-Hochberg FDR correction")
+    lines.append("")
+
+    if not args.skip_graph:
+        lines.append("4. Graph metrics")
+        lines.append("   - Metrics: clustering, centrality, small-worldness")
+        lines.append("   - Densities: 0.10, 0.15, 0.20, 0.25")
+        lines.append(f"   - Permutation comparison: {args.n_permutations} "
+                      "permutations")
+        lines.append("")
+    else:
+        lines.append("4. Graph metrics: SKIPPED")
+        lines.append("")
+
+    lines.append("PARAMETERS")
+    lines.append("----------")
+    lines.append(f"Permutations: {args.n_permutations}")
+    lines.append(f"NBS threshold: {args.nbs_threshold}")
+    lines.append(f"Random seed: {args.seed}")
+
+    output_path.write_text("\n".join(lines))
+    logger.info(f"Saved analysis description: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Covariance Network Analysis for ROI-level DTI metrics"
@@ -481,6 +568,8 @@ def main():
     }
     with open(args.output_dir / "analysis_config.json", "w") as f:
         json.dump(config, f, indent=2)
+
+    write_design_description(args, args.output_dir / "design_description.txt")
 
     # Run for each metric
     all_summaries = {}
