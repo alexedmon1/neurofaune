@@ -588,6 +588,7 @@ def run_dwi_preprocessing(
         work_dir=skull_strip_work_dir,
         method='auto',  # Will select 'atropos_bet' for 11-slice DTI
         cohort=cohort,
+        n_classes=3,  # 3-class: brightest class = brain (proven for DWI b0)
     )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")

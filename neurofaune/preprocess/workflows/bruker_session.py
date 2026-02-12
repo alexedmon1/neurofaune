@@ -490,5 +490,9 @@ def _print_modality_outputs(
     for key in keys:
         p = result_dict.get(key)
         if p and Path(p).exists():
-            img = nib.load(p)
-            print(f"  {key:15s}: {Path(p).name}  {img.shape}")
+            p = Path(p)
+            if p.suffix in (".gz", ".nii") or p.suffixes == [".nii", ".gz"]:
+                img = nib.load(p)
+                print(f"  {key:15s}: {p.name}  {img.shape}")
+            else:
+                print(f"  {key:15s}: {p.name}")

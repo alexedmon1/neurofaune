@@ -33,6 +33,8 @@ def skull_strip(
     invert_intensity: bool = False,
     cog_offset_x: Optional[int] = None,
     cog_offset_y: Optional[int] = None,
+    # Atropos parameters
+    n_classes: int = 5,
     # 3D method parameters
     template_file: Optional[Path] = None,
     template_mask: Optional[Path] = None,
@@ -122,6 +124,7 @@ def skull_strip(
             mask_file=mask_file,
             work_dir=work_dir,
             cohort=cohort,
+            n_classes=n_classes,
         )
     elif method == 'atropos':
         return _skull_strip_atropos_only(
@@ -187,15 +190,38 @@ def _skull_strip_atropos_bet(
     mask_file: Path,
     work_dir: Path,
     cohort: str = 'p60',
+    n_classes: int = 5,
+    bet_frac: float = 0.3,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """
     Two-pass Atropos+BET skull stripping for full-coverage data.
 
-    This is the recommended method for ≥10 slices:
-    1. Atropos 5-component segmentation provides rough brain mask and COG
-    2. BET refinement with adaptive frac uses the Atropos COG for initialization
+    Class selection strategy depends on n_classes:
+    - n_classes=3 (DWI/low-contrast): brightest class = brain.
+      With 3 classes (background, intermediate, brain), the brightest class
+      reliably captures brain parenchyma in EPI/DWI b0 images.
+    - n_classes=5 (T2w/high-contrast): middle 3 classes by volume = brain.
+      With 5 classes, exclude largest (background) and smallest (noise),
+      keeping the 3 middle classes as brain tissue.
 
-    Returns posteriors for tissue segmentation reuse.
+    Parameters
+    ----------
+    input_file : Path
+        Input 3D volume
+    output_file : Path
+        Output brain-extracted volume
+    mask_file : Path
+        Output brain mask
+    work_dir : Path
+        Working directory for intermediate files
+    cohort : str
+        Age cohort (unused, kept for API compatibility)
+    n_classes : int
+        Number of Atropos K-means classes.
+        Use 3 for DWI b0 (brightest class strategy).
+        Use 5 for T2w (middle 3 by volume strategy, default).
+    bet_frac : float
+        BET fractional intensity threshold for refinement (default: 0.3)
     """
     import subprocess
     import numpy as np
@@ -203,15 +229,22 @@ def _skull_strip_atropos_bet(
 
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Create foreground mask (non-zero voxels)
+    # Load input
     img = nib.load(input_file)
     img_data = img.get_fdata()
-    foreground_mask = (img_data > 0).astype(np.uint8)
-    foreground_mask_file = work_dir / f"{input_file.stem}_foreground.nii.gz"
-    nib.save(nib.Nifti1Image(foreground_mask, img.affine, img.header), foreground_mask_file)
 
-    # Step 2: Run Atropos 5-component segmentation
-    print("  Running Atropos 5-component segmentation...")
+    # Step 1: Create initial foreground mask
+    nonzero = img_data[img_data > 0]
+    if len(nonzero) == 0:
+        raise ValueError("Input image has no non-zero voxels")
+    threshold = np.percentile(nonzero, 5)
+    initial_mask = (img_data > threshold).astype(np.uint8)
+    initial_mask_file = work_dir / f"{input_file.stem}_initial_mask.nii.gz"
+    nib.save(nib.Nifti1Image(initial_mask, img.affine, img.header), initial_mask_file)
+    print(f"  Initial mask (5th percentile threshold): {int(initial_mask.sum()):,} voxels")
+
+    # Step 2: Atropos K-means segmentation
+    print(f"  Running Atropos {n_classes}-class segmentation...")
     seg_output = work_dir / f"{input_file.stem}_seg.nii.gz"
     posteriors_prefix = work_dir / f"{input_file.stem}_posterior"
 
@@ -219,63 +252,60 @@ def _skull_strip_atropos_bet(
         'Atropos',
         '-d', '3',
         '-a', str(input_file),
-        '-i', 'KMeans[5]',
-        '-x', str(foreground_mask_file),
+        '-x', str(initial_mask_file),
+        '-i', f'KMeans[{n_classes}]',
         '-o', f'[{seg_output},{posteriors_prefix}%02d.nii.gz]',
-        '-c', '[5,0.0]',
-        '-m', '[0.1,1x1x1]',
+        '-v', '0',
     ]
     subprocess.run(atropos_cmd, check=True, capture_output=True)
 
-    # Step 3: Analyze posteriors and select brain classes
-    # Atropos with KMeans has non-deterministic ordering
-    # Exclude both largest (background) and smallest (noise) posteriors by volume
+    # Step 3: Select brain classes based on n_classes strategy
+    seg_data = nib.load(seg_output).get_fdata()
     posteriors = sorted(work_dir.glob(f"{input_file.stem}_posterior*.nii.gz"))
 
-    volumes = []
-    for p in posteriors:
-        p_data = nib.load(p).get_fdata()
-        volumes.append((p_data > 0.5).sum())
+    if n_classes <= 3:
+        # DWI/low-contrast strategy: brightest class = brain
+        class_means = {}
+        for label in range(1, n_classes + 1):
+            class_mask = seg_data == label
+            n_vox = int(class_mask.sum())
+            if n_vox > 0:
+                class_means[label] = img_data[class_mask].mean()
+                print(f"    Class {label}: {n_vox:,} voxels, mean intensity = {class_means[label]:.1f}")
 
-    sorted_indices = np.argsort(volumes)
-    # Exclude largest (background) and smallest (noise)
-    brain_indices = sorted_indices[1:-1]  # Middle 3 classes
+        brain_class = max(class_means, key=class_means.get)
+        print(f"  Using class {brain_class} as brain (brightest)")
+        atropos_mask = (seg_data == brain_class).astype(np.uint8)
+    else:
+        # T2w/high-contrast strategy: middle classes by volume
+        volumes = []
+        for p in posteriors:
+            p_data = nib.load(p).get_fdata()
+            volumes.append((p_data > 0.5).sum())
 
-    print(f"  Posterior volumes: {volumes}")
-    print(f"  Selected brain classes: {brain_indices.tolist()}")
+        sorted_indices = np.argsort(volumes)
+        brain_indices = sorted_indices[1:-1]  # Exclude largest and smallest
 
-    # Combine brain posteriors into rough mask
-    atropos_mask = np.zeros(img_data.shape)
-    for i in brain_indices:
-        p_data = nib.load(posteriors[i]).get_fdata()
-        atropos_mask += (p_data > 0.5).astype(float)
-    atropos_mask = (atropos_mask > 0).astype(np.uint8)
+        print(f"  Posterior volumes: {volumes}")
+        print(f"  Selected brain classes (middle {len(brain_indices)} by volume): {brain_indices.tolist()}")
 
-    # Save Atropos rough mask
+        atropos_mask = np.zeros(img_data.shape)
+        for i in brain_indices:
+            p_data = nib.load(posteriors[i]).get_fdata()
+            atropos_mask += (p_data > 0.5).astype(float)
+        atropos_mask = (atropos_mask > 0).astype(np.uint8)
     atropos_mask_file = work_dir / f"{input_file.stem}_atropos_mask.nii.gz"
     nib.save(nib.Nifti1Image(atropos_mask, img.affine, img.header), atropos_mask_file)
+    n_atropos = int(atropos_mask.sum())
+    print(f"  Atropos brain mask: {n_atropos:,} voxels")
 
-    # Step 4: Calculate center of gravity from Atropos mask
+    # Step 4: COG from Atropos brain mask
     brain_coords = np.argwhere(atropos_mask > 0)
     cog = brain_coords.mean(axis=0)
     print(f"  Atropos COG: [{cog[0]:.1f}, {cog[1]:.1f}, {cog[2]:.1f}]")
 
-    # Step 5: Calculate adaptive BET frac based on contrast
-    brain_intensities = img_data[atropos_mask > 0]
-    background_mask = (atropos_mask == 0) & (img_data > 0)
-    background_intensities = img_data[background_mask] if background_mask.sum() > 0 else brain_intensities
-
-    brain_median = np.median(brain_intensities)
-    background_median = np.median(background_intensities)
-    contrast = abs(brain_median - background_median) / (brain_median + 1e-6)
-
-    # Map contrast to frac (lower frac = more conservative BET, rely on Atropos)
-    adaptive_frac = 0.2 + 0.3 * min(contrast, 1.0)
-    adaptive_frac = np.clip(adaptive_frac, 0.15, 0.5)
-    print(f"  Adaptive BET frac: {adaptive_frac:.3f} (contrast={contrast:.3f})")
-
-    # Step 6: Apply Atropos mask to input, then run BET
-    print("  Running BET refinement...")
+    # Step 5: BET refinement on Atropos-masked image
+    print(f"  Running BET refinement (frac={bet_frac})...")
     masked_input = work_dir / f"{input_file.stem}_atropos_masked.nii.gz"
     masked_data = img_data * atropos_mask
     nib.save(nib.Nifti1Image(masked_data, img.affine, img.header), masked_input)
@@ -285,7 +315,7 @@ def _skull_strip_atropos_bet(
         'bet',
         str(masked_input),
         str(bet_output),
-        '-f', str(adaptive_frac),
+        '-f', str(bet_frac),
         '-m',
         '-c', str(int(cog[0])), str(int(cog[1])), str(int(cog[2])),
     ]
@@ -296,44 +326,35 @@ def _skull_strip_atropos_bet(
     if bet_mask_file.exists():
         final_mask = nib.load(bet_mask_file).get_fdata() > 0
     else:
-        # BET might name it differently
         alt_mask = Path(str(bet_output).replace('.nii.gz', '_mask.nii.gz'))
         if alt_mask.exists():
             final_mask = nib.load(alt_mask).get_fdata() > 0
         else:
+            print("  WARNING: BET refinement failed, using Atropos mask")
             final_mask = atropos_mask > 0
 
-    # Step 7: Morphological cleanup
-    # Keep only the largest connected component (removes stray non-brain islands)
-    labeled, n_components = ndimage.label(final_mask)
-    if n_components > 1:
-        component_sizes = ndimage.sum(final_mask, labeled, range(1, n_components + 1))
-        largest_label = np.argmax(component_sizes) + 1
-        final_mask = (labeled == largest_label)
-        print(f"  Removed {n_components - 1} disconnected components")
+    n_final = int(final_mask.sum())
+    print(f"  BET refined mask: {n_final:,} voxels")
+    print(f"  Reduction: {n_atropos:,} -> {n_final:,} ({100*(n_atropos - n_final)/max(n_atropos, 1):.1f}% removed)")
 
-    # Opening (erode then dilate) removes thin protrusions of non-brain tissue
-    final_mask = ndimage.binary_opening(final_mask, iterations=1)
-    final_mask = ndimage.binary_fill_holes(final_mask)
-
-    # Save final mask
+    # Save final mask and brain-extracted image
     nib.save(nib.Nifti1Image(final_mask.astype(np.float32), img.affine, img.header), mask_file)
-
-    # Apply mask to original
     brain_data = img_data * final_mask
     nib.save(nib.Nifti1Image(brain_data.astype(np.float32), img.affine, img.header), output_file)
 
-    # Calculate metrics
+    # Metrics
     total_voxels = np.prod(final_mask.shape)
     brain_voxels = int(final_mask.sum())
     extraction_ratio = brain_voxels / total_voxels
 
+    posteriors = sorted(work_dir.glob(f"{input_file.stem}_posterior*.nii.gz"))
     info = {
         'method': 'atropos_bet',
         'extraction_ratio': extraction_ratio,
         'brain_voxels': brain_voxels,
         'total_voxels': total_voxels,
-        'adaptive_frac': float(adaptive_frac),
+        'bet_frac': bet_frac,
+        'n_classes': n_classes,
         'cog': cog.tolist(),
         'posteriors': [str(p) for p in posteriors],
     }
