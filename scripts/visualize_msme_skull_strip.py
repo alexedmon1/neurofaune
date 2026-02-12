@@ -4,9 +4,10 @@ Visualize MSME skull stripping and registration quality.
 
 Shows:
 1. Brain mask outline overlaid on first echo (per slice)
-2. Registration result: warped MSME on T2w with edge overlay
+2. Registration result: warped MSME on cohort template with edge overlay
 """
 
+import csv
 import sys
 from pathlib import Path
 import nibabel as nib
@@ -91,25 +92,30 @@ def plot_mask_overlay(echo1_file: Path, mask_file: Path, output_file: Path, subj
     return total_pct
 
 
-def plot_registration_result(warped_file: Path, t2w_file: Path, output_file: Path,
+def plot_registration_result(warped_file: Path, reference_file: Path, output_file: Path,
                              subject: str, session: str):
-    """Plot registration result with edge overlay on T2w."""
+    """Plot registration result with edge overlay on reference (template).
+
+    Returns dict with NCC metrics: {mean_ncc, min_ncc, max_ncc, n_slices},
+    or None if no valid slices found.
+    """
     warped_img = nib.load(warped_file)
-    t2w_img = nib.load(t2w_file)
+    ref_img = nib.load(reference_file)
 
     warped_data = warped_img.get_fdata()
-    t2w_data = t2w_img.get_fdata()
+    ref_data = ref_img.get_fdata()
 
-    # MSME is warped to T2w space, so they should have same dimensions
-    # Find which T2w slices have MSME data (non-zero)
+    # MSME is warped to template space — find which template slices have MSME data
+    # Use a threshold to ignore near-zero interpolation artifacts
+    threshold = warped_data.max() * 0.05 if warped_data.max() > 0 else 0
     msme_slices = []
     for z in range(warped_data.shape[2]):
-        if warped_data[:, :, z].max() > 0:
+        if warped_data[:, :, z].max() > threshold:
             msme_slices.append(z)
 
     if not msme_slices:
         print(f"  Warning: No non-zero slices in warped MSME")
-        return
+        return None
 
     n_slices = len(msme_slices)
     n_cols = min(5, n_slices)
@@ -123,24 +129,28 @@ def plot_registration_result(warped_file: Path, t2w_file: Path, output_file: Pat
     elif n_cols == 1:
         axes = axes.reshape(-1, 1)
 
+    slice_nccs = []
+
     for idx, z in enumerate(msme_slices):
         row, col = idx // n_cols, idx % n_cols
         ax = axes[row, col]
 
-        t2w_slice = np.rot90(t2w_data[:, :, z])
+        ref_slice = np.rot90(ref_data[:, :, z])
         warped_slice = np.rot90(warped_data[:, :, z])
 
-        # Normalize T2w
-        t2w_vmin, t2w_vmax = np.percentile(t2w_slice[t2w_slice > 0], [2, 98]) if t2w_slice.max() > 0 else (0, 1)
-        t2w_norm = np.clip((t2w_slice - t2w_vmin) / (t2w_vmax - t2w_vmin + 1e-8), 0, 1)
+        # Normalize reference (template)
+        ref_nz = ref_slice[ref_slice > 0]
+        ref_vmin, ref_vmax = (np.percentile(ref_nz, [2, 98]) if len(ref_nz) > 0 else (0, 1))
+        ref_norm = np.clip((ref_slice - ref_vmin) / (ref_vmax - ref_vmin + 1e-8), 0, 1)
 
-        # Show T2w as background
-        ax.imshow(t2w_norm, cmap='gray')
+        # Show template as background
+        ax.imshow(ref_norm, cmap='gray')
 
         # Get edges of warped MSME using Sobel
-        if warped_slice.max() > 0:
+        if warped_slice.max() > threshold:
             # Normalize warped MSME
-            w_vmin, w_vmax = np.percentile(warped_slice[warped_slice > 0], [2, 98])
+            w_nz = warped_slice[warped_slice > threshold]
+            w_vmin, w_vmax = np.percentile(w_nz, [2, 98])
             warped_norm = np.clip((warped_slice - w_vmin) / (w_vmax - w_vmin + 1e-8), 0, 1)
 
             # Compute edges
@@ -158,18 +168,17 @@ def plot_registration_result(warped_file: Path, t2w_file: Path, output_file: Pat
             ax.imshow(edge_rgba)
 
             # Calculate NCC for this slice
-            t2w_flat = t2w_slice.flatten()
+            ref_flat = ref_slice.flatten()
             warped_flat = warped_slice.flatten()
-            valid = (t2w_flat > 0) & (warped_flat > 0)
+            valid = (ref_flat > 0) & (warped_flat > threshold)
             if valid.sum() > 100:
-                t2w_valid = t2w_flat[valid]
-                warped_valid = warped_flat[valid]
-                ncc = np.corrcoef(t2w_valid, warped_valid)[0, 1]
-                ax.set_title(f'T2w slice {z} (NCC={ncc:.2f})', fontsize=10)
+                ncc = np.corrcoef(ref_flat[valid], warped_flat[valid])[0, 1]
+                slice_nccs.append(ncc)
+                ax.set_title(f'Tpl slice {z} (NCC={ncc:.2f})', fontsize=10)
             else:
-                ax.set_title(f'T2w slice {z}', fontsize=10)
+                ax.set_title(f'Tpl slice {z}', fontsize=10)
         else:
-            ax.set_title(f'T2w slice {z} (no MSME)', fontsize=10)
+            ax.set_title(f'Tpl slice {z} (no MSME)', fontsize=10)
 
         ax.axis('off')
 
@@ -178,13 +187,23 @@ def plot_registration_result(warped_file: Path, t2w_file: Path, output_file: Pat
         row, col = idx // n_cols, idx % n_cols
         axes[row, col].axis('off')
 
-    fig.suptitle(f'MSME→T2w Registration: {subject} {session}\nCyan edges = warped MSME on T2w background',
+    fig.suptitle(f'MSME\u2192Template Registration: {subject} {session}\n'
+                 f'Cyan edges = warped MSME on template background',
                  fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
     plt.close()
 
     print(f"  Saved registration overlay: {output_file}")
+
+    if slice_nccs:
+        return {
+            'mean_ncc': float(np.mean(slice_nccs)),
+            'min_ncc': float(np.min(slice_nccs)),
+            'max_ncc': float(np.max(slice_nccs)),
+            'n_slices': len(slice_nccs),
+        }
+    return None
 
 
 def visualize_subject(subject: str, session: str, study_root: Path, output_dir: Path):
@@ -230,22 +249,18 @@ def visualize_subject(subject: str, session: str, study_root: Path, output_dir: 
             if echo1_brain and echo1_mask:
                 break
 
-    # Find warped MSME and T2w
-    warped_msme = transforms_dir / 'MSME_to_T2w_Warped.nii.gz' if transforms_dir.exists() else None
-    if warped_msme and not warped_msme.exists():
-        warped_msme = None
+    # Find warped MSME (from MSME→Template registration) and cohort template
+    warped_msme = None
+    if transforms_dir.exists():
+        warped_msme = transforms_dir / 'MSME_to_template_Warped.nii.gz'
+        if not warped_msme.exists():
+            warped_msme = None
 
-    t2w_file = None
-    if derivatives_dir.exists():
-        anat_dir = derivatives_dir / 'anat'
-        if anat_dir.exists():
-            t2w_matches = list(anat_dir.glob('*T2w_brain.nii.gz'))
-            if not t2w_matches:
-                t2w_matches = list(anat_dir.glob('*skullstrip*T2w.nii.gz'))
-            if not t2w_matches:
-                t2w_matches = list(anat_dir.glob('*T2w*.nii.gz'))
-            if t2w_matches:
-                t2w_file = t2w_matches[0]
+    # Determine cohort from session name and find template
+    cohort = session.replace('ses-', '')
+    template_file = study_root / 'templates' / 'anat' / cohort / f'tpl-BPARat_{cohort}_T2w.nii.gz'
+    if not template_file.exists():
+        template_file = None
 
     # Create output directory
     subject_output = output_dir / subject / session
@@ -264,15 +279,17 @@ def visualize_subject(subject: str, session: str, study_root: Path, output_dir: 
     else:
         print(f"  Warning: Could not find echo1 brain ({echo1_brain}) or mask ({echo1_mask})")
 
-    # Plot registration result
-    if warped_msme and t2w_file:
+    # Plot registration result (MSME on template)
+    if warped_msme and template_file:
         print(f"  Warped MSME: {warped_msme.name}")
-        print(f"  T2w: {t2w_file.name}")
+        print(f"  Template: {template_file.name}")
         reg_output = subject_output / f'{subject}_{session}_msme_registration_overlay.png'
-        plot_registration_result(warped_msme, t2w_file, reg_output, subject, session)
+        ncc_metrics = plot_registration_result(warped_msme, template_file, reg_output, subject, session)
         results['registration_overlay'] = str(reg_output)
+        if ncc_metrics:
+            results.update(ncc_metrics)
     else:
-        print(f"  Warning: Could not find warped MSME ({warped_msme}) or T2w ({t2w_file})")
+        print(f"  Warning: Could not find warped MSME ({warped_msme}) or template ({template_file})")
 
     return results
 
@@ -288,6 +305,10 @@ def main():
                         help='Output directory for figures (default: study_root/qc/msme_visualization)')
     parser.add_argument('--subjects', nargs='+', default=None,
                         help='Specific subjects to visualize (default: find all with MSME transforms)')
+    parser.add_argument('--cohort', type=str, default=None,
+                        help='Filter to a specific cohort (e.g. p90). Only ses-{cohort} sessions are processed.')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='Skip subjects that already have the registration overlay PNG')
     args = parser.parse_args()
 
     study_root = args.study_root
@@ -302,7 +323,7 @@ def main():
             subj_transform_dir = study_root / 'transforms' / subj
             if subj_transform_dir.exists():
                 for sess_dir in subj_transform_dir.iterdir():
-                    if sess_dir.is_dir() and (sess_dir / 'MSME_to_T2w_0GenericAffine.mat').exists():
+                    if sess_dir.is_dir() and (sess_dir / 'MSME_to_template_0GenericAffine.mat').exists():
                         subjects_sessions.append((subj, sess_dir.name))
     else:
         # Find all subjects with MSME transforms
@@ -312,7 +333,7 @@ def main():
             for subj_dir in sorted(transforms_root.iterdir()):
                 if subj_dir.is_dir() and subj_dir.name.startswith('sub-'):
                     for sess_dir in subj_dir.iterdir():
-                        if sess_dir.is_dir() and (sess_dir / 'MSME_to_T2w_0GenericAffine.mat').exists():
+                        if sess_dir.is_dir() and (sess_dir / 'MSME_to_template_0GenericAffine.mat').exists():
                             subjects_sessions.append((subj_dir.name, sess_dir.name))
 
     if not subjects_sessions:
@@ -331,29 +352,87 @@ def main():
                                     subjects_sessions.append((subj_dir.name, sess_dir.name))
                                     break
 
+    # Filter by cohort if specified
+    if args.cohort:
+        cohort_session = f'ses-{args.cohort}'
+        before = len(subjects_sessions)
+        subjects_sessions = [(s, ses) for s, ses in subjects_sessions if ses == cohort_session]
+        print(f"Cohort filter '{args.cohort}': {before} -> {len(subjects_sessions)} subjects")
+
     print(f"Found {len(subjects_sessions)} subject/session combinations with MSME data")
 
     all_results = []
+    skipped = 0
     for subject, session in subjects_sessions:
+        # Check skip-existing
+        if args.skip_existing:
+            subject_output = output_dir / subject / session
+            reg_png = subject_output / f'{subject}_{session}_msme_registration_overlay.png'
+            if reg_png.exists():
+                skipped += 1
+                all_results.append({
+                    'subject': subject, 'session': session, 'status': 'skipped'
+                })
+                continue
+
         try:
             results = visualize_subject(subject, session, study_root, output_dir)
+            results['status'] = 'ok'
             all_results.append(results)
         except Exception as e:
             print(f"  Error: {e}")
-            all_results.append({'subject': subject, 'session': session, 'error': str(e)})
+            all_results.append({
+                'subject': subject, 'session': session,
+                'status': 'error', 'error': str(e)
+            })
+
+    if skipped > 0:
+        print(f"\nSkipped {skipped} subjects with existing overlays (--skip-existing)")
+
+    # Write metrics CSV
+    csv_file = output_dir / 'msme_registration_metrics.csv'
+    csv_fields = ['subject', 'session', 'status', 'extraction_pct',
+                  'mean_ncc', 'min_ncc', 'max_ncc', 'n_slices', 'error']
+    with open(csv_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
+        writer.writeheader()
+        for r in all_results:
+            writer.writerow(r)
+    print(f"\nSaved metrics CSV: {csv_file}")
 
     # Summary
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
 
+    n_ok = sum(1 for r in all_results if r.get('status') == 'ok')
+    n_error = sum(1 for r in all_results if r.get('status') == 'error')
+    n_skipped = sum(1 for r in all_results if r.get('status') == 'skipped')
+    print(f"  OK: {n_ok}  Skipped: {n_skipped}  Errors: {n_error}")
+
+    # NCC summary for processed subjects
+    ncc_values = [r['mean_ncc'] for r in all_results if 'mean_ncc' in r]
+    if ncc_values:
+        print(f"\n  NCC across subjects: mean={np.mean(ncc_values):.3f}, "
+              f"min={np.min(ncc_values):.3f}, max={np.max(ncc_values):.3f}")
+
     for r in all_results:
         subject, session = r['subject'], r['session']
-        if 'error' in r:
-            print(f"  ✗ {subject} {session}: {r['error']}")
+        status = r.get('status', '?')
+        if status == 'error':
+            print(f"  x {subject} {session}: {r.get('error', 'unknown')}")
+        elif status == 'skipped':
+            continue  # Don't clutter output
         else:
-            pct = r.get('extraction_pct', 'N/A')
-            print(f"  ✓ {subject} {session}: {pct:.1f}% extraction" if isinstance(pct, float) else f"  ✓ {subject} {session}")
+            parts = []
+            pct = r.get('extraction_pct')
+            if isinstance(pct, float):
+                parts.append(f'{pct:.1f}% extraction')
+            ncc = r.get('mean_ncc')
+            if ncc is not None:
+                parts.append(f'NCC={ncc:.3f}')
+            detail = ', '.join(parts) if parts else ''
+            print(f"  + {subject} {session}: {detail}")
 
     print(f"\nOutput directory: {output_dir}")
 

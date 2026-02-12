@@ -229,7 +229,8 @@ def register_subject(
     info: SubjectRegistrationInfo,
     study_root: Path,
     n_cores: int = 4,
-    force: bool = False
+    force: bool = False,
+    z_range: Optional[tuple] = None
 ) -> Dict:
     """
     Run full registration chain for a single subject.
@@ -303,7 +304,8 @@ def register_subject(
                 subject=info.subject,
                 session=info.session,
                 work_dir=work_dir,
-                n_cores=n_cores
+                n_cores=n_cores,
+                z_range=z_range
             )
             result['steps']['msme_to_template'] = 'computed'
         else:
@@ -382,6 +384,8 @@ def main():
                         help='Recompute all transforms even if they exist')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be processed without running')
+    parser.add_argument('--z-range', type=int, nargs=2, metavar=('MIN', 'MAX'),
+                        help='Constrain NCC Z search to slice range (default: 14 28)')
     parser.add_argument('--output-json', type=Path,
                         help='Save results to JSON file')
 
@@ -447,11 +451,13 @@ def main():
     for i, info in enumerate(ready):
         print(f"\n[{i+1}/{len(ready)}] {info.subject} / {info.session} ({info.cohort})")
 
+        z_range = tuple(args.z_range) if args.z_range else None
         result = register_subject(
             info=info,
             study_root=args.study_root,
             n_cores=args.n_cores,
-            force=args.force
+            force=args.force,
+            z_range=z_range
         )
         results.append(result)
 

@@ -27,7 +27,8 @@ def register_msme_to_template(
     subject: str,
     session: str,
     work_dir: Path,
-    n_cores: int = 4
+    n_cores: int = 4,
+    z_range: Optional[Tuple[int, int]] = None
 ) -> Dict[str, Any]:
     """
     Register MSME first echo directly to the cohort template.
@@ -53,6 +54,10 @@ def register_msme_to_template(
         Working directory for intermediate files
     n_cores : int
         Number of CPU cores for ANTs
+    z_range : tuple of (int, int), optional
+        (min_slice, max_slice) to constrain the NCC Z search. Defaults to
+        (14, 28) for MSME hippocampal slab positioning in template space.
+        Set to None to search all positions (original behavior).
 
     Returns
     -------
@@ -73,9 +78,13 @@ def register_msme_to_template(
     output_prefix = transforms_dir / 'MSME_to_template_'
 
     # Step 1: Find optimal Z offset via NCC scan
-    print("\n  Finding optimal Z offset via NCC scan...")
+    # Default z_range constrains to hippocampal region (slices 14-28)
+    # to avoid spurious NCC peaks at extreme positions
+    if z_range is None:
+        z_range = (14, 28)
+    print(f"\n  Finding optimal Z offset via NCC scan (z_range={z_range})...")
     initial_transform, z_offset_info = _find_z_offset_ncc(
-        msme_img, template_img, work_dir
+        msme_img, template_img, work_dir, z_range=z_range
     )
 
     # Step 2: Rigid registration with conservative shrink factors

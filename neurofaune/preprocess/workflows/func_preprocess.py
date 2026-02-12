@@ -48,7 +48,8 @@ from neurofaune.preprocess.utils.func.slice_timing import (
 def _find_z_offset_ncc(
     bold_img: nib.Nifti1Image,
     t2w_img: nib.Nifti1Image,
-    work_dir: Path
+    work_dir: Path,
+    z_range: Optional[Tuple[int, int]] = None
 ) -> Tuple[Path, Dict]:
     """
     Find optimal Z offset for partial-coverage BOLD to full T2w registration.
@@ -66,6 +67,11 @@ def _find_z_offset_ncc(
         T2w volume
     work_dir : Path
         Working directory
+    z_range : tuple of (int, int), optional
+        (min_slice, max_slice) to constrain the Z search. If None, searches
+        all valid positions. Use this to avoid spurious NCC peaks when the
+        expected slab position is known (e.g., hippocampal MSME at slices
+        14-28 in template space).
 
     Returns
     -------
@@ -87,12 +93,22 @@ def _find_z_offset_ncc(
     z_scale = float(bold_zooms[2]) / float(t2w_zooms[2])
     n_bold_in_t2w = int(round(bold_data.shape[2] * z_scale))
 
+    # Determine Z search range
+    max_offset = t2w_data.shape[2] - n_bold_in_t2w
+    if z_range is not None:
+        z_start = max(0, z_range[0])
+        z_end = min(max_offset, z_range[1]) + 1
+        print(f"  Z search range: slices {z_start}-{min(max_offset, z_range[1])} "
+              f"(constrained from full range 0-{max_offset})")
+    else:
+        z_start = 0
+        z_end = max(max_offset, 1)
+
     # Scan Z offsets
     best_ncc = -1
     best_offset = 0
-    max_offset = t2w_data.shape[2] - n_bold_in_t2w
 
-    for z_offset in range(0, max(max_offset, 1)):
+    for z_offset in range(z_start, z_end):
         total_ncc = 0
         n_valid = 0
 
