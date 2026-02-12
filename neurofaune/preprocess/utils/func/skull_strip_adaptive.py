@@ -37,7 +37,8 @@ def test_bet_frac_on_slice(
     frac: float,
     cog: Tuple[float, float],
     invert_intensity: bool = False,
-    use_R_flag: bool = False
+    use_R_flag: bool = False,
+    voxel_sizes: Optional[Tuple[float, float, float]] = None
 ) -> Tuple[Optional[np.ndarray], int]:
     """
     Test a specific BET frac value on a slice.
@@ -70,9 +71,13 @@ def test_bet_frac_on_slice(
     else:
         slice_data_bet = slice_data.copy()
 
-    # Create temporary 3D image (single slice)
+    # Create temporary 3D image (single slice) preserving voxel sizes
     slice_3d = slice_data_bet[:, :, np.newaxis]
     affine = np.eye(4)
+    if voxel_sizes is not None:
+        affine[0, 0] = voxel_sizes[0]
+        affine[1, 1] = voxel_sizes[1]
+        affine[2, 2] = voxel_sizes[2]
     img = nib.Nifti1Image(slice_3d, affine)
 
     # Save temporary input
@@ -138,7 +143,8 @@ def find_optimal_frac_for_slice(
     frac_range: Tuple[float, float] = (0.30, 0.60),
     frac_step: float = 0.05,
     invert_intensity: bool = False,
-    use_R_flag: bool = False
+    use_R_flag: bool = False,
+    voxel_sizes: Optional[Tuple[float, float, float]] = None
 ) -> Tuple[float, np.ndarray, int]:
     """
     Find optimal BET frac for a slice by testing multiple values.
@@ -184,7 +190,8 @@ def find_optimal_frac_for_slice(
 
     for frac in frac_values:
         mask, n_voxels = test_bet_frac_on_slice(
-            slice_data, slice_idx, work_dir, frac, cog, invert_intensity, use_R_flag
+            slice_data, slice_idx, work_dir, frac, cog, invert_intensity, use_R_flag,
+            voxel_sizes=voxel_sizes
         )
 
         if mask is None:
@@ -276,6 +283,8 @@ def skull_strip_adaptive(
     # Load input volume
     img = nib.load(input_file)
     data = img.get_fdata()
+    voxel_sizes = tuple(img.header.get_zooms()[:3])
+    print(f"Voxel sizes: {voxel_sizes}")
 
     n_slices = data.shape[2]
     print(f"\nProcessing {n_slices} axial slices with adaptive frac...")
@@ -313,7 +322,8 @@ def skull_strip_adaptive(
             frac_range=frac_range,
             frac_step=frac_step,
             invert_intensity=invert_intensity,
-            use_R_flag=use_R_flag
+            use_R_flag=use_R_flag,
+            voxel_sizes=voxel_sizes
         )
 
         # Add to combined mask

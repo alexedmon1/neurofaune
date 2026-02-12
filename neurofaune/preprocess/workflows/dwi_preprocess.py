@@ -528,7 +528,7 @@ def run_dwi_preprocessing(
     # Save validated gradient tables to work directory
     bval_validated = work_dir / 'dwi.bval'
     bvec_validated = work_dir / 'dwi.bvec'
-    np.savetxt(bval_validated, bvals.reshape(1, -1), fmt='%.2f')
+    np.savetxt(bval_validated, bvals.reshape(1, -1), fmt='%d')
     np.savetxt(bvec_validated, bvecs, fmt='%.6f')
 
     # ==========================================================================
@@ -651,6 +651,7 @@ def run_dwi_preprocessing(
         f'--bvals={bval_validated}',
         f'--out={eddy_basename}',
         '--repol',  # Replace outliers
+        '--data_is_shelled',  # Skip shell auto-detection (Bruker multi-shell data)
         '--verbose'
     ]
 

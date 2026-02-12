@@ -93,6 +93,64 @@ def convert_5d_to_4d(
     return output_file
 
 
+def round_bvals_to_shells(
+    bvals: np.ndarray,
+    b0_threshold: float = 50.0,
+    shell_tolerance: float = 100.0,
+) -> np.ndarray:
+    """
+    Round b-values to discrete shells for eddy compatibility.
+
+    Bruker effective b-values vary slightly per direction (e.g. 505, 507, 509
+    instead of a uniform b=500).  FSL eddy requires discrete shells.  This
+    function clusters b-values within *shell_tolerance* of each other and
+    replaces each with the rounded shell mean.
+
+    Parameters
+    ----------
+    bvals : np.ndarray
+        Raw b-values (1-D).
+    b0_threshold : float
+        Values below this are set to 0 (b0 volumes).
+    shell_tolerance : float
+        Maximum spread within a shell (default 100 s/mm²).
+
+    Returns
+    -------
+    np.ndarray
+        Shelled b-values (same length as input).
+    """
+    shelled = bvals.copy()
+
+    # b0 volumes
+    shelled[bvals < b0_threshold] = 0.0
+
+    # Cluster non-b0 values into shells by greedy grouping
+    non_b0_mask = bvals >= b0_threshold
+    if not non_b0_mask.any():
+        return shelled
+
+    unique_sorted = np.sort(np.unique(bvals[non_b0_mask]))
+    shells: list[list[float]] = []
+    current_shell = [unique_sorted[0]]
+
+    for bv in unique_sorted[1:]:
+        if bv - current_shell[0] <= shell_tolerance:
+            current_shell.append(bv)
+        else:
+            shells.append(current_shell)
+            current_shell = [bv]
+    shells.append(current_shell)
+
+    # Map each raw b-value to its rounded shell mean
+    for shell_vals in shells:
+        shell_mean = round(np.mean(shell_vals))
+        for bv in shell_vals:
+            shelled[bvals == bv] = shell_mean
+
+    return shelled
+
+
 def validate_gradient_table(
     bval_file: Path,
     bvec_file: Path,
@@ -161,6 +219,14 @@ def validate_gradient_table(
             norm = np.linalg.norm(bvecs[:, i])
             if norm > 0:
                 bvecs[:, i] = bvecs[:, i] / norm
+
+    # Round b-values to discrete shells (Bruker effective b-values vary per
+    # direction; eddy requires discrete shells)
+    bvals_shelled = round_bvals_to_shells(bvals)
+    unique_shells = sorted(set(bvals_shelled.astype(int)))
+    if not np.array_equal(bvals.astype(int), bvals_shelled.astype(int)):
+        print(f"  Rounded b-values to shells: {unique_shells}")
+    bvals = bvals_shelled
 
     return bvals, bvecs
 
