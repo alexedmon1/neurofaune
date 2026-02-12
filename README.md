@@ -72,6 +72,106 @@ This creates:
 
 ---
 
+## Automated Bruker Session Processing
+
+For processing a single Bruker session without a full study setup, `process_bruker_session` automates scan discovery, conversion, and preprocessing in one command. It inventories the raw Bruker session directory, identifies the best scan for each modality, converts to NIfTI, and runs every applicable preprocessing pipeline.
+
+```bash
+uv run python scripts/process_bruker_session.py \
+    /path/to/bruker_session \
+    /path/to/output_dir \
+    --subject sub-001 --session ses-01
+```
+
+This will:
+1. Inventory all scans and classify by modality (T2w, DWI, fMRI, MSME, fieldmap, spectroscopy)
+2. Auto-select the best scan per modality (most slices for T2w, highest b-value for DWI, etc.)
+3. Convert selected scans from Bruker to NIfTI (with 10x voxel scaling, JSON sidecars)
+4. Run anatomical preprocessing (N4, skull strip, tissue segmentation)
+5. Run DWI preprocessing if present (5D→4D, b-value shelling, eddy, DTI fitting)
+6. Run functional preprocessing if present (motion correction, ICA, filtering)
+7. Run MSME preprocessing if present (T2 mapping, MWF)
+8. Write scan inventory CSV and QC reports
+
+### Options
+
+```bash
+# Inventory only (list scans without processing)
+uv run python scripts/process_bruker_session.py \
+    /path/to/bruker_session /path/to/output \
+    --subject sub-001 --session ses-01 --inventory-only
+
+# With custom config and explicit registration
+uv run python scripts/process_bruker_session.py \
+    /path/to/bruker_session /path/to/output \
+    --subject sub-001 --session ses-01 \
+    --config config.yaml --run-registration
+
+# CPU-only eddy (no CUDA)
+uv run python scripts/process_bruker_session.py \
+    /path/to/bruker_session /path/to/output \
+    --subject sub-001 --session ses-01 --no-gpu
+
+# Force re-processing (ignore existing outputs)
+uv run python scripts/process_bruker_session.py \
+    /path/to/bruker_session /path/to/output \
+    --subject sub-001 --session ses-01 --force
+```
+
+### Scan Selection Criteria
+
+| Modality | Method Filter | Selection Priority |
+|----------|--------------|-------------------|
+| T2w | Bruker:RARE | Most slices, penalize <10 slices and localizers |
+| DWI | Bruker:DtiEpi | Highest max b-value, then most volumes |
+| fMRI | Bruker:EPI | Most repetitions, then most slices |
+| MSME | Bruker:MSME | Most echoes, then most slices |
+
+### Output Structure
+
+```
+{output_dir}/
+├── raw/bids/{subject}/{session}/     # Converted NIfTI + JSON sidecars
+│   ├── anat/                         #   T2w
+│   └── dwi/                          #   DWI + bval/bvec
+├── derivatives/{subject}/{session}/  # Preprocessed outputs
+│   ├── anat/                         #   Preproc T2w, brain mask, tissue maps
+│   └── dwi/                          #   Preproc DWI, FA, MD, AD, RD
+├── qc/{subject}/{session}/           # QC reports + scan_inventory.csv
+├── work/{subject}/{session}/         # Intermediate files (deletable)
+└── transforms/{subject}/{session}/   # Transform registry
+```
+
+### Programmatic Use
+
+```python
+from neurofaune.preprocess.workflows.bruker_session import process_bruker_session
+
+results = process_bruker_session(
+    session_dir=Path('/path/to/bruker_session'),
+    output_dir=Path('/path/to/output'),
+    subject='sub-001',
+    session='ses-01',
+    use_gpu=True,
+    skip_registration=True,  # No template registration
+)
+# results['inventory']  -- scan inventory list
+# results['anat']       -- anatomical preprocessing outputs
+# results['dwi']        -- DWI preprocessing outputs (if DWI present)
+```
+
+### When to Use This vs the Full Pipeline
+
+| | Automated Session | Full Pipeline (Steps 2-4) |
+|---|---|---|
+| **Use case** | Single session, quick exploration | Full study with multiple subjects |
+| **Atlas registration** | Optional (skipped by default) | Required (SIGMA atlas) |
+| **Template building** | No | Yes (age-specific templates) |
+| **Scan selection** | Automatic from Bruker metadata | Manual BIDS conversion |
+| **Config** | Optional (sensible defaults) | Required (config.yaml) |
+
+---
+
 ## Step 2: Bruker to BIDS Conversion
 
 Convert raw Bruker ParaVision data to BIDS-formatted NIfTI:
@@ -584,7 +684,8 @@ neurofaune/
 │   │   ├── anat_preprocess.py       # T2w: N4, skull strip, segment, register
 │   │   ├── dwi_preprocess.py        # DTI: eddy, tensor fit, FA→T2w
 │   │   ├── func_preprocess.py       # fMRI: motion, ICA, filter, BOLD→T2w
-│   │   └── msme_preprocess.py       # MSME: T2 mapping, MWF, MSME→T2w
+│   │   ├── msme_preprocess.py       # MSME: T2 mapping, MWF, MSME→T2w
+│   │   └── bruker_session.py        # Automated single-session orchestrator
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
 │       └── skull_strip.py           # Unified skull stripping dispatcher
