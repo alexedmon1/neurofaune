@@ -61,6 +61,45 @@ def parse_bruker_method(method_file: Path) -> Dict[str, any]:
     if match:
         params['method'] = match.group(1)
 
+    # Extract PVM_SPackArrNSlices (number of slices)
+    match = re.search(r'##\$PVM_SPackArrNSlices=\( \d+ \)\n(\d+)', content)
+    if match:
+        params['n_slices'] = int(match.group(1))
+
+    # Extract PVM_NRepetitions
+    match = re.search(r'##\$PVM_NRepetitions=(\d+)', content)
+    if match:
+        params['n_repetitions'] = int(match.group(1))
+
+    # Extract PVM_DwEffBval (effective b-values) for DTI scans
+    match = re.search(r'##\$PVM_DwEffBval=\( (\d+) \)\n([\d\.\s\-e]+)', content)
+    if match:
+        n_bvals = int(match.group(1))
+        bval_values = [float(x) for x in match.group(2).strip().split()]
+        params['n_bvalues'] = len(bval_values)
+        params['max_bvalue'] = max(bval_values) if bval_values else 0.0
+
+    # Extract PVM_DwNDiffDir (number of diffusion directions)
+    match = re.search(r'##\$PVM_DwNDiffDir=(\d+)', content)
+    if match:
+        params['n_directions'] = int(match.group(1))
+    else:
+        # Fallback: count rows in PVM_DwGradVec
+        match = re.search(r'##\$PVM_DwGradVec=\( (\d+), 3 \)', content)
+        if match:
+            params['n_directions'] = int(match.group(1))
+
+    # Extract PVM_EchoTime (single value or array for MSME)
+    match = re.search(r'##\$PVM_EchoTime=([\d\.]+)', content)
+    if match:
+        params['echo_time'] = float(match.group(1))
+    # For MSME: EffectiveTE is the array of echo times
+    match = re.search(r'##\$EffectiveTE=\( (\d+) \)\n([\d\.\s]+)', content)
+    if match:
+        te_values = [float(x) for x in match.group(2).strip().split()]
+        params['echo_times'] = te_values
+        params['n_echoes'] = len(te_values)
+
     # Combine into voxel size (x, y, z)
     if 'in_plane_resolution' in params and 'slice_thickness' in params:
         if len(params['in_plane_resolution']) == 2:

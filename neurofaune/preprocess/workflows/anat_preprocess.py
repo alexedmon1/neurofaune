@@ -978,37 +978,35 @@ def run_anatomical_preprocessing(
         t2w_file, t2w_scaled_file, min_voxel_size=1.0, scale_factor=10.0
     )
 
-    # Load atlas
-    from neurofaune.atlas import AtlasManager
-    atlas_mgr = AtlasManager(config)
+    # Load atlas (only if atlas config is present — not needed for skull stripping)
+    has_atlas = 'atlas' in config and 'base_path' in config.get('atlas', {})
+    if has_atlas:
+        from neurofaune.atlas import AtlasManager
+        atlas_mgr = AtlasManager(config)
 
-    # Get atlas template and mask for skull stripping
-    atlas_template_img = atlas_mgr.get_template(modality=None, masked=False, coronal=True)
+        # Get atlas template and mask (kept for reference / future use)
+        atlas_template_img = atlas_mgr.get_template(modality=None, masked=False, coronal=True)
 
-    # Create brain mask by combining GM and WM (excluding CSF)
-    gm_mask_img = atlas_mgr.get_tissue_mask('gm', probability=False)
-    wm_mask_img = atlas_mgr.get_tissue_mask('wm', probability=False)
+        gm_mask_img = atlas_mgr.get_tissue_mask('gm', probability=False)
+        wm_mask_img = atlas_mgr.get_tissue_mask('wm', probability=False)
 
-    # Combine masks
-    brain_mask_data = (gm_mask_img.get_fdata() > 0) | (wm_mask_img.get_fdata() > 0)
-    atlas_mask_img = nib.Nifti1Image(brain_mask_data.astype(np.uint8), gm_mask_img.affine, gm_mask_img.header)
+        brain_mask_data = (gm_mask_img.get_fdata() > 0) | (wm_mask_img.get_fdata() > 0)
+        atlas_mask_img = nib.Nifti1Image(brain_mask_data.astype(np.uint8), gm_mask_img.affine, gm_mask_img.header)
 
-    # Save to work directory
-    atlas_template_file = work_dir / 'SIGMA_template_unmasked.nii.gz'
-    atlas_mask_file = work_dir / 'SIGMA_brain_mask.nii.gz'
-    nib.save(atlas_template_img, atlas_template_file)
-    nib.save(atlas_mask_img, atlas_mask_file)
+        atlas_template_file = work_dir / 'SIGMA_template_unmasked.nii.gz'
+        atlas_mask_file = work_dir / 'SIGMA_brain_mask.nii.gz'
+        nib.save(atlas_template_img, atlas_template_file)
+        nib.save(atlas_mask_img, atlas_mask_file)
 
-    # Scale atlas if subject was scaled
-    if was_scaled:
-        atlas_template_scaled = work_dir / 'SIGMA_template_unmasked_scaled.nii.gz'
-        atlas_mask_scaled = work_dir / 'SIGMA_brain_mask_scaled.nii.gz'
-        atlas_template_file, _, _ = check_and_scale_voxel_size(
-            atlas_template_file, atlas_template_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-        )
-        atlas_mask_file, _, _ = check_and_scale_voxel_size(
-            atlas_mask_file, atlas_mask_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-        )
+        if was_scaled:
+            atlas_template_scaled = work_dir / 'SIGMA_template_unmasked_scaled.nii.gz'
+            atlas_mask_scaled = work_dir / 'SIGMA_brain_mask_scaled.nii.gz'
+            atlas_template_file, _, _ = check_and_scale_voxel_size(
+                atlas_template_file, atlas_template_scaled, min_voxel_size=1.0, scale_factor=scale_factor
+            )
+            atlas_mask_file, _, _ = check_and_scale_voxel_size(
+                atlas_mask_file, atlas_mask_scaled, min_voxel_size=1.0, scale_factor=scale_factor
+            )
 
     # NOTE: Atlas registration removed - will be done separately in template registration module
 
@@ -1051,25 +1049,22 @@ def run_anatomical_preprocessing(
     if atropos_posteriors:
         atropos_posteriors = [Path(p) for p in atropos_posteriors]
 
-    # Check if posteriors are available
-    if not atropos_posteriors:
-        raise ValueError(
-            "Atropos posteriors not available. "
-            "Tissue segmentation requires method='atropos_bet' which returns posteriors."
+    # Step 4: Tissue segmentation (GM, WM, CSF) — requires Atropos posteriors
+    if atropos_posteriors:
+        print("\n" + "="*60)
+        print("STEP 4: Tissue Segmentation")
+        print("="*60)
+
+        tissue_results = segment_brain_tissue(
+            mask_file=mask_file,
+            atropos_posteriors=atropos_posteriors,
+            output_dir=work_dir,
+            subject=subject,
+            session=session
         )
-
-    # Step 4: Tissue segmentation (GM, WM, CSF)
-    print("\n" + "="*60)
-    print("STEP 4: Tissue Segmentation")
-    print("="*60)
-
-    tissue_results = segment_brain_tissue(
-        mask_file=mask_file,
-        atropos_posteriors=atropos_posteriors,
-        output_dir=work_dir,
-        subject=subject,
-        session=session
-    )
+    else:
+        print("\n  No Atropos posteriors available (adaptive skull strip) — skipping tissue segmentation")
+        tissue_results = {'segmentation': None, 'gm_prob': None, 'wm_prob': None, 'csf_prob': None}
 
     # Step 4b: 3D acquisition detection and resampling
     # If this is a 3D isotropic acquisition (e.g., 3D TurboRARE), resample all
@@ -1127,22 +1122,23 @@ def run_anatomical_preprocessing(
             mask_file = mask_2d
             print(f"  Resampled mask: {mask_2d.name}")
 
-            # Resample tissue segmentation (NearestNeighbor for discrete labels)
-            seg_2d = work_dir / f'{subject}_{session}_dseg_2dlike.nii.gz'
-            _resample_to_2d_geometry(
-                tissue_results['segmentation'], template_ref, seg_2d, 'NearestNeighbor'
-            )
-            tissue_results['segmentation'] = seg_2d
-            print(f"  Resampled segmentation: {seg_2d.name}")
-
-            # Resample tissue probability maps (Linear for continuous probabilities)
-            for tissue_key, tissue_label in [('gm_prob', 'GM'), ('wm_prob', 'WM'), ('csf_prob', 'CSF')]:
-                prob_2d = work_dir / f'{subject}_{session}_label-{tissue_label}_probseg_2dlike.nii.gz'
+            # Resample tissue segmentation (if available)
+            if tissue_results['segmentation'] is not None:
+                seg_2d = work_dir / f'{subject}_{session}_dseg_2dlike.nii.gz'
                 _resample_to_2d_geometry(
-                    tissue_results[tissue_key], template_ref, prob_2d, 'Linear'
+                    tissue_results['segmentation'], template_ref, seg_2d, 'NearestNeighbor'
                 )
-                tissue_results[tissue_key] = prob_2d
-                print(f"  Resampled {tissue_label} probability: {prob_2d.name}")
+                tissue_results['segmentation'] = seg_2d
+                print(f"  Resampled segmentation: {seg_2d.name}")
+
+                # Resample tissue probability maps (Linear for continuous probabilities)
+                for tissue_key, tissue_label in [('gm_prob', 'GM'), ('wm_prob', 'WM'), ('csf_prob', 'CSF')]:
+                    prob_2d = work_dir / f'{subject}_{session}_label-{tissue_label}_probseg_2dlike.nii.gz'
+                    _resample_to_2d_geometry(
+                        tissue_results[tissue_key], template_ref, prob_2d, 'Linear'
+                    )
+                    tissue_results[tissue_key] = prob_2d
+                    print(f"  Resampled {tissue_label} probability: {prob_2d.name}")
 
             resampled_to_2d = True
             resampled_img = nib.load(brain_file)
@@ -1180,18 +1176,26 @@ def run_anatomical_preprocessing(
     shutil.copy(brain_file, final_brain_skullstrip)
     shutil.copy(brain_norm_file, final_brain)
     shutil.copy(mask_file, final_mask)
-    shutil.copy(tissue_results['segmentation'], final_seg)
-    shutil.copy(tissue_results['gm_prob'], final_gm)
-    shutil.copy(tissue_results['wm_prob'], final_wm)
-    shutil.copy(tissue_results['csf_prob'], final_csf)
 
-    print(f"  ✓ Skull-stripped T2w: {final_brain_skullstrip.name}")
-    print(f"  ✓ Preprocessed T2w: {final_brain.name}")
-    print(f"  ✓ Brain mask: {final_mask.name}")
-    print(f"  ✓ Tissue segmentation: {final_seg.name}")
-    print(f"  ✓ GM probability: {final_gm.name}")
-    print(f"  ✓ WM probability: {final_wm.name}")
-    print(f"  ✓ CSF probability: {final_csf.name}")
+    print(f"  Skull-stripped T2w: {final_brain_skullstrip.name}")
+    print(f"  Preprocessed T2w: {final_brain.name}")
+    print(f"  Brain mask: {final_mask.name}")
+
+    if tissue_results['segmentation'] is not None:
+        shutil.copy(tissue_results['segmentation'], final_seg)
+        shutil.copy(tissue_results['gm_prob'], final_gm)
+        shutil.copy(tissue_results['wm_prob'], final_wm)
+        shutil.copy(tissue_results['csf_prob'], final_csf)
+        print(f"  Tissue segmentation: {final_seg.name}")
+        print(f"  GM probability: {final_gm.name}")
+        print(f"  WM probability: {final_wm.name}")
+        print(f"  CSF probability: {final_csf.name}")
+    else:
+        final_seg = None
+        final_gm = None
+        final_wm = None
+        final_csf = None
+        print("  Tissue segmentation: skipped (no posteriors)")
 
     # Step 7: Generate QC
     print("\n" + "="*60)

@@ -9,10 +9,11 @@ Handles:
 - Organization into BIDS-like structure
 """
 
+import csv
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import json
 
 from brukerapi.dataset import Dataset
@@ -577,6 +578,231 @@ def organize_to_bids(
             json.dump(dataset_desc, f, indent=2)
 
     return output_files
+
+
+def inventory_session(
+    session_dir: Path,
+    output_csv: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Classify all scans in a Bruker session and extract key metadata.
+
+    Walks numbered subdirectories that contain a ``method`` file, runs
+    :func:`classify_scan` and :func:`parse_bruker_method` on each, and
+    merges results into a single record per scan.
+
+    Parameters
+    ----------
+    session_dir : Path
+        Top-level Bruker session directory (contains numbered scan dirs).
+    output_csv : Path, optional
+        If provided, write the inventory to this CSV file.
+
+    Returns
+    -------
+    list of dict
+        One dict per scan with keys: scan_number, method, modality, suffix,
+        matrix, n_slices, fov_mm, voxel_size_mm, slice_thickness_mm,
+        n_volumes, max_bvalue, n_repetitions, n_directions.
+    """
+    records: List[Dict[str, Any]] = []
+
+    # Find numbered subdirectories with a method file
+    scan_dirs = sorted(
+        (d for d in session_dir.iterdir()
+         if d.is_dir() and d.name.isdigit() and (d / 'method').exists()),
+        key=lambda d: int(d.name),
+    )
+
+    for scan_dir in scan_dirs:
+        scan_num = int(scan_dir.name)
+
+        # Classification (method/modality/suffix)
+        classification = classify_scan(scan_dir)
+        if classification is None:
+            continue
+
+        # Extended Bruker parameters (voxel size, DTI fields, etc.)
+        params = parse_bruker_method(scan_dir / 'method')
+
+        # Calculate total n_volumes from bval count or repetitions * directions
+        n_volumes: Optional[int] = None
+        if 'n_bvalues' in params:
+            n_volumes = params['n_bvalues']
+        elif 'n_repetitions' in params:
+            n_volumes = params['n_repetitions']
+
+        record: Dict[str, Any] = {
+            'scan_number': scan_num,
+            'method': classification['method'],
+            'modality': classification['modality'],
+            'suffix': classification['suffix'],
+            'matrix': params.get('matrix'),
+            'n_slices': params.get('n_slices'),
+            'fov_mm': params.get('fov'),
+            'voxel_size_mm': params.get('voxel_size'),
+            'slice_thickness_mm': params.get('slice_thickness'),
+            'n_volumes': n_volumes,
+            'max_bvalue': params.get('max_bvalue'),
+            'n_repetitions': params.get('n_repetitions'),
+            'n_directions': params.get('n_directions'),
+            'n_echoes': params.get('n_echoes'),
+            'echo_times': params.get('echo_times'),
+        }
+        records.append(record)
+
+    # Optionally write CSV
+    if output_csv is not None and records:
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = list(records[0].keys())
+        with open(output_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for rec in records:
+                writer.writerow(rec)
+        logger.info(f"Inventory CSV written to {output_csv}")
+
+    return records
+
+
+def select_best_t2w_from_inventory(
+    inventory: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Select best T2w scan from an inventory list.
+
+    Selection criteria (applied to raw Bruker metadata, no NIfTI needed):
+    1. Filter to ``modality == 'anat'`` (Bruker:RARE).
+    2. Penalize scans with method names containing 'localizer' or 'scout'.
+    3. Prefer most slices.
+
+    Parameters
+    ----------
+    inventory : list of dict
+        Output of :func:`inventory_session`.
+
+    Returns
+    -------
+    dict or None
+        Best T2w scan record, or None if no anat scans found.
+    """
+    anat_scans = [r for r in inventory if r['modality'] == 'anat']
+    if not anat_scans:
+        return None
+
+    def _score(rec: Dict[str, Any]) -> float:
+        score = 0.0
+        n_slices = rec.get('n_slices') or 0
+        score += n_slices
+        # Penalize localizer / scout scans
+        method_lower = (rec.get('method') or '').lower()
+        if 'localizer' in method_lower or 'scout' in method_lower:
+            score -= 1000
+        # Penalize very few slices
+        if n_slices < 10:
+            score -= 50
+        return score
+
+    return max(anat_scans, key=_score)
+
+
+def select_best_dwi_from_inventory(
+    inventory: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Select best DWI scan from an inventory list.
+
+    Selection criteria:
+    1. Filter to ``modality == 'dwi'`` (Bruker:DtiEpi).
+    2. Prefer highest ``max_bvalue``.
+    3. Tie-break by most ``n_volumes``.
+
+    Parameters
+    ----------
+    inventory : list of dict
+        Output of :func:`inventory_session`.
+
+    Returns
+    -------
+    dict or None
+        Best DWI scan record, or None if no DWI scans found.
+    """
+    dwi_scans = [r for r in inventory if r['modality'] == 'dwi']
+    if not dwi_scans:
+        return None
+
+    def _score(rec: Dict[str, Any]) -> Tuple[float, int]:
+        max_bval = rec.get('max_bvalue') or 0.0
+        n_vols = rec.get('n_volumes') or 0
+        return (max_bval, n_vols)
+
+    return max(dwi_scans, key=_score)
+
+
+def select_best_func_from_inventory(
+    inventory: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Select best functional (BOLD) scan from an inventory list.
+
+    Selection criteria:
+    1. Filter to ``modality == 'func'`` (Bruker:EPI).
+    2. Prefer most repetitions (longest timeseries).
+    3. Tie-break by most slices.
+
+    Parameters
+    ----------
+    inventory : list of dict
+        Output of :func:`inventory_session`.
+
+    Returns
+    -------
+    dict or None
+        Best func scan record, or None if no func scans found.
+    """
+    func_scans = [r for r in inventory if r['modality'] == 'func']
+    if not func_scans:
+        return None
+
+    def _score(rec: Dict[str, Any]) -> Tuple[int, int]:
+        n_reps = rec.get('n_repetitions') or 0
+        n_slices = rec.get('n_slices') or 0
+        return (n_reps, n_slices)
+
+    return max(func_scans, key=_score)
+
+
+def select_best_msme_from_inventory(
+    inventory: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Select best MSME (multi-echo T2 mapping) scan from an inventory list.
+
+    Selection criteria:
+    1. Filter to ``modality == 'msme'`` (Bruker:MSME).
+    2. Prefer most echoes.
+    3. Tie-break by most slices.
+
+    Parameters
+    ----------
+    inventory : list of dict
+        Output of :func:`inventory_session`.
+
+    Returns
+    -------
+    dict or None
+        Best MSME scan record, or None if no MSME scans found.
+    """
+    msme_scans = [r for r in inventory if r['modality'] == 'msme']
+    if not msme_scans:
+        return None
+
+    def _score(rec: Dict[str, Any]) -> Tuple[int, int]:
+        n_echoes = rec.get('n_echoes') or 0
+        n_slices = rec.get('n_slices') or 0
+        return (n_echoes, n_slices)
+
+    return max(msme_scans, key=_score)
 
 
 def process_all_cohorts(
