@@ -70,8 +70,12 @@ bruker = [
     "bruker2nifti>=1.0",  # Bruker file conversion
 ]
 
+multishell = [
+    "dmri-amico>=2.0.3",  # NODDI via AMICO (fast)
+]
+
 all = [
-    "neurofaune[dev,fslmrs,bruker]",
+    "neurofaune[dev,fslmrs,bruker,multishell]",
 ]
 
 [project.scripts]
