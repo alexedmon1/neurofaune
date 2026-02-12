@@ -199,6 +199,15 @@ def subset_4d_volume(
     return output_path
 
 
+def _metric_randomise_complete(output_dir: Path, metric: str) -> bool:
+    """Check if randomise output already exists for a metric."""
+    metric_dir = output_dir / f"randomise_{metric}"
+    if not metric_dir.is_dir():
+        return False
+    corrp_files = list(metric_dir.glob("randomise_tfce_corrp_*.nii.gz"))
+    return len(corrp_files) > 0
+
+
 def run_single_analysis(
     tbss_dir: Path,
     analysis_name: str,
@@ -209,7 +218,8 @@ def run_single_analysis(
     min_cluster_size: int,
     seed: Optional[int],
     config: Optional[Dict],
-    logger: logging.Logger
+    logger: logging.Logger,
+    skip_existing: bool = False,
 ) -> Dict:
     """
     Run randomise for a single analysis (design).
@@ -326,6 +336,14 @@ def run_single_analysis(
     for metric in metrics:
         logger.info(f"\n  --- {metric} ---")
         metric_output = output_dir / f"randomise_{metric}"
+
+        if skip_existing and _metric_randomise_complete(output_dir, metric):
+            logger.info(f"  {metric}: randomise output exists, skipping (--skip-existing)")
+            all_results[metric] = {
+                'randomise': {'skipped': True},
+                'summary': summarize_results(metric_output, cluster_threshold)
+            }
+            continue
 
         randomise_result = run_randomise(
             input_file=metric_files[metric],
@@ -451,6 +469,8 @@ Output structure:
                         help='Minimum cluster size in voxels (default: 10)')
     parser.add_argument('--seed', type=int,
                         help='Random seed for reproducibility')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='Skip metrics that already have randomise output (corrp NIfTIs)')
 
     args = parser.parse_args()
 
@@ -513,7 +533,8 @@ Output structure:
                 min_cluster_size=args.min_cluster_size,
                 seed=args.seed,
                 config=config,
-                logger=logger
+                logger=logger,
+                skip_existing=args.skip_existing,
             )
             results[analysis] = result
         except Exception as e:
