@@ -403,15 +403,8 @@ def run_msme_preprocessing(
         output_file=brain_extracted_file,
         mask_file=brain_mask_file,
         work_dir=work_dir / 'adaptive_slices',
-        method='auto',  # Will select 'adaptive' for 5-slice MSME
-        target_ratio=skull_strip_config.get('target_ratio', 0.15),
-        frac_range=(
-            skull_strip_config.get('frac_min', 0.30),
-            skull_strip_config.get('frac_max', 0.80)
-        ),
-        frac_step=skull_strip_config.get('frac_step', 0.05),
-        cog_offset_x=skull_strip_config.get('cog_offset_x'),
-        cog_offset_y=skull_strip_config.get('cog_offset_y')
+        method='atropos_bet',  # 3-class Atropos+BET for MSME first echo
+        n_classes=3,  # Brightest class = brain (similar contrast to DWI b0)
     )
 
     # Apply mask to all echoes
@@ -536,15 +529,8 @@ def run_msme_preprocessing(
                         output_file=msme_ref,
                         mask_file=msme_mask,
                         work_dir=reg_work_dir / 'adaptive_slices',
-                        method='auto',
-                        target_ratio=reg_skull_strip_config.get('target_ratio', 0.15),
-                        frac_range=(
-                            reg_skull_strip_config.get('frac_min', 0.30),
-                            reg_skull_strip_config.get('frac_max', 0.80)
-                        ),
-                        frac_step=reg_skull_strip_config.get('frac_step', 0.05),
-                        cog_offset_x=reg_skull_strip_config.get('cog_offset_x'),
-                        cog_offset_y=reg_skull_strip_config.get('cog_offset_y')
+                        method='atropos_bet',  # 3-class Atropos+BET
+                        n_classes=3,
                     )
 
                 if use_template:
