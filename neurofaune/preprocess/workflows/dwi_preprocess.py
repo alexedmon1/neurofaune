@@ -586,7 +586,7 @@ def run_dwi_preprocessing(
         output_file=b0_brain_file,
         mask_file=brain_mask_file,
         work_dir=skull_strip_work_dir,
-        method='auto',  # Will select 'atropos_bet' for 11-slice DTI
+        method='atropos_bet',  # Always use 3-class Atropos+BET for DWI b0
         cohort=cohort,
         n_classes=3,  # 3-class: brightest class = brain (proven for DWI b0)
     )
