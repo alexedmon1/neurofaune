@@ -335,7 +335,7 @@ functional:
 
   # Motion QC thresholds
   motion_qc:
-    fd_threshold: 0.5               # Framewise displacement threshold (mm)
+    fd_threshold: 0.05              # Framewise displacement threshold (mm, real/unscaled space)
 
   # Registration (DISABLED - under development)
   # Registration to anatomical and atlas spaces will be added in future releases

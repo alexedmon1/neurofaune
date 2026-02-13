@@ -891,18 +891,17 @@ def run_functional_preprocessing(
     1. Image validation
     2. Discard initial volumes (if requested)
     2.5. Slice timing correction (optional, BEFORE motion correction)
-    3. Motion correction (MCFLIRT)
-    4. Brain extraction from mean BOLD
-    5. Apply mask to timeseries
+    3. Brain extraction from mean BOLD
+    4. Motion correction (MCFLIRT)
+    5. ICA denoising (optional, removes noise components)
     6. Spatial smoothing (rodent-optimized FWHM)
-    7. Temporal filtering (highpass/lowpass bandpass)
-    8. Confound extraction (24 motion regressors)
-
-    Optionally performs:
-    - Slice timing correction (corrects for temporal differences in slice acquisition)
-    - ICA-based denoising (rodent-specific, enabled via config)
-    - aCompCor extraction (CSF/WM physiological noise components)
-    - Comprehensive QC reports for all steps
+    7. Extract 24 motion confound regressors
+    8. aCompCor extraction (optional, CSF/WM physiological noise)
+    9. Nuisance regression (motion + aCompCor in single OLS pass)
+    10. Temporal filtering (highpass/lowpass bandpass, AFTER regression)
+    11. Save outputs and metadata
+    12. QC reports (motion, confounds, skull strip, ICA, aCompCor)
+    13. BOLD to template registration (optional)
 
     Parameters
     ----------
@@ -1205,10 +1204,21 @@ def run_functional_preprocessing(
         )
 
         # Classify components
+        # CSF mask from anat preprocessing is in T2w space — resample to BOLD space
         csf_mask = None
         csf_mask_path = output_dir / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_label-CSF_probseg.nii.gz'
         if csf_mask_path.exists():
-            csf_mask = csf_mask_path
+            from nibabel.processing import resample_from_to
+            bold_ref_img = nib.load(brain_mask)
+            csf_img = nib.load(csf_mask_path)
+            if csf_img.shape[:3] != bold_ref_img.shape[:3]:
+                print(f"  Resampling CSF mask from {csf_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
+                csf_resampled = resample_from_to(csf_img, bold_ref_img, order=1)
+                csf_mask_bold = work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz'
+                nib.save(csf_resampled, csf_mask_bold)
+                csf_mask = csf_mask_bold
+            else:
+                csf_mask = csf_mask_path
 
         classification = classify_ica_components(
             melodic_dir=melodic_dir,
@@ -1270,34 +1280,11 @@ def run_functional_preprocessing(
     bold_smooth = work_dir / f"{subject}_{session}_bold_smooth.nii.gz"
     smooth_image(bold_for_smoothing, bold_smooth, smoothing_fwhm)
 
-    # Use smoothed data for filtering
-    bold_for_filtering = bold_smooth
-
     # =========================================================================
-    # STEP 7: Temporal Filtering (AFTER ICA denoising)
+    # STEP 7: Extract Motion Confounds
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 7: Temporal Filtering")
-    print("="*60)
-
-    bold_filtered = work_dir / f"{subject}_{session}_bold_filtered.nii.gz"
-    temporal_filter(
-        bold_for_filtering,
-        bold_filtered,
-        tr,
-        highpass=highpass_freq,
-        lowpass=lowpass_freq
-    )
-
-    # Copy filtered data to derivatives as final output
-    final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
-    shutil.copy(str(bold_filtered), str(final_bold))
-
-    # =========================================================================
-    # STEP 8: Extract Confounds
-    # =========================================================================
-    print("\n" + "="*60)
-    print("STEP 8: Extract Confound Regressors")
+    print("STEP 7: Extract Motion Confounds")
     print("="*60)
 
     confounds_file = derivatives_dir / f"{subject}_{session}_desc-confounds_timeseries.tsv"
@@ -1309,17 +1296,20 @@ def run_functional_preprocessing(
     )
 
     # =========================================================================
-    # STEP 9: aCompCor (Optional)
+    # STEP 8: aCompCor Extraction (Optional)
     # =========================================================================
     acompcor_config = func_config.get('denoising', {}).get('acompcor', {})
     acompcor_enabled = acompcor_config.get('enabled', False)
+    acompcor_file = None
 
     if acompcor_enabled:
         print("\n" + "="*60)
-        print("STEP 9: aCompCor Extraction")
+        print("STEP 8: aCompCor Extraction")
         print("="*60)
 
         # Find CSF and WM masks from anatomical preprocessing
+        # These are in T2w space — resample to BOLD space if needed
+        from nibabel.processing import resample_from_to as _resample_from_to
         anat_deriv_dir = output_dir / 'derivatives' / subject / session / 'anat'
         csf_mask = anat_deriv_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
         wm_mask = anat_deriv_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
@@ -1331,13 +1321,25 @@ def run_functional_preprocessing(
             print(f"  Skipping aCompCor extraction")
             print(f"  (Run anatomical preprocessing first to generate tissue masks)")
             acompcor_enabled = False
+        else:
+            bold_ref_img = nib.load(brain_mask)
+            for label, mask_path in [('CSF', csf_mask), ('WM', wm_mask)]:
+                mask_img = nib.load(mask_path)
+                if mask_img.shape[:3] != bold_ref_img.shape[:3]:
+                    print(f"  Resampling {label} mask from {mask_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
+                    resampled = _resample_from_to(mask_img, bold_ref_img, order=1)
+                    out_path = work_dir / f'{subject}_{session}_space-bold_label-{label}_probseg.nii.gz'
+                    nib.save(resampled, out_path)
+                    if label == 'CSF':
+                        csf_mask = out_path
+                    else:
+                        wm_mask = out_path
 
     if acompcor_enabled:
-        # Extract aCompCor components
         acompcor_file = derivatives_dir / f"{subject}_{session}_desc-acompcor_timeseries.tsv"
 
         acompcor_results = extract_acompcor_components(
-            bold_file=bold_smooth,  # Use smoothed data (before ICA and filtering)
+            bold_file=bold_smooth,
             csf_mask=csf_mask,
             wm_mask=wm_mask,
             n_components=acompcor_config.get('num_components', 5),
@@ -1361,19 +1363,82 @@ def run_functional_preprocessing(
             'n_voxels_wm': acompcor_results['n_voxels_wm']
         }
 
-        print(f"  ✓ aCompCor components saved: {acompcor_file}")
+        print(f"  ✓ aCompCor components extracted: {acompcor_file}")
     else:
         if not acompcor_config.get('enabled', False):
             print("\n" + "="*60)
-            print("STEP 9: aCompCor (Skipped)")
+            print("STEP 8: aCompCor (Skipped)")
             print("="*60)
             print("  aCompCor disabled in config")
 
     # =========================================================================
-    # STEP 10: Save Output Files and Metadata
+    # STEP 9: Nuisance Regression (motion + aCompCor)
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 10: Save Output Files")
+    print("STEP 9: Nuisance Regression")
+    print("="*60)
+
+    # Build design matrix: 24 motion params + aCompCor (if available)
+    confounds_matrix = np.loadtxt(confounds_file, skiprows=1)  # 24 motion regressors
+    regressor_labels = ['24 motion']
+
+    if acompcor_enabled and acompcor_file is not None:
+        acompcor_matrix = np.loadtxt(acompcor_file, skiprows=1)
+        confounds_matrix = np.column_stack([confounds_matrix, acompcor_matrix])
+        n_acompcor = acompcor_matrix.shape[1]
+        regressor_labels.append(f'{n_acompcor} aCompCor')
+
+    print(f"  Regressors: {' + '.join(regressor_labels)} = {confounds_matrix.shape[1]} total")
+
+    bold_img = nib.load(bold_smooth)
+    bold_data = bold_img.get_fdata()
+    mask_data = nib.load(brain_mask).get_fdata().astype(bool)
+
+    n_timepoints = bold_data.shape[3]
+    design = np.column_stack([confounds_matrix[:n_timepoints], np.ones(n_timepoints)])
+
+    # Voxelwise OLS regression within mask, keep residuals
+    clean_data = bold_data.copy()
+    voxels = np.where(mask_data)
+    timeseries = bold_data[voxels[0], voxels[1], voxels[2], :]  # (n_voxels, n_timepoints)
+
+    pre_var = np.var(timeseries, axis=1).mean()
+    betas = np.linalg.lstsq(design, timeseries.T, rcond=None)[0]  # (n_regressors, n_voxels)
+    residuals = timeseries.T - design @ betas  # (n_timepoints, n_voxels)
+    residuals = residuals + betas[-1, :]  # add intercept back
+    post_var = np.var(residuals.T, axis=1).mean()
+    clean_data[voxels[0], voxels[1], voxels[2], :] = residuals.T
+
+    bold_regressed = work_dir / f"{subject}_{session}_bold_regressed.nii.gz"
+    nib.save(nib.Nifti1Image(clean_data.astype(np.float32), bold_img.affine, bold_img.header), bold_regressed)
+    print(f"  Regressed {confounds_matrix.shape[1]} nuisance regressors from {n_timepoints} volumes")
+    print(f"  Variance reduction: {100*(1 - post_var/pre_var):.1f}%")
+
+    # =========================================================================
+    # STEP 10: Temporal Filtering (AFTER nuisance regression)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("STEP 10: Temporal Filtering")
+    print("="*60)
+
+    bold_filtered = work_dir / f"{subject}_{session}_bold_filtered.nii.gz"
+    temporal_filter(
+        bold_regressed,
+        bold_filtered,
+        tr,
+        highpass=highpass_freq,
+        lowpass=lowpass_freq
+    )
+
+    # Save filtered data as final output
+    final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+    shutil.copy(str(bold_filtered), str(final_bold))
+
+    # =========================================================================
+    # STEP 11: Save Output Files and Metadata
+    # =========================================================================
+    print("\n" + "="*60)
+    print("STEP 11: Save Output Files")
     print("="*60)
 
     # Copy/save final outputs
@@ -1433,13 +1498,14 @@ def run_functional_preprocessing(
     results['metadata'] = metadata_file
 
     # =========================================================================
-    # STEP 11: Generate QC Reports
+    # STEP 12: Generate QC Reports
     # =========================================================================
     print("\n" + "="*60)
-    print("STEP 11: Generate QC Reports")
+    print("STEP 12: Generate QC Reports")
     print("="*60)
 
     # Motion QC
+    motion_qc_threshold = func_config.get('motion_qc', {}).get('fd_threshold', 0.05)
     motion_qc_report = generate_motion_qc_report(
         subject=subject,
         session=session,
@@ -1447,7 +1513,7 @@ def run_functional_preprocessing(
         bold_file=final_bold,
         mask_file=brain_mask,
         output_dir=qc_dir,
-        threshold_fd=0.5,
+        threshold_fd=motion_qc_threshold,
         original_file=ref_norm,
         brain_file=brain_ref,
         skull_strip_mask_file=brain_mask,
@@ -1468,7 +1534,7 @@ def run_functional_preprocessing(
     }
 
     # =========================================================================
-    # STEP 12: BOLD to Template Registration
+    # STEP 13: BOLD to Template Registration
     # =========================================================================
     registration_results = None
 

@@ -15,36 +15,50 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-def calculate_framewise_displacement(motion_params: np.ndarray, radius: float = 50.0) -> np.ndarray:
+def calculate_framewise_displacement(
+    motion_params: np.ndarray,
+    radius: float = 50.0,
+    voxel_scale: float = 10.0
+) -> np.ndarray:
     """
     Calculate framewise displacement from motion parameters.
-    
+
     FD = sum of absolute derivatives of 6 motion parameters
     Rotational displacements are converted to mm using head radius.
-    
+
     Parameters
     ----------
     motion_params : np.ndarray
         Motion parameters array (n_timepoints x 6)
         Columns: [rot_x, rot_y, rot_z, trans_x, trans_y, trans_z]
     radius : float
-        Head radius in mm for converting rotations (default: 50mm for rodents)
-    
+        Head radius in mm for converting rotations (default: 50mm for rodents,
+        i.e. ~5mm real radius × 10x voxel scaling)
+    voxel_scale : float
+        Voxel scaling factor applied to images. MCFLIRT estimates motion in
+        scaled voxel space, so translations and rotational arc lengths are
+        inflated by this factor. Set to 10.0 for standard rodent 10x scaling,
+        or 1.0 for unscaled data.
+
     Returns
     -------
     np.ndarray
-        Framewise displacement (n_timepoints - 1,)
+        Framewise displacement in real (unscaled) mm (n_timepoints - 1,)
     """
     # Convert rotations (radians) to mm displacement
     motion_mm = motion_params.copy()
     motion_mm[:, :3] = motion_mm[:, :3] * radius
-    
+
     # Calculate absolute derivatives
     diff = np.abs(np.diff(motion_mm, axis=0))
-    
+
     # Sum across all parameters
     fd = np.sum(diff, axis=1)
-    
+
+    # Correct for voxel scaling: MCFLIRT operates in scaled space so all
+    # displacement estimates (translations + rotational arcs) are inflated
+    fd = fd / voxel_scale
+
     return fd
 
 
@@ -151,9 +165,11 @@ def generate_motion_qc_report(
     n_bad_volumes = np.sum(fd > threshold_fd)
     pct_bad_volumes = (n_bad_volumes / len(fd)) * 100
     
-    mean_abs_displacement = np.mean(np.abs(motion_params[:, 3:]), axis=0)
-    max_abs_displacement = np.max(np.abs(motion_params[:, 3:]), axis=0)
-    
+    # Correct translations for 10x voxel scaling (MCFLIRT reports in scaled space)
+    voxel_scale = 10.0
+    mean_abs_displacement = np.mean(np.abs(motion_params[:, 3:]), axis=0) / voxel_scale
+    max_abs_displacement = np.max(np.abs(motion_params[:, 3:]), axis=0) / voxel_scale
+
     mean_abs_rotation = np.mean(np.abs(motion_params[:, :3]), axis=0) * (180.0 / np.pi)  # Convert to degrees
     max_abs_rotation = np.max(np.abs(motion_params[:, :3]), axis=0) * (180.0 / np.pi)
     
