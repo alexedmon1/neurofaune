@@ -22,7 +22,11 @@ def generate_eddy_qc_report(
     session: str,
     dwi_preproc: Path,
     eddy_params: Optional[Path] = None,
-    output_dir: Path = None
+    output_dir: Path = None,
+    original_file: Optional[Path] = None,
+    brain_file: Optional[Path] = None,
+    mask_file: Optional[Path] = None,
+    skull_strip_info: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Generate comprehensive QC report for eddy correction.
@@ -39,6 +43,14 @@ def generate_eddy_qc_report(
         Eddy parameter file (.eddy_parameters)
     output_dir : Path
         Output directory for QC reports
+    original_file : Path, optional
+        Original (pre-skull-strip) b0 image for skull strip QC
+    brain_file : Path, optional
+        Brain-extracted b0 image
+    mask_file : Path, optional
+        Binary brain mask file
+    skull_strip_info : dict, optional
+        Info dict from skull_strip dispatcher
 
     Returns
     -------
@@ -91,13 +103,47 @@ def generate_eddy_qc_report(
     qc_metrics.update(volume_metrics)
     figure_paths.append(volume_fig)
 
+    # Generate skull strip QC section if files provided
+    skull_strip_html = ''
+    if original_file is not None and mask_file is not None:
+        _orig = original_file if not isinstance(original_file, Path) else original_file
+        _mask = mask_file if not isinstance(mask_file, Path) else mask_file
+        if Path(_orig).exists() and Path(_mask).exists():
+            from neurofaune.preprocess.qc.skull_strip_qc import (
+                calculate_skull_strip_metrics,
+                plot_slicesdir_mosaic,
+                plot_mask_edge_triplanar,
+                skull_strip_html_section,
+            )
+            orig_img = nib.load(_orig)
+            orig_data = orig_img.get_fdata()
+            mask_data = nib.load(_mask).get_fdata() > 0
+            brain_data = nib.load(brain_file).get_fdata() if brain_file and Path(brain_file).exists() else orig_data * mask_data
+
+            ss_metrics = calculate_skull_strip_metrics(
+                orig_data, brain_data, mask_data,
+                voxel_sizes=orig_img.header.get_zooms()[:3],
+                skull_strip_info=skull_strip_info,
+            )
+            ss_figures = []
+            ss_figures.append(plot_slicesdir_mosaic(
+                orig_data, mask_data, subject, session, 'dwi', figures_dir
+            ))
+            ss_figures.append(plot_mask_edge_triplanar(
+                orig_data, mask_data, subject, session, 'dwi', figures_dir
+            ))
+            skull_strip_html = skull_strip_html_section(ss_metrics, ss_figures, skull_strip_info)
+            qc_metrics['skull_stripping'] = ss_metrics
+            figure_paths.extend(ss_figures)
+
     # Create HTML report
     html_report = _create_eddy_html_report(
         subject,
         session,
         qc_metrics,
         figure_paths,
-        output_dir
+        output_dir,
+        skull_strip_html=skull_strip_html,
     )
 
     # Save metrics to JSON
@@ -265,7 +311,8 @@ def _create_eddy_html_report(
     session: str,
     metrics: Dict[str, Any],
     figures: List[Path],
-    output_dir: Path
+    output_dir: Path,
+    skull_strip_html: str = '',
 ) -> Path:
     """Create HTML QC report for eddy correction."""
     html_content = f"""
@@ -293,6 +340,8 @@ def _create_eddy_html_report(
             <h1>DWI Eddy Correction QC Report</h1>
             <p>Subject: {subject} | Session: {session}</p>
         </div>
+
+        {skull_strip_html}
 
         <div class="section">
             <h2>Summary Metrics</h2>

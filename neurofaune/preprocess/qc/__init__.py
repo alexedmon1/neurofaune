@@ -23,6 +23,12 @@ from neurofaune.preprocess.qc.batch_summary import (
     detect_outliers,
     BatchQCConfig,
 )
+from neurofaune.preprocess.qc.skull_strip_qc import (
+    calculate_skull_strip_metrics,
+    plot_slicesdir_mosaic,
+    plot_mask_edge_triplanar,
+    skull_strip_html_section,
+)
 
 __all__ = [
     'get_subject_qc_dir',
@@ -35,4 +41,8 @@ __all__ = [
     'collect_qc_metrics',
     'detect_outliers',
     'BatchQCConfig',
+    'calculate_skull_strip_metrics',
+    'plot_slicesdir_mosaic',
+    'plot_mask_edge_triplanar',
+    'skull_strip_html_section',
 ]

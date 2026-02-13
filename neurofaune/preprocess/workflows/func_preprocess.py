@@ -1439,7 +1439,11 @@ def run_functional_preprocessing(
         bold_file=final_bold,
         mask_file=brain_mask,
         output_dir=qc_dir,
-        threshold_fd=0.5
+        threshold_fd=0.5,
+        original_file=ref_norm,
+        brain_file=brain_ref,
+        skull_strip_mask_file=brain_mask,
+        skull_strip_info=skull_strip_info,
     )
 
     # Confounds QC

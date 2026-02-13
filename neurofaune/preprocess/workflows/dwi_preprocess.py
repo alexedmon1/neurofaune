@@ -744,7 +744,11 @@ def run_dwi_preprocessing(
             session=session,
             dwi_preproc=dwi_eddy_file,
             eddy_params=eddy_params_file,
-            output_dir=qc_dir
+            output_dir=qc_dir,
+            original_file=b0_file,
+            brain_file=b0_brain_file,
+            mask_file=brain_mask_file,
+            skull_strip_info=skull_strip_info,
         )
         qc_results['eddy_qc'] = eddy_qc
     else:

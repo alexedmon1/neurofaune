@@ -474,7 +474,9 @@ def run_msme_preprocessing(
         brain_mask=brain_mask_file,
         te_values=te_values,
         sample_data=sample_data,
-        output_dir=qc_dir
+        output_dir=qc_dir,
+        original_file=first_echo_file,
+        skull_strip_info=skull_strip_result,
     )
 
     print(f"\n✓ MSME QC report: {qc_results['html_report']}")

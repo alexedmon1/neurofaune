@@ -8,7 +8,7 @@ import json
 import numpy as np
 import nibabel as nib
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -92,11 +92,15 @@ def generate_motion_qc_report(
     bold_file: Path,
     mask_file: Path,
     output_dir: Path,
-    threshold_fd: float = 0.5
+    threshold_fd: float = 0.5,
+    original_file: Optional[Path] = None,
+    brain_file: Optional[Path] = None,
+    skull_strip_mask_file: Optional[Path] = None,
+    skull_strip_info: Optional[Dict] = None,
 ) -> Path:
     """
     Generate comprehensive motion QC report for fMRI.
-    
+
     Parameters
     ----------
     subject : str
@@ -113,7 +117,15 @@ def generate_motion_qc_report(
         Output directory for QC report
     threshold_fd : float
         Framewise displacement threshold for flagging (default: 0.5mm)
-    
+    original_file : Path, optional
+        Original (pre-skull-strip) reference image for skull strip QC
+    brain_file : Path, optional
+        Brain-extracted reference image
+    skull_strip_mask_file : Path, optional
+        Binary brain mask used for skull stripping QC. If None, falls back to mask_file.
+    skull_strip_info : dict, optional
+        Info dict from skull_strip dispatcher
+
     Returns
     -------
     Path
@@ -229,9 +241,43 @@ def generate_motion_qc_report(
     plt.close()
     
     # =========================================================================
+    # Skull Strip QC Section (optional)
+    # =========================================================================
+
+    skull_strip_html = ''
+    if original_file is not None:
+        _orig = Path(original_file)
+        _ss_mask = Path(skull_strip_mask_file) if skull_strip_mask_file is not None else Path(mask_file)
+        if _orig.exists() and _ss_mask.exists():
+            from neurofaune.preprocess.qc.skull_strip_qc import (
+                calculate_skull_strip_metrics,
+                plot_slicesdir_mosaic,
+                plot_mask_edge_triplanar,
+                skull_strip_html_section,
+            )
+            orig_img = nib.load(_orig)
+            orig_data = orig_img.get_fdata()
+            ss_mask_data = nib.load(_ss_mask).get_fdata() > 0
+            brain_data = nib.load(brain_file).get_fdata() if brain_file and Path(brain_file).exists() else orig_data * ss_mask_data
+
+            ss_metrics = calculate_skull_strip_metrics(
+                orig_data, brain_data, ss_mask_data,
+                voxel_sizes=orig_img.header.get_zooms()[:3],
+                skull_strip_info=skull_strip_info,
+            )
+            ss_figures = []
+            ss_figures.append(plot_slicesdir_mosaic(
+                orig_data, ss_mask_data, subject, session, 'func', figures_dir
+            ))
+            ss_figures.append(plot_mask_edge_triplanar(
+                orig_data, ss_mask_data, subject, session, 'func', figures_dir
+            ))
+            skull_strip_html = skull_strip_html_section(ss_metrics, ss_figures, skull_strip_info)
+
+    # =========================================================================
     # Generate HTML Report
     # =========================================================================
-    
+
     html_content = f"""
 <!DOCTYPE html>
 <html>
@@ -322,7 +368,9 @@ def generate_motion_qc_report(
         <p><strong>Subject:</strong> {subject}</p>
         <p><strong>Session:</strong> {session}</p>
         <p><strong>Number of volumes:</strong> {n_volumes}</p>
-        
+
+        {skull_strip_html}
+
         <div class="summary">
             <h2>Summary Statistics</h2>
             

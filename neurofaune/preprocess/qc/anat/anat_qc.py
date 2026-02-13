@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import json
 
+from neurofaune.preprocess.qc.skull_strip_qc import plot_slicesdir_mosaic
+
 
 def generate_skull_strip_qc(
     subject: str,
@@ -88,6 +90,12 @@ def generate_skull_strip_qc(
         t2w_data, mask_data, subject, session, figures_dir
     )
     figures.append(edge_fig)
+
+    # 4. Full-slice mosaic (slicesdir-style, all slices)
+    mosaic_fig = plot_slicesdir_mosaic(
+        t2w_data, mask_data, subject, session, 'anat', figures_dir
+    )
+    figures.append(mosaic_fig)
 
     print(f"  Skull stripping QC complete: {len(figures)} figures generated")
 

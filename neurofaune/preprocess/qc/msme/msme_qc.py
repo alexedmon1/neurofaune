@@ -4,7 +4,7 @@ import nibabel as nib
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 
 
@@ -18,7 +18,9 @@ def generate_msme_qc_report(
     brain_mask: Path,
     te_values: np.ndarray,
     sample_data: Dict[str, Any],
-    output_dir: Path
+    output_dir: Path,
+    original_file: Optional[Path] = None,
+    skull_strip_info: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """Generate QC report for MSME T2 mapping and MWF."""
     print(f"\n{'='*80}")
@@ -84,8 +86,38 @@ def generate_msme_qc_report(
         montage = _plot_montage(data, name, subject, session, figures_dir, cmap, vmin, vmax)
         figures.append(montage)
 
+    # Generate skull strip QC section if original file provided
+    skull_strip_html = ''
+    if original_file is not None and Path(original_file).exists():
+        from neurofaune.preprocess.qc.skull_strip_qc import (
+            calculate_skull_strip_metrics,
+            plot_slicesdir_mosaic,
+            plot_mask_edge_triplanar,
+            skull_strip_html_section,
+        )
+        orig_img = nib.load(original_file)
+        orig_data = orig_img.get_fdata()
+        # brain_mask is already loaded as `mask`
+        brain_data = orig_data * mask
+
+        ss_metrics = calculate_skull_strip_metrics(
+            orig_data, brain_data, mask,
+            voxel_sizes=orig_img.header.get_zooms()[:3],
+            skull_strip_info=skull_strip_info,
+        )
+        ss_figures = []
+        ss_figures.append(plot_slicesdir_mosaic(
+            orig_data, mask, subject, session, 'msme', figures_dir
+        ))
+        ss_figures.append(plot_mask_edge_triplanar(
+            orig_data, mask, subject, session, 'msme', figures_dir
+        ))
+        skull_strip_html = skull_strip_html_section(ss_metrics, ss_figures, skull_strip_info)
+        metrics['skull_stripping'] = ss_metrics
+        figures.extend(ss_figures)
+
     # Create HTML report
-    html_report = _create_html_report(subject, session, metrics, figures, output_dir)
+    html_report = _create_html_report(subject, session, metrics, figures, output_dir, skull_strip_html=skull_strip_html)
 
     # Save metrics
     metrics_file = output_dir / f'{subject}_{session}_msme_qc_metrics.json'
@@ -241,7 +273,7 @@ def _plot_montage(data, name, subject, session, output_dir, cmap, vmin, vmax):
     return output_file
 
 
-def _create_html_report(subject, session, metrics, figures, output_dir):
+def _create_html_report(subject, session, metrics, figures, output_dir, skull_strip_html=''):
     """Create HTML QC report."""
     html_content = f"""
     <!DOCTYPE html>
@@ -252,6 +284,11 @@ def _create_html_report(subject, session, metrics, figures, output_dir):
             body {{ font-family: Arial; margin: 20px; background: #f5f5f5; }}
             .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 5px; }}
             .section {{ background: white; margin: 20px 0; padding: 20px; border-radius: 5px; }}
+            .metric {{ display: inline-block; margin: 10px 20px 10px 0; }}
+            .metric-label {{ font-weight: bold; color: #34495e; }}
+            .metric-value {{ color: #2c3e50; font-size: 1.1em; }}
+            .warning {{ color: #e74c3c; font-weight: bold; }}
+            .good {{ color: #27ae60; font-weight: bold; }}
             table {{ width: 100%; border-collapse: collapse; }}
             th, td {{ padding: 12px; border-bottom: 1px solid #ddd; }}
             th {{ background: #34495e; color: white; }}
@@ -263,6 +300,9 @@ def _create_html_report(subject, session, metrics, figures, output_dir):
             <h1>MSME T2 Mapping QC Report</h1>
             <p>Subject: {subject} | Session: {session}</p>
         </div>
+
+        {skull_strip_html}
+
         <div class="section">
             <h2>Summary Metrics</h2>
             <table>
