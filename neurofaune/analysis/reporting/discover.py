@@ -336,7 +336,10 @@ def _discover_batch_qc(analysis_root: Path) -> List[Dict[str, Any]]:
         qc_base = root / "qc"
         if not qc_base.is_dir():
             continue
-        for summary_dir in sorted(qc_base.iterdir()):
+        # Batch summaries live under qc/reports/ (new structure) or qc/ (legacy)
+        reports_dir = qc_base / "reports"
+        search_dir = reports_dir if reports_dir.is_dir() else qc_base
+        for summary_dir in sorted(search_dir.iterdir()):
             if not summary_dir.is_dir() or not summary_dir.name.endswith("_batch_summary"):
                 continue
             modality = summary_dir.name.replace("_batch_summary", "")

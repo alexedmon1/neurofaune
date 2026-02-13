@@ -557,7 +557,8 @@ def run_multishell_fitting(
         try:
             from ..qc.dwi.multishell_qc import generate_multishell_qc_report
 
-            qc_dir = output_dir / "qc" / subject / session / "dwi"
+            from neurofaune.preprocess.qc import get_subject_qc_dir
+            qc_dir = get_subject_qc_dir(output_dir, subject, session, "dwi")
             results["qc"] = generate_multishell_qc_report(
                 subject=subject,
                 session=session,

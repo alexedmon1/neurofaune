@@ -3,20 +3,25 @@ Quality Control modules for neurofaune preprocessing.
 
 QC Directory Structure:
     {study_root}/qc/
-    ├── {subject}/{session}/        # Per-subject QC
+    ├── subjects/{subject}/{session}/   # Per-subject QC
     │   ├── anat/
     │   ├── dwi/
     │   ├── func/
     │   └── msme/
-    └── {modality}_batch_summary/   # Batch summaries
+    └── reports/                        # Module-wide reports
+        ├── skull_strip_{modality}.html # Omnibus skull strip galleries
+        ├── {modality}_batch_summary/   # Batch summaries
+        └── templates/{cohort}/         # Template QC
 """
 
 from neurofaune.preprocess.qc.batch_summary import (
     get_subject_qc_dir,
     get_batch_summary_dir,
+    get_reports_dir,
     generate_batch_qc_summary,
     generate_exclusion_lists,
     generate_slice_qc_summary,
+    generate_skull_strip_omnibus,
     compute_slice_metrics,
     flag_bad_slices,
     collect_qc_metrics,
@@ -33,9 +38,11 @@ from neurofaune.preprocess.qc.skull_strip_qc import (
 __all__ = [
     'get_subject_qc_dir',
     'get_batch_summary_dir',
+    'get_reports_dir',
     'generate_batch_qc_summary',
     'generate_exclusion_lists',
     'generate_slice_qc_summary',
+    'generate_skull_strip_omnibus',
     'compute_slice_metrics',
     'flag_bad_slices',
     'collect_qc_metrics',

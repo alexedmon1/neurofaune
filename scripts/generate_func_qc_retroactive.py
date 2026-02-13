@@ -65,7 +65,7 @@ def find_preprocessed_subjects(study_root: Path):
 
 def check_existing_qc(study_root: Path, subject: str, session: str) -> bool:
     """Check if QC metrics already exist for a subject."""
-    qc_dir = study_root / 'qc' / 'sub' / subject / session / 'func'
+    qc_dir = study_root / 'qc' / 'subjects' / subject / session / 'func'
     metrics_file = qc_dir / f'{subject}_{session}_func_qc_metrics.json'
     return metrics_file.exists()
 

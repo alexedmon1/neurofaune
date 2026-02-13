@@ -60,7 +60,7 @@ def main():
     transforms_dir = study_root / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
 
-    qc_dir = study_root / 'qc' / subject / session / 'anat'
+    qc_dir = study_root / 'qc' / 'subjects' / subject / session / 'anat'
     qc_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"T2w file: {t2w_file}")

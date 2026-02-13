@@ -508,6 +508,8 @@ def create_study_directories(study_root: Path, create_all: bool = False) -> Dict
         'atlas': study_root / 'atlas',
         'transforms': study_root / 'transforms',
         'qc': study_root / 'qc',
+        'qc_subjects': study_root / 'qc' / 'subjects',
+        'qc_reports': study_root / 'qc' / 'reports',
         'work': study_root / 'work',
     }
 
@@ -522,7 +524,7 @@ def create_study_directories(study_root: Path, create_all: bool = False) -> Dict
 
     # Create directories
     essential_dirs = ['study_root', 'raw', 'derivatives', 'templates', 'atlas',
-                      'transforms', 'qc', 'work']
+                      'transforms', 'qc', 'qc_subjects', 'qc_reports', 'work']
 
     for name, path in directories.items():
         if create_all or name in essential_dirs:

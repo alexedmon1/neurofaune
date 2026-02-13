@@ -497,7 +497,7 @@ def run_phase1_template_building(
     print("Step 1.4: Generating template QC report")
     print("-"*60)
 
-    qc_dir = output_dir / 'qc' / 'templates' / cohort
+    qc_dir = output_dir / 'qc' / 'reports' / 'templates' / cohort
     qc_dir.mkdir(parents=True, exist_ok=True)
 
     generate_template_qc_report(
@@ -684,7 +684,7 @@ def run_phase2_full_processing(
                         subject=subject,
                         session=session,
                         output_file=atlas_output,
-                        qc_dir=output_dir / 'qc' / subject / session / 'anat'
+                        qc_dir=output_dir / 'qc' / 'subjects' / subject / session / 'anat'
                     )
                 else:
                     atlas_result = propagate_atlas_to_anat(
@@ -695,7 +695,7 @@ def run_phase2_full_processing(
                         subject=subject,
                         session=session,
                         output_file=atlas_output,
-                        qc_dir=output_dir / 'qc' / subject / session / 'anat'
+                        qc_dir=output_dir / 'qc' / 'subjects' / subject / session / 'anat'
                     )
 
                 results['atlas_propagated'] += 1

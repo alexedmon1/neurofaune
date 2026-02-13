@@ -312,7 +312,7 @@ def main():
     args = parser.parse_args()
 
     study_root = args.study_root
-    output_dir = args.output_dir or study_root / 'qc' / 'msme_visualization'
+    output_dir = args.output_dir or study_root / 'qc' / 'reports' / 'msme_visualization'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Find subjects with MSME transforms

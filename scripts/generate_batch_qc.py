@@ -8,6 +8,9 @@ This script collects QC metrics from all subjects and generates:
 - Thumbnail gallery of key QC images
 - Distribution plots by cohort
 
+Reads per-subject QC from qc/subjects/ and writes batch summaries
+to qc/reports/{modality}_batch_summary/.
+
 Usage:
     # Generate DWI batch summary
     python scripts/generate_batch_qc.py /path/to/study --modality dwi
@@ -50,7 +53,7 @@ Examples:
     python scripts/generate_batch_qc.py /mnt/arborea/bpa-rat --modality dwi --z-threshold 3.0
 
 Output Structure:
-    {study_root}/qc/{modality}_batch_summary/
+    {study_root}/qc/reports/{modality}_batch_summary/
     ├── summary.html           # Main dashboard
     ├── metrics.csv            # All metrics, all subjects
     ├── thumbnail_gallery.html # Image grid

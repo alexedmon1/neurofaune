@@ -217,7 +217,7 @@ def process_bruker_session(
     print("Step 1: Scan Inventory")
     print("=" * 80)
 
-    qc_session_dir = output_dir / "qc" / subject / session
+    qc_session_dir = output_dir / "qc" / "subjects" / subject / session
     qc_session_dir.mkdir(parents=True, exist_ok=True)
     inventory_csv = qc_session_dir / "scan_inventory.csv"
 
@@ -471,7 +471,7 @@ def process_bruker_session(
                                 ["t2_map", "mwf_map"])
 
     print(f"\nInventory CSV: {inventory_csv}")
-    print(f"QC reports:    {output_dir / 'qc' / subject / session}")
+    print(f"QC reports:    {output_dir / 'qc' / 'subjects' / subject / session}")
     print(f"Transforms:    {output_dir / 'transforms' / subject / session}")
     print("=" * 80)
 

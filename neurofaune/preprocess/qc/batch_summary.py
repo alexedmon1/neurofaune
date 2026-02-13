@@ -6,19 +6,24 @@ Aggregates QC metrics across all subjects in a batch and generates:
 - Metrics CSV for all subjects
 - Thumbnail gallery of key QC images
 - Distribution plots by cohort
+- Skull strip omnibus reports (scrollable per-modality galleries)
 
 QC Directory Structure:
     {study_root}/qc/
-    ├── sub/                        # Per-subject QC (new structure)
+    ├── subjects/                       # Per-subject QC
     │   ├── sub-Rat1/
     │   │   └── ses-p60/
     │   │       ├── anat/
     │   │       ├── dwi/
     │   │       └── func/
     │   └── sub-Rat2/
-    ├── dwi_batch_summary/          # Batch summaries by modality
-    ├── anat_batch_summary/
-    └── func_batch_summary/
+    └── reports/                        # Module-wide omnibus reports
+        ├── skull_strip_anat.html       # Scrollable mosaic galleries
+        ├── skull_strip_dwi.html
+        ├── thumbnails/                 # Copied images for reports
+        ├── anat_batch_summary/         # Batch summaries by modality
+        ├── dwi_batch_summary/
+        └── templates/{cohort}/         # Template QC
 """
 
 import json
@@ -50,7 +55,7 @@ def get_subject_qc_dir(
     """
     Get the QC output directory for a subject/session/modality.
 
-    Uses structure: qc/{subject}/{session}/{modality}/
+    Uses structure: qc/subjects/{subject}/{session}/{modality}/
 
     Parameters
     ----------
@@ -68,7 +73,7 @@ def get_subject_qc_dir(
     Path
         QC directory path (creates if doesn't exist)
     """
-    qc_dir = Path(study_root) / 'qc' / subject / session / modality
+    qc_dir = Path(study_root) / 'qc' / 'subjects' / subject / session / modality
     qc_dir.mkdir(parents=True, exist_ok=True)
     return qc_dir
 
@@ -80,7 +85,7 @@ def get_batch_summary_dir(
     """
     Get the batch summary output directory for a modality.
 
-    Uses structure: qc/{modality}_batch_summary/
+    Uses structure: qc/reports/{modality}_batch_summary/
 
     Parameters
     ----------
@@ -94,9 +99,30 @@ def get_batch_summary_dir(
     Path
         Batch summary directory path (creates if doesn't exist)
     """
-    summary_dir = Path(study_root) / 'qc' / f'{modality}_batch_summary'
+    summary_dir = Path(study_root) / 'qc' / 'reports' / f'{modality}_batch_summary'
     summary_dir.mkdir(parents=True, exist_ok=True)
     return summary_dir
+
+
+def get_reports_dir(study_root: Path) -> Path:
+    """
+    Get the QC reports directory for module-wide omnibus reports.
+
+    Uses structure: qc/reports/
+
+    Parameters
+    ----------
+    study_root : Path
+        Study root directory
+
+    Returns
+    -------
+    Path
+        Reports directory path (creates if doesn't exist)
+    """
+    reports_dir = Path(study_root) / 'qc' / 'reports'
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    return reports_dir
 
 
 # =============================================================================
@@ -556,7 +582,12 @@ def collect_qc_metrics(
     qc_dir = Path(qc_dir)
     records = []
 
-    subject_dirs = sorted(qc_dir.glob('sub-*'))
+    # Look under qc/subjects/ first (new structure), fall back to flat qc/sub-*
+    subjects_dir = qc_dir / 'subjects'
+    if subjects_dir.exists():
+        subject_dirs = sorted(subjects_dir.glob('sub-*'))
+    else:
+        subject_dirs = sorted(qc_dir.glob('sub-*'))
 
     for subj_dir in subject_dirs:
         subject = subj_dir.name
@@ -828,9 +859,15 @@ def generate_thumbnail_gallery(
     # Collect images and create thumbnails
     gallery_items = []
 
-    # Determine base path (new structure: qc/sub/ or old: qc/)
+    # Determine base path (new structure: qc/subjects/, legacy: qc/sub/, old flat: qc/)
+    subjects_dir = qc_dir / 'subjects'
     sub_dir = qc_dir / 'sub'
-    base_dir = sub_dir if sub_dir.exists() else qc_dir
+    if subjects_dir.exists():
+        base_dir = subjects_dir
+    elif sub_dir.exists():
+        base_dir = sub_dir
+    else:
+        base_dir = qc_dir
 
     for _, row in df.iterrows():
         subject = row['subject']
@@ -1359,7 +1396,7 @@ def generate_batch_qc_summary(
     modality : str
         Modality to summarize ('dwi', 'anat', 'func', 'msme')
     output_dir : Path, optional
-        Output directory. Defaults to qc_dir/{modality}_batch_summary/
+        Output directory. Defaults to qc_dir/reports/{modality}_batch_summary/
     subjects : list, optional
         Specific subjects to include. If None, includes all.
     config : BatchQCConfig, optional
@@ -1378,7 +1415,7 @@ def generate_batch_qc_summary(
     qc_dir = Path(qc_dir)
 
     if output_dir is None:
-        output_dir = qc_dir / f'{modality}_batch_summary'
+        output_dir = qc_dir / 'reports' / f'{modality}_batch_summary'
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1447,3 +1484,429 @@ def generate_batch_qc_summary(
         'figures': figure_paths,
         **exclusion_results,  # Include all exclusion list paths
     }
+
+
+# =============================================================================
+# Skull Strip Omnibus Reports
+# =============================================================================
+
+def generate_skull_strip_omnibus(
+    study_root: Path,
+    modality: str,
+) -> Optional[Path]:
+    """
+    Generate a scrollable HTML omnibus report for skull strip QC across all subjects.
+
+    Scans qc/subjects/sub-*/ses-*/{modality}/ for skull strip metrics and mosaic
+    images, copies thumbnails to qc/reports/thumbnails/, and writes a single HTML
+    page with a filterable card grid.
+
+    Parameters
+    ----------
+    study_root : Path
+        Study root directory
+    modality : str
+        Modality ('anat', 'dwi', 'func', 'msme')
+
+    Returns
+    -------
+    Path or None
+        Path to generated HTML report, or None if no data found
+    """
+    study_root = Path(study_root)
+    reports_dir = get_reports_dir(study_root)
+    thumb_dir = reports_dir / 'thumbnails'
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+
+    subjects_qc = study_root / 'qc' / 'subjects'
+    if not subjects_qc.exists():
+        print(f"  No qc/subjects/ directory found at {subjects_qc}")
+        return None
+
+    # Collect skull strip data from all sessions
+    cards = []
+
+    for subj_dir in sorted(subjects_qc.glob('sub-*')):
+        subject = subj_dir.name
+        for sess_dir in sorted(subj_dir.glob('ses-*')):
+            session = sess_dir.name
+            cohort = _extract_cohort(session)
+            mod_dir = sess_dir / modality
+
+            if not mod_dir.exists():
+                continue
+
+            # Load metrics
+            metrics_files = list(mod_dir.glob('*_skull_strip_metrics.json'))
+            if not metrics_files:
+                continue
+
+            try:
+                with open(metrics_files[0]) as f:
+                    metrics = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                continue
+
+            # Find mosaic image
+            mosaic_files = list(mod_dir.glob('figures/*skull_strip_mosaic*.png'))
+            if not mosaic_files:
+                mosaic_files = list(mod_dir.glob('*skull_strip_mosaic*.png'))
+            if not mosaic_files:
+                continue
+
+            # Copy mosaic to thumbnails
+            mosaic_src = mosaic_files[0]
+            thumb_name = f'{subject}_{session}_{modality}_skull_strip_mosaic.png'
+            thumb_path = thumb_dir / thumb_name
+            try:
+                shutil.copy(mosaic_src, thumb_path)
+            except IOError:
+                continue
+
+            # Find per-subject HTML report for linking
+            report_files = list(mod_dir.glob('*skull_strip_qc.html'))
+            report_rel = None
+            if report_files:
+                report_rel = str(report_files[0].relative_to(study_root / 'qc'))
+
+            # Determine quality status
+            ratio = metrics.get('brain_to_total_ratio', 0)
+            snr = metrics.get('snr_estimate', 0)
+            quality = _classify_skull_strip_quality(ratio, snr, modality)
+
+            cards.append({
+                'subject': subject,
+                'session': session,
+                'cohort': cohort,
+                'ratio': ratio,
+                'snr': snr,
+                'quality': quality,
+                'thumb': f'thumbnails/{thumb_name}',
+                'report_link': f'../{report_rel}' if report_rel else None,
+            })
+
+    if not cards:
+        print(f"  No skull strip data found for {modality}")
+        return None
+
+    # Compute summary stats
+    n_total = len(cards)
+    n_good = sum(1 for c in cards if c['quality'] == 'good')
+    n_warning = sum(1 for c in cards if c['quality'] == 'warning')
+    n_poor = sum(1 for c in cards if c['quality'] == 'poor')
+    cohort_counts = {}
+    for c in cards:
+        cohort_counts[c['cohort']] = cohort_counts.get(c['cohort'], 0) + 1
+
+    # Generate HTML
+    output_path = reports_dir / f'skull_strip_{modality}.html'
+    _write_omnibus_html(output_path, cards, modality, n_total, n_good, n_warning, n_poor, cohort_counts)
+
+    print(f"  Generated {output_path.name}: {n_total} sessions ({n_good} good, {n_warning} warning, {n_poor} poor)")
+    return output_path
+
+
+def _classify_skull_strip_quality(
+    ratio: float,
+    snr: float,
+    modality: str,
+) -> str:
+    """Classify skull strip quality as good/warning/poor.
+
+    Note: DWI/func/MSME are partial-coverage acquisitions (9-11 slices out of
+    41 T2w slices), so brain_to_total_ratio is inherently low (~0.1-0.2).
+    Thresholds are adjusted accordingly.
+    """
+    if modality == 'anat':
+        if ratio < 0.5 or ratio > 3.0 or snr < 0.5:
+            return 'poor'
+        if ratio < 0.8 or ratio > 2.5 or snr < 0.8:
+            return 'warning'
+    else:
+        # DWI/func/MSME — partial-coverage, ratio is naturally ~0.08-0.20
+        if ratio < 0.02 or ratio > 1.0 or snr < 0.5:
+            return 'poor'
+        if ratio < 0.05 or ratio > 0.5 or snr < 1.0:
+            return 'warning'
+    return 'good'
+
+
+def _write_omnibus_html(
+    output_path: Path,
+    cards: List[Dict],
+    modality: str,
+    n_total: int,
+    n_good: int,
+    n_warning: int,
+    n_poor: int,
+    cohort_counts: Dict[str, int],
+):
+    """Write skull strip omnibus HTML report."""
+
+    # Build cohort options for filter dropdown
+    cohorts = sorted(cohort_counts.keys())
+    cohort_options = '\n'.join(
+        f'            <option value="{c}">{c} ({cohort_counts[c]})</option>'
+        for c in cohorts
+    )
+
+    # Build card HTML
+    cards_html = []
+    for card in cards:
+        border_color = {'good': '#27ae60', 'warning': '#f39c12', 'poor': '#e74c3c'}[card['quality']]
+        badge_class = card['quality']
+
+        link_open = f'<a href="{card["report_link"]}" target="_blank">' if card['report_link'] else ''
+        link_close = '</a>' if card['report_link'] else ''
+
+        cards_html.append(f"""        <div class="card {badge_class}" data-subject="{card['subject']}"
+             data-session="{card['session']}" data-cohort="{card['cohort']}"
+             data-quality="{card['quality']}" style="border-left: 5px solid {border_color};">
+            <img src="{card['thumb']}" onclick="openModal(this.src)" alt="{card['subject']}">
+            <div class="card-info">
+                <div class="card-label">{link_open}{card['subject']}{link_close}<br>
+                    <span class="session">{card['session']}</span>
+                    <span class="badge {badge_class}">{card['quality']}</span>
+                </div>
+                <div class="card-metrics">
+                    Ratio: {card['ratio']:.2f} | SNR: {card['snr']:.2f}
+                </div>
+            </div>
+        </div>
+""")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Skull Strip QC — {modality.upper()} Omnibus</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               margin: 0; padding: 20px; background: #f0f2f5; color: #333; }}
+        h1 {{ margin: 0 0 5px; }}
+        .header {{ background: #2c3e50; color: white; padding: 20px 25px; border-radius: 8px;
+                   margin-bottom: 20px; }}
+        .header p {{ margin: 5px 0; opacity: 0.85; }}
+
+        .summary {{ display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }}
+        .summary-box {{ background: white; padding: 15px 20px; border-radius: 8px;
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; min-width: 100px; }}
+        .summary-box .number {{ font-size: 28px; font-weight: bold; color: #2c3e50; }}
+        .summary-box .label {{ font-size: 12px; color: #888; text-transform: uppercase; }}
+        .summary-box.good .number {{ color: #27ae60; }}
+        .summary-box.warning .number {{ color: #f39c12; }}
+        .summary-box.poor .number {{ color: #e74c3c; }}
+
+        .filters {{ background: white; padding: 15px 20px; border-radius: 8px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px;
+                    display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }}
+        .filters label {{ font-size: 13px; font-weight: 600; color: #555; }}
+        .filters select, .filters input {{ padding: 6px 10px; border: 1px solid #ddd;
+                                           border-radius: 4px; font-size: 13px; }}
+        .filters input {{ width: 180px; }}
+
+        .grid {{ display: flex; flex-wrap: wrap; gap: 12px; }}
+        .card {{ background: white; border-radius: 8px; overflow: hidden;
+                 box-shadow: 0 1px 3px rgba(0,0,0,0.1); width: calc(25% - 9px);
+                 transition: transform 0.15s, box-shadow 0.15s; }}
+        .card:hover {{ transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
+        .card img {{ width: 100%; display: block; cursor: pointer; }}
+        .card-info {{ padding: 8px 10px; }}
+        .card-label {{ font-size: 12px; font-weight: 600; }}
+        .card-label a {{ color: #2980b9; text-decoration: none; }}
+        .card-label a:hover {{ text-decoration: underline; }}
+        .session {{ color: #888; font-weight: normal; }}
+        .card-metrics {{ font-size: 11px; color: #666; margin-top: 4px; }}
+        .badge {{ display: inline-block; padding: 1px 6px; border-radius: 3px;
+                  font-size: 10px; font-weight: 600; text-transform: uppercase;
+                  margin-left: 4px; }}
+        .badge.good {{ background: #d4edda; color: #155724; }}
+        .badge.warning {{ background: #fff3cd; color: #856404; }}
+        .badge.poor {{ background: #f8d7da; color: #721c24; }}
+
+        .modal {{ display: none; position: fixed; top: 0; left: 0;
+                  width: 100%; height: 100%; background: rgba(0,0,0,0.92);
+                  z-index: 1000; }}
+        .modal img {{ max-width: 95%; max-height: 95%; position: absolute;
+                      top: 50%; left: 50%; transform: translate(-50%, -50%); }}
+        .modal-close {{ position: absolute; top: 15px; right: 25px; color: white;
+                        font-size: 32px; cursor: pointer; }}
+        .modal-nav {{ position: absolute; top: 50%; transform: translateY(-50%);
+                      color: white; font-size: 48px; cursor: pointer; padding: 20px;
+                      user-select: none; }}
+        .modal-nav.prev {{ left: 10px; }}
+        .modal-nav.next {{ right: 10px; }}
+        .modal-nav:hover {{ color: #ccc; }}
+
+        .count-display {{ font-size: 13px; color: #888; margin-bottom: 10px; }}
+
+        @media (max-width: 1200px) {{ .card {{ width: calc(33.33% - 8px); }} }}
+        @media (max-width: 900px)  {{ .card {{ width: calc(50% - 6px); }} }}
+        @media (max-width: 600px)  {{ .card {{ width: 100%; }} }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Skull Strip QC — {modality.upper()}</h1>
+        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | {n_total} sessions</p>
+    </div>
+
+    <div class="summary">
+        <div class="summary-box">
+            <div class="number">{n_total}</div>
+            <div class="label">Total</div>
+        </div>
+        <div class="summary-box good">
+            <div class="number">{n_good}</div>
+            <div class="label">Good</div>
+        </div>
+        <div class="summary-box warning">
+            <div class="number">{n_warning}</div>
+            <div class="label">Warning</div>
+        </div>
+        <div class="summary-box poor">
+            <div class="number">{n_poor}</div>
+            <div class="label">Poor</div>
+        </div>
+"""
+
+    for cohort in cohorts:
+        html += f"""        <div class="summary-box">
+            <div class="number">{cohort_counts[cohort]}</div>
+            <div class="label">{cohort}</div>
+        </div>
+"""
+
+    html += f"""    </div>
+
+    <div class="filters">
+        <label>Cohort:
+            <select id="filterCohort" onchange="applyFilters()">
+                <option value="">All</option>
+{cohort_options}
+            </select>
+        </label>
+        <label>Quality:
+            <select id="filterQuality" onchange="applyFilters()">
+                <option value="">All</option>
+                <option value="good">Good ({n_good})</option>
+                <option value="warning">Warning ({n_warning})</option>
+                <option value="poor">Poor ({n_poor})</option>
+            </select>
+        </label>
+        <label>Search:
+            <input type="text" id="filterSearch" onkeyup="applyFilters()" placeholder="e.g. Rat102">
+        </label>
+        <label>Sort:
+            <select id="sortBy" onchange="applyFilters()">
+                <option value="subject">Subject</option>
+                <option value="ratio-asc">Ratio (low first)</option>
+                <option value="ratio-desc">Ratio (high first)</option>
+                <option value="snr-asc">SNR (low first)</option>
+                <option value="snr-desc">SNR (high first)</option>
+            </select>
+        </label>
+    </div>
+
+    <div class="count-display" id="countDisplay">Showing {n_total} of {n_total} sessions</div>
+
+    <div class="grid" id="grid">
+{''.join(cards_html)}    </div>
+
+    <div class="modal" id="modal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <span class="modal-nav prev" onclick="navModal(-1)">&#8249;</span>
+        <span class="modal-nav next" onclick="navModal(1)">&#8250;</span>
+        <img id="modal-img" src="">
+    </div>
+
+    <script>
+        let visibleImages = [];
+        let modalIdx = -1;
+
+        function applyFilters() {{
+            const cohort = document.getElementById('filterCohort').value;
+            const quality = document.getElementById('filterQuality').value;
+            const search = document.getElementById('filterSearch').value.toLowerCase();
+            const sortBy = document.getElementById('sortBy').value;
+
+            const cards = Array.from(document.querySelectorAll('.card'));
+            let visible = 0;
+
+            cards.forEach(card => {{
+                const matchCohort = !cohort || card.dataset.cohort === cohort;
+                const matchQuality = !quality || card.dataset.quality === quality;
+                const matchSearch = !search ||
+                    card.dataset.subject.toLowerCase().includes(search) ||
+                    card.dataset.session.toLowerCase().includes(search);
+
+                const show = matchCohort && matchQuality && matchSearch;
+                card.style.display = show ? '' : 'none';
+                if (show) visible++;
+            }});
+
+            // Sort visible cards
+            const grid = document.getElementById('grid');
+            const sorted = cards.slice().sort((a, b) => {{
+                if (a.style.display === 'none' && b.style.display !== 'none') return 1;
+                if (a.style.display !== 'none' && b.style.display === 'none') return -1;
+                if (sortBy === 'subject') {{
+                    return a.dataset.subject.localeCompare(b.dataset.subject) ||
+                           a.dataset.session.localeCompare(b.dataset.session);
+                }}
+                const aMetrics = a.querySelector('.card-metrics').textContent;
+                const bMetrics = b.querySelector('.card-metrics').textContent;
+                let aVal, bVal;
+                if (sortBy.startsWith('ratio')) {{
+                    aVal = parseFloat(aMetrics.match(/Ratio:\\s*([\\d.]+)/)?.[1] || 0);
+                    bVal = parseFloat(bMetrics.match(/Ratio:\\s*([\\d.]+)/)?.[1] || 0);
+                }} else {{
+                    aVal = parseFloat(aMetrics.match(/SNR:\\s*([\\d.]+)/)?.[1] || 0);
+                    bVal = parseFloat(bMetrics.match(/SNR:\\s*([\\d.]+)/)?.[1] || 0);
+                }}
+                return sortBy.endsWith('asc') ? aVal - bVal : bVal - aVal;
+            }});
+            sorted.forEach(c => grid.appendChild(c));
+
+            document.getElementById('countDisplay').textContent =
+                `Showing ${{visible}} of {n_total} sessions`;
+
+            // Update visible images list for modal navigation
+            visibleImages = sorted
+                .filter(c => c.style.display !== 'none')
+                .map(c => c.querySelector('img').src);
+        }}
+
+        function openModal(src) {{
+            visibleImages = Array.from(document.querySelectorAll('.card'))
+                .filter(c => c.style.display !== 'none')
+                .map(c => c.querySelector('img').src);
+            modalIdx = visibleImages.indexOf(src);
+            document.getElementById('modal-img').src = src;
+            document.getElementById('modal').style.display = 'block';
+        }}
+
+        function closeModal() {{
+            document.getElementById('modal').style.display = 'none';
+            modalIdx = -1;
+        }}
+
+        function navModal(dir) {{
+            if (visibleImages.length === 0) return;
+            modalIdx = (modalIdx + dir + visibleImages.length) % visibleImages.length;
+            document.getElementById('modal-img').src = visibleImages[modalIdx];
+        }}
+
+        document.addEventListener('keydown', e => {{
+            if (e.key === 'Escape') closeModal();
+            if (e.key === 'ArrowLeft') navModal(-1);
+            if (e.key === 'ArrowRight') navModal(1);
+        }});
+    </script>
+</body>
+</html>
+"""
+
+    with open(output_path, 'w') as f:
+        f.write(html)
+
