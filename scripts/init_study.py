@@ -139,6 +139,19 @@ def main():
     )
 
     parser.add_argument(
+        '--validate-workflows',
+        action='store_true',
+        help='Run per-modality config validation after generation'
+    )
+
+    parser.add_argument(
+        '--modalities',
+        nargs='+',
+        choices=['anat', 'dwi', 'func', 'msme'],
+        help='Modalities to include in generated config (default: auto-detect or all)'
+    )
+
+    parser.add_argument(
         '--output-json',
         type=Path,
         help='Write results to JSON file'
@@ -241,6 +254,31 @@ def main():
         setup_atlas=not args.no_atlas,
         force=args.force
     )
+
+    # Run workflow validation if requested
+    if args.validate_workflows:
+        config_file = args.config or args.study_root / 'config.yaml'
+        if config_file.exists():
+            print("\n" + "="*70)
+            print("Validating workflow configurations...")
+            print("="*70)
+            from neurofaune.config import load_config
+            try:
+                config = load_config(config_file, validate=False)
+                from neurofaune.config_validator import validate_all_workflows
+                import logging
+                logging.basicConfig(level=logging.INFO, format='%(message)s')
+                results = validate_all_workflows(config)
+                all_valid = all(r[0] for r in results.values())
+                if not all_valid:
+                    print("\nWARNING: Some workflow configurations are incomplete.")
+                    print("Missing required keys will cause errors during preprocessing.")
+                else:
+                    print("\nAll workflow configurations are valid.")
+            except Exception as e:
+                print(f"\nWorkflow validation failed: {e}")
+        else:
+            print(f"\nCannot validate workflows: config not found at {config_file}")
 
     if args.output_json:
         with open(args.output_json, 'w') as f:

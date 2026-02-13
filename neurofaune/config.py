@@ -150,7 +150,7 @@ def substitute_variables(config: Dict[str, Any], context: Optional[Dict[str, Any
     return result
 
 
-def validate_config(config: Dict[str, Any]) -> None:
+def validate_config(config: Dict[str, Any], validate_workflows: bool = False) -> None:
     """
     Validate configuration has all required parameters.
 
@@ -158,6 +158,8 @@ def validate_config(config: Dict[str, Any]) -> None:
     ----------
     config : dict
         Configuration to validate
+    validate_workflows : bool
+        If True, also run per-modality workflow validation
 
     Raises
     ------
@@ -215,6 +217,20 @@ def validate_config(config: Dict[str, Any]) -> None:
                 raise ConfigurationError(f"execution.n_procs must be positive integer, got {n_procs}")
 
     print("✓ Configuration validation passed")
+
+    if validate_workflows:
+        from neurofaune.config_validator import validate_all_workflows
+        import logging
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+        results = validate_all_workflows(config)
+        for workflow, (valid, missing_req, missing_opt) in results.items():
+            if not valid:
+                raise ConfigurationError(
+                    f"Missing required {workflow} config keys: {missing_req}"
+                )
+            if missing_opt:
+                print(f"  Optional {workflow} keys not set (using defaults): "
+                      f"{len(missing_opt)} keys")
 
 
 def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:

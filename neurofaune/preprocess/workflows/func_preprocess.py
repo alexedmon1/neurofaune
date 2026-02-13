@@ -1022,6 +1022,14 @@ def run_functional_preprocessing(
             bold_file, trimmed_bold, n_discard
         )
         results['n_volumes_discarded'] = n_discarded
+
+        # Verify enough volumes remain after trimming
+        remaining = nib.load(bold_for_processing).shape[3]
+        if remaining < 2:
+            raise ValueError(
+                f"Only {remaining} volume(s) remain after discarding {n_discarded} — "
+                f"need at least 2 for timeseries processing"
+            )
     else:
         print("No volumes to discard")
         bold_for_processing = bold_file

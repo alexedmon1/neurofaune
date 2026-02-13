@@ -207,6 +207,9 @@ def validate_image(
             if len(shape) != 4:
                 error_msg = f"Functional image should be 4D, but has shape: {shape}"
                 errors.append(error_msg)
+            elif shape[3] < 2:
+                error_msg = f"Functional image has only {shape[3]} volume(s) — need at least 2 for timeseries processing"
+                errors.append(error_msg)
             elif shape[3] < 50:
                 warning_msg = f"Functional image has few timepoints: {shape[3]} (minimum recommended: 50)"
                 warnings.append(warning_msg)

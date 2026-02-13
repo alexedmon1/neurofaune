@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import subprocess
 import json
 
+from neurofaune.config import get_config_value
 from neurofaune.preprocess.utils.dwi_utils import (
     convert_5d_to_4d,
     validate_gradient_table,
@@ -634,11 +635,13 @@ def run_dwi_preprocessing(
     with open(index_file, 'w') as f:
         f.write(' '.join(['1'] * n_volumes))
 
-    # Create acquisition parameters file (assuming PA acquisition)
+    # Create acquisition parameters file from config
+    pe_direction = get_config_value(config, 'diffusion.eddy.phase_encoding_direction', default='0 -1 0')
+    readout_time = get_config_value(config, 'diffusion.eddy.readout_time',
+                                    default=get_config_value(config, 'diffusion.topup.readout_time', default=0.05))
     acqparams_file = work_dir / 'acqparams.txt'
     with open(acqparams_file, 'w') as f:
-        # PA direction, 0.05s total readout time (adjust based on actual data)
-        f.write('0 -1 0 0.05\n')
+        f.write(f'{pe_direction} {readout_time}\n')
 
     # Run eddy on PADDED data
     eddy_basename = work_dir / 'eddy_corrected'
@@ -651,10 +654,14 @@ def run_dwi_preprocessing(
         f'--bvecs={bvec_validated}',
         f'--bvals={bval_validated}',
         f'--out={eddy_basename}',
-        '--repol',  # Replace outliers
-        '--data_is_shelled',  # Skip shell auto-detection (Bruker multi-shell data)
         '--verbose'
     ]
+
+    # Add optional eddy flags from config
+    if get_config_value(config, 'diffusion.eddy.repol', default=True):
+        eddy_cmd_full.append('--repol')
+    if get_config_value(config, 'diffusion.eddy.data_is_shelled', default=True):
+        eddy_cmd_full.append('--data_is_shelled')
 
     if use_gpu and eddy_cmd == 'eddy_cuda':
         eddy_cmd_full.append('--very_verbose')

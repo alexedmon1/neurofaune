@@ -35,6 +35,10 @@ def skull_strip(
     cog_offset_y: Optional[int] = None,
     # Atropos parameters
     n_classes: int = 5,
+    atropos_iterations: int = 5,
+    atropos_convergence: float = 0.0,
+    mrf_smoothing_factor: float = 0.1,
+    mrf_radius: Optional[list] = None,
     # 3D method parameters
     template_file: Optional[Path] = None,
     template_mask: Optional[Path] = None,
@@ -79,6 +83,17 @@ def skull_strip(
     cog_offset_y : int, optional
         Y offset from image center for COG estimation in adaptive method
         Negative values shift COG down (inferior), typical for brain positioning
+    n_classes : int
+        Number of Atropos KMeans classes for atropos_bet method (default: 5).
+        Use 3 for partial-coverage data with fewer tissue types.
+    atropos_iterations : int
+        Number of Atropos convergence iterations (default: 5)
+    atropos_convergence : float
+        Atropos convergence threshold (default: 0.0)
+    mrf_smoothing_factor : float
+        Markov Random Field smoothing factor (default: 0.1)
+    mrf_radius : list, optional
+        MRF neighborhood radius (default: [1, 1, 1])
     template_file : Path, optional
         Atlas template for ANTs brain extraction (3D methods)
     template_mask : Path, optional
@@ -125,6 +140,10 @@ def skull_strip(
             work_dir=work_dir,
             cohort=cohort,
             n_classes=n_classes,
+            atropos_iterations=atropos_iterations,
+            atropos_convergence=atropos_convergence,
+            mrf_smoothing_factor=mrf_smoothing_factor,
+            mrf_radius=mrf_radius if mrf_radius is not None else [1, 1, 1],
         )
     elif method == 'atropos':
         return _skull_strip_atropos_only(
@@ -192,6 +211,10 @@ def _skull_strip_atropos_bet(
     cohort: str = 'p60',
     n_classes: int = 5,
     bet_frac: float = 0.3,
+    atropos_iterations: int = 5,
+    atropos_convergence: float = 0.0,
+    mrf_smoothing_factor: float = 0.1,
+    mrf_radius: list = None,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """
     Two-pass Atropos+BET skull stripping for full-coverage data.
@@ -222,7 +245,17 @@ def _skull_strip_atropos_bet(
         Use 5 for T2w (middle 3 by volume strategy, default).
     bet_frac : float
         BET fractional intensity threshold for refinement (default: 0.3)
+    atropos_iterations : int
+        Number of Atropos convergence iterations (default: 5)
+    atropos_convergence : float
+        Atropos convergence threshold (default: 0.0)
+    mrf_smoothing_factor : float
+        Markov Random Field smoothing factor (default: 0.1)
+    mrf_radius : list
+        MRF neighborhood radius (default: [1, 1, 1])
     """
+    if mrf_radius is None:
+        mrf_radius = [1, 1, 1]
     import subprocess
     import numpy as np
     from scipy import ndimage
@@ -248,6 +281,7 @@ def _skull_strip_atropos_bet(
     seg_output = work_dir / f"{input_file.stem}_seg.nii.gz"
     posteriors_prefix = work_dir / f"{input_file.stem}_posterior"
 
+    mrf_radius_str = 'x'.join(str(r) for r in mrf_radius)
     atropos_cmd = [
         'Atropos',
         '-d', '3',
@@ -255,6 +289,8 @@ def _skull_strip_atropos_bet(
         '-x', str(initial_mask_file),
         '-i', f'KMeans[{n_classes}]',
         '-o', f'[{seg_output},{posteriors_prefix}%02d.nii.gz]',
+        '-c', f'[{atropos_iterations},{atropos_convergence}]',
+        '-m', f'[{mrf_smoothing_factor},{mrf_radius_str}]',
         '-v', '0',
     ]
     subprocess.run(atropos_cmd, check=True, capture_output=True)

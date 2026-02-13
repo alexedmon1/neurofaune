@@ -119,25 +119,40 @@ resources:
 anatomical:
   # Skull stripping
   skull_strip:
-    method: "atropos"  # or "ants" or "bet"
-    bet_frac: 0.3      # Rodent-optimized
+    method: "atropos_bet"          # 'atropos_bet' (two-pass), 'atropos', 'bet', or 'auto'
+    n_classes: 5                   # Atropos tissue classes
+    atropos_iterations: 5          # Atropos convergence iterations
+    atropos_convergence: 0.0       # Atropos convergence threshold
+    mrf_smoothing_factor: 0.1      # MRF smoothing
+    mrf_radius: [1, 1, 1]          # MRF neighborhood radius
+    tissue_confidence_threshold: 0.35  # Min probability for tissue assignment
+    morphological_closing_iterations: 2
+    foreground_otsu_multiplier: 0.3
+    adaptive_bet:
+      cnr_thresholds: [1.5, 3.0]
+      frac_mapping: [0.20, 0.28, 0.38]
 
-  # Bias field correction
-  bias_correction:
-    n_iterations: [50, 50, 30, 20]
+  # N4 bias field correction
+  n4:
+    iterations: [50, 50, 30, 20]
     shrink_factor: 3
-    convergence_threshold: 1e-6
+    convergence_threshold: 1.0e-6
 
   # Intensity normalization
-  normalization:
-    method: "scale"
-    scale_factor: 1000.0
+  intensity_normalization:
+    factor: 1000.0
 
   # Registration to template
   registration:
     enabled: true
     method: "ants"
-    transform_type: "SyN"
+    smoothing_sigmas: [[3, 2, 1, 0], [2, 1, 0]]
+    shrink_factors: [[8, 4, 2, 1], [4, 2, 1]]
+    iterations: [[1000, 500, 250, 100], [100, 70, 50, 20]]
+    convergence_threshold: 1.0e-6
+    convergence_window_size: 10
+    syn_params: [0.1, 3.0, 0.0]
+    metric_bins: 32
 
 # Diffusion preprocessing parameters
 diffusion:
@@ -151,7 +166,10 @@ diffusion:
     use_cuda: true      # Use GPU acceleration
     cuda_device: 0
     repol: true         # Replace outliers
-    estimate_move_by_susceptibility: false  # Disable for speed
+    phase_encoding_direction: "0 -1 0"  # PE direction for acqparams.txt
+    readout_time: 0.05                  # Total readout time (seconds)
+    data_is_shelled: true               # Skip shell auto-detection
+    slice_padding: 2                    # Pad N slices before eddy
 
   # DTI fitting
   fitting:
@@ -201,11 +219,17 @@ functional:
 
 # MSME (T2 relaxometry) parameters
 msme:
-  # Multi-echo fitting
-  fitting:
-    method: "monoexponential"
-    min_te: 10   # ms
-    max_te: 100  # ms
+  skull_strip:
+    method: "atropos_bet"
+    n_classes: 3                   # Fewer classes for partial-coverage data
+
+  # NNLS-based T2 fitting and MWF calculation
+  t2_fitting:
+    n_components: 120              # T2 components in NNLS spectrum
+    t2_range: [10, 2000]           # T2 distribution range (ms)
+    lambda_reg: 0.5                # Tikhonov regularization
+    myelin_water_cutoff: 25        # T2 cutoff for myelin water (ms)
+    intra_extra_cutoff: 40         # T2 cutoff for intra/extra-cellular water (ms)
 
   # Registration
   registration:

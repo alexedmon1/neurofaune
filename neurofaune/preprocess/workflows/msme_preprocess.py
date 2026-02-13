@@ -15,6 +15,7 @@ import json
 
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.utils.transforms import TransformRegistry
+from neurofaune.config import get_config_value
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
 from neurofaune.preprocess.utils.skull_strip import skull_strip
@@ -394,17 +395,18 @@ def run_msme_preprocessing(
     nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
     print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
 
-    # Skull stripping (auto-selects adaptive for <10 slices)
+    # Skull stripping with configurable method and classes
     brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
-    skull_strip_config = config.get('msme', {}).get('skull_strip', {})
+    msme_ss_method = get_config_value(config, 'msme.skull_strip.method', default='atropos_bet')
+    msme_ss_n_classes = get_config_value(config, 'msme.skull_strip.n_classes', default=3)
 
     brain_file, mask_file_out, skull_strip_result = skull_strip(
         input_file=first_echo_file,
         output_file=brain_extracted_file,
         mask_file=brain_mask_file,
-        work_dir=work_dir / 'adaptive_slices',
-        method='atropos_bet',  # 3-class Atropos+BET for MSME first echo
-        n_classes=3,  # Brightest class = brain (similar contrast to DWI b0)
+        work_dir=work_dir / 'skull_strip',
+        method=msme_ss_method,
+        n_classes=msme_ss_n_classes,
     )
 
     # Apply mask to all echoes
@@ -435,10 +437,21 @@ def run_msme_preprocessing(
     data_reordered = np.transpose(data_masked, (0, 1, 3, 2))
     print(f"  Data reordered: {data_masked.shape} → {data_reordered.shape}")
 
+    t2_n_components = get_config_value(config, 'msme.t2_fitting.n_components', default=120)
+    t2_range = get_config_value(config, 'msme.t2_fitting.t2_range', default=[10, 2000])
+    t2_lambda_reg = get_config_value(config, 'msme.t2_fitting.lambda_reg', default=0.5)
+    t2_mw_cutoff = get_config_value(config, 'msme.t2_fitting.myelin_water_cutoff', default=25.0)
+    t2_ie_cutoff = get_config_value(config, 'msme.t2_fitting.intra_extra_cutoff', default=40.0)
+
     mwf_map, iwf_map, csf_map, t2_map, sample_data = calculate_mwf_nnls(
         data_reordered,
         mask_3d,
-        te_values
+        te_values,
+        lambda_reg=t2_lambda_reg,
+        n_components=t2_n_components,
+        t2_range=t2_range,
+        myelin_water_cutoff=t2_mw_cutoff,
+        intra_extra_cutoff=t2_ie_cutoff,
     )
 
     # Save output maps with correct spatial affine
@@ -523,16 +536,15 @@ def run_msme_preprocessing(
 
                     print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
 
-                    # Skull stripping (auto-selects adaptive for <10 slices)
+                    # Skull stripping with configurable method
                     msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
-                    reg_skull_strip_config = config.get('msme', {}).get('skull_strip', {})
                     _, _, skull_strip_result = skull_strip(
                         input_file=msme_ref_raw,
                         output_file=msme_ref,
                         mask_file=msme_mask,
-                        work_dir=reg_work_dir / 'adaptive_slices',
-                        method='atropos_bet',  # 3-class Atropos+BET
-                        n_classes=3,
+                        work_dir=reg_work_dir / 'skull_strip',
+                        method=msme_ss_method,
+                        n_classes=msme_ss_n_classes,
                     )
 
                 if use_template:
@@ -813,7 +825,11 @@ def calculate_mwf_nnls(
     data: np.ndarray,
     mask: np.ndarray,
     te_values: np.ndarray,
-    lambda_reg: float = 0.5
+    lambda_reg: float = 0.5,
+    n_components: int = 120,
+    t2_range: list = None,
+    myelin_water_cutoff: float = 25.0,
+    intra_extra_cutoff: float = 40.0,
 ) -> tuple:
     """
     Calculate MWF using Non-Negative Least Squares (NNLS).
@@ -856,16 +872,15 @@ def calculate_mwf_nnls(
         't2_dist': None  # T2 distribution (same for all voxels)
     }
 
-    # T2 distribution (log-spaced from 10 to 2000 ms)
-    t2_dist = np.geomspace(10, 2000, num=120)
+    # T2 distribution (log-spaced)
+    if t2_range is None:
+        t2_range = [10, 2000]
+    t2_dist = np.geomspace(t2_range[0], t2_range[1], num=n_components)
     sample_data['t2_dist'] = t2_dist
 
-    # Define water compartments:
-    # Myelin water: T2 < 25ms (indices 0:25)
-    # Intra/extra-cellular: 25-40ms (indices 25:40)
-    # CSF: 41-2000ms (indices 41:120)
-    mw_cutoff = np.where(t2_dist < 25)[0][-1] + 1
-    iw_cutoff = np.where(t2_dist < 40)[0][-1] + 1
+    # Define water compartments using configurable cutoffs
+    mw_cutoff = np.where(t2_dist < myelin_water_cutoff)[0][-1] + 1
+    iw_cutoff = np.where(t2_dist < intra_extra_cutoff)[0][-1] + 1
 
     # Create design matrix A for NNLS
     # A[i, j] = exp(-TE[i] / T2[j])

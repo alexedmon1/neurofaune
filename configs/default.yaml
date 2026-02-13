@@ -133,7 +133,23 @@ anatomical:
   # Primary modality (T2w is standard for rodents)
   primary_contrast: "T2w"
 
-  # BET skull stripping (rodent-specific parameters)
+  # Skull stripping method and parameters
+  skull_strip:
+    method: "atropos_bet"          # 'atropos_bet' (two-pass), 'atropos', 'bet', or 'auto'
+    n_classes: 5                   # Atropos tissue classes (background, CSF, GM, WM, skull)
+    atropos_iterations: 5          # Atropos convergence iterations
+    atropos_convergence: 0.0       # Atropos convergence threshold
+    mrf_smoothing_factor: 0.1      # Markov Random Field smoothing
+    mrf_radius: [1, 1, 1]          # MRF neighborhood radius
+    tissue_confidence_threshold: 0.35  # Min probability for tissue assignment in segmentation
+    morphological_closing_iterations: 2  # Closing iterations for mask cleanup
+    foreground_otsu_multiplier: 0.3     # Otsu threshold multiplier for foreground mask
+    # Adaptive BET parameters (used in atropos_bet two-pass method)
+    adaptive_bet:
+      cnr_thresholds: [1.5, 3.0]       # CNR boundaries for frac selection
+      frac_mapping: [0.20, 0.28, 0.38] # Frac values for [low, medium, high] CNR
+
+  # Legacy BET parameters (used when skull_strip.method = 'bet')
   bet:
     frac: 0.3  # Lower threshold for rodent brains
     vertical_gradient: 0.0  # Rodent brains have less vertical bias
@@ -141,11 +157,28 @@ anatomical:
     reduce_bias: true
     remove_eyes: false  # Less relevant for rodents
 
-  # Registration to atlas
+  # N4 bias field correction parameters
+  n4:
+    iterations: [50, 50, 30, 20]   # Iterations per resolution level
+    shrink_factor: 3               # Downsampling factor for speed
+    convergence_threshold: 1.0e-6  # Convergence threshold
+
+  # Intensity normalization
+  intensity_normalization:
+    factor: 1000.0                 # Multiply brain-extracted image by this factor
+
+  # Registration to atlas/template (cohort-age-adaptive params)
   registration:
-    method: "ants"  # Use ANTs for all registrations
+    method: "ants"
     output_warped_image: true
     output_inverse_warped_image: true
+    smoothing_sigmas: [[3, 2, 1, 0], [2, 1, 0]]
+    shrink_factors: [[8, 4, 2, 1], [4, 2, 1]]
+    iterations: [[1000, 500, 250, 100], [100, 70, 50, 20]]
+    convergence_threshold: 1.0e-6
+    convergence_window_size: 10
+    syn_params: [0.1, 3.0, 0.0]   # [gradient_step, update_field_sigma, total_field_sigma]
+    metric_bins: 32                # Number of histogram bins for MI metric
 
   # QC settings
   run_qc: true
@@ -192,7 +225,11 @@ diffusion:
     niter: 5
     s2v_lambda: 1
     s2v_niter: 5
-    repol: true  # Outlier replacement
+    repol: true                        # Outlier replacement
+    phase_encoding_direction: "0 -1 0" # Acquisition PE direction for acqparams.txt
+    readout_time: 0.05                 # Total readout time (seconds)
+    data_is_shelled: true              # Skip shell auto-detection (Bruker multi-shell data)
+    slice_padding: 2                   # Pad N slices on each side before eddy
 
   # DTI fitting
   dti:
@@ -295,6 +332,10 @@ functional:
     glm:
       enabled: false  # Set to true if not using ICA
 
+  # Motion QC thresholds
+  motion_qc:
+    fd_threshold: 0.5               # Framewise displacement threshold (mm)
+
   # Registration (DISABLED - under development)
   # Registration to anatomical and atlas spaces will be added in future releases
   registration:
@@ -335,25 +376,31 @@ spectroscopy:
 
 # MSME (Multi-Slice Multi-Echo) T2 mapping
 msme:
-  # Adaptive slice-wise skull stripping
-  # MSME has only 5 thick slices (160x160x5 at 2.0x2.0x8.0mm)
-  # Standard 3D BET fails on this geometry, so we use per-slice BET
-  # with automatic frac optimization per slice
+  # Skull stripping for MSME data
   skull_strip:
-    target_ratio: 0.15           # Target 15% extraction per slice
-    frac_min: 0.3                # Minimum frac to test
-    frac_max: 0.8                # Maximum frac to test
-    frac_step: 0.05              # Test frac values in steps
+    method: "atropos_bet"          # 'atropos_bet' (recommended for 5-slice MSME)
+    n_classes: 3                   # Fewer classes for partial-coverage data
+    # Adaptive slice-wise parameters (used when method='adaptive')
+    target_ratio: 0.15             # Target 15% extraction per slice
+    frac_min: 0.3                  # Minimum frac to test
+    frac_max: 0.8                  # Maximum frac to test
+    frac_step: 0.05                # Test frac values in steps
     # COG estimation: offset from image center (in voxels)
-    # For 160x160 MSME images, center is (80,80). Brain sits lower, so offset_y=-40 → COG at (80,40)
-    # If not specified, defaults to image center (0, 0 offset)
-    cog_offset_x: 0              # X offset from image center (positive = right)
-    cog_offset_y: -40            # Y offset from image center (negative = down/inferior)
+    cog_offset_x: 0               # X offset from image center (positive = right)
+    cog_offset_y: -40             # Y offset from image center (negative = down/inferior)
 
-  # T2 fitting
+  # T2 fitting (legacy mono-exponential)
   fitting:
     method: "nonlinear"  # or "linear" (log-linear)
     bounds: [10, 500]  # T2 value bounds (ms)
+
+  # NNLS-based T2 fitting and MWF calculation
+  t2_fitting:
+    n_components: 120              # Number of T2 components in NNLS spectrum
+    t2_range: [10, 2000]           # T2 distribution range (ms) [min, max]
+    lambda_reg: 0.5                # Tikhonov regularization parameter
+    myelin_water_cutoff: 25        # T2 cutoff for myelin water (ms)
+    intra_extra_cutoff: 40         # T2 cutoff for intra/extra-cellular water (ms)
 
   # Registration
   registration:

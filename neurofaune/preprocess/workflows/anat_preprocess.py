@@ -20,6 +20,7 @@ from nipype.interfaces import fsl, ants
 import subprocess
 
 from neurofaune.utils.transforms import TransformRegistry
+from neurofaune.config import get_config_value
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.qc import get_subject_qc_dir
@@ -229,7 +230,9 @@ def calculate_adaptive_bet_frac(
     atropos_mask: np.ndarray,
     default_frac: float = 0.25,
     min_frac: float = 0.1,
-    max_frac: float = 0.4
+    max_frac: float = 0.4,
+    cnr_thresholds: list = None,
+    frac_mapping: list = None,
 ) -> float:
     """
     Calculate adaptive BET fractional intensity parameter based on image statistics.
@@ -285,17 +288,18 @@ def calculate_adaptive_bet_frac(
     # Lower CNR = harder to separate = need lower frac (more conservative)
     cnr = abs(brain_median - background_median) / (brain_std + background_std + 1e-6)
 
-    # Map CNR to frac based on empirical rodent T2w ranges:
-    # CNR < 1.5: Poor contrast (similar intensities) -> frac 0.15-0.20 (very conservative)
-    # CNR 1.5-3.0: Good contrast -> frac 0.25-0.30 (moderate)
-    # CNR > 3.0: Excellent contrast -> frac 0.35-0.40 (still conservative)
+    # Map CNR to frac based on empirical rodent T2w ranges
+    if cnr_thresholds is None:
+        cnr_thresholds = [1.5, 3.0]
+    if frac_mapping is None:
+        frac_mapping = [0.20, 0.28, 0.38]
 
-    if cnr < 1.5:
-        frac = 0.20  # Very conservative for low contrast
-    elif cnr < 3.0:
-        frac = 0.28  # Moderate for good contrast
+    if cnr < cnr_thresholds[0]:
+        frac = frac_mapping[0]  # Very conservative for low contrast
+    elif cnr < cnr_thresholds[1]:
+        frac = frac_mapping[1]  # Moderate for good contrast
     else:
-        frac = 0.38  # More aggressive for excellent contrast
+        frac = frac_mapping[2]  # More aggressive for excellent contrast
 
     # Clamp to allowed range
     frac = np.clip(frac, min_frac, max_frac)
@@ -388,7 +392,8 @@ def skull_strip_rodent(
         # Use Otsu thresholding to separate foreground from background
         from skimage.filters import threshold_otsu
         threshold = threshold_otsu(img_data[img_data > 0])
-        foreground_mask = img_data > (threshold * 0.3)  # Liberal threshold to include skull
+        otsu_multiplier = 0.3  # Liberal threshold to include skull
+        foreground_mask = img_data > (threshold * otsu_multiplier)
 
         # Save foreground mask
         foreground_mask_file = output_file.parent / 'foreground_mask.nii.gz'
@@ -404,11 +409,13 @@ def skull_strip_rodent(
             atropos.inputs.dimension = 3
             atropos.inputs.intensity_images = [str(input_file)]
             atropos.inputs.mask_image = str(foreground_mask_file)  # Use subject's own foreground mask
-            atropos.inputs.number_of_tissue_classes = 5  # Background, CSF, GM, WM, Skull/other
+            atropos.inputs.number_of_tissue_classes = 5
             atropos.inputs.n_iterations = 5
             atropos.inputs.convergence_threshold = 0.0
             atropos.inputs.mrf_smoothing_factor = 0.1
             atropos.inputs.mrf_radius = [1, 1, 1]
+            # NOTE: skull_strip_rodent() is legacy. New code uses skull_strip() dispatcher
+            # which reads Atropos params from config via the caller.
             atropos.inputs.initialization = 'KMeans'
             atropos.inputs.save_posteriors = True
 
@@ -494,8 +501,9 @@ def skull_strip_rodent(
             mask_data = mask_img.get_fdata().astype(bool)
 
             # Closing: dilate then erode (fills holes, smooths boundaries)
-            mask_data = ndimage.binary_dilation(mask_data, iterations=2)
-            mask_data = ndimage.binary_erosion(mask_data, iterations=2)
+            closing_iterations = 2
+            mask_data = ndimage.binary_dilation(mask_data, iterations=closing_iterations)
+            mask_data = ndimage.binary_erosion(mask_data, iterations=closing_iterations)
 
             # Save cleaned mask
             nib.save(nib.Nifti1Image(mask_data.astype(np.uint8), mask_img.affine, mask_img.header),
@@ -539,7 +547,8 @@ def segment_brain_tissue(
     atropos_posteriors: List[Path],
     output_dir: Path,
     subject: str,
-    session: str
+    session: str,
+    tissue_confidence_threshold: float = 0.35,
 ) -> Dict[str, Path]:
     """
     Extract tissue probability maps from Atropos skull stripping posteriors.
@@ -601,8 +610,7 @@ def segment_brain_tissue(
     segmentation_data = segmentation_data * mask_data  # Apply brain mask
 
     # Remove low-confidence assignments (reduces speckling)
-    min_prob_threshold = 0.35  # Only assign tissue if confidence >= 35%
-    segmentation_data[max_prob < min_prob_threshold] = 0
+    segmentation_data[max_prob < tissue_confidence_threshold] = 0
 
     # Save tissue probability maps
     wm_prob = output_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
@@ -632,7 +640,10 @@ def segment_brain_tissue(
 def bias_field_correction(
     input_file: Path,
     output_file: Path,
-    mask_file: Optional[Path] = None
+    mask_file: Optional[Path] = None,
+    n_iterations: Optional[List[int]] = None,
+    shrink_factor: int = 3,
+    convergence_threshold: float = 1e-6,
 ) -> Path:
     """
     Perform N4 bias field correction.
@@ -645,21 +656,30 @@ def bias_field_correction(
         Output bias-corrected image
     mask_file : Path, optional
         Brain mask
+    n_iterations : list of int, optional
+        Iterations per resolution level (default: [50, 50, 30, 20])
+    shrink_factor : int
+        Downsampling factor for speed (default: 3)
+    convergence_threshold : float
+        Convergence threshold (default: 1e-6)
 
     Returns
     -------
     Path
         Bias-corrected image
     """
+    if n_iterations is None:
+        n_iterations = [50, 50, 30, 20]
+
     n4 = ants.N4BiasFieldCorrection()
     n4.inputs.input_image = str(input_file)
     n4.inputs.output_image = str(output_file)
     if mask_file:
         n4.inputs.mask_image = str(mask_file)
     n4.inputs.dimension = 3
-    n4.inputs.n_iterations = [50, 50, 30, 20]
-    n4.inputs.shrink_factor = 3
-    n4.inputs.convergence_threshold = 1e-6
+    n4.inputs.n_iterations = n_iterations
+    n4.inputs.shrink_factor = shrink_factor
+    n4.inputs.convergence_threshold = convergence_threshold
     n4.run()
 
     return output_file
@@ -670,7 +690,8 @@ def register_to_atlas_ants(
     fixed_image: Path,
     output_prefix: Path,
     cohort: str = 'p60',
-    registration_type: str = 'SyN'
+    registration_type: str = 'SyN',
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Path]:
     """
     Register subject to atlas using ANTs.
@@ -694,23 +715,34 @@ def register_to_atlas_ants(
         Dictionary with warped_image, inverse_warped_image,
         composite_transform, inverse_composite_transform
     """
-    # Age-specific registration parameters
-    # P30 needs more regularization due to size/shape differences
+    # Read registration parameters from config (with hardcoded defaults)
+    if config is not None:
+        cfg_smoothing = get_config_value(config, 'anatomical.registration.smoothing_sigmas',
+                                         default=[[3, 2, 1, 0], [2, 1, 0]])
+        cfg_shrink = get_config_value(config, 'anatomical.registration.shrink_factors',
+                                      default=[[8, 4, 2, 1], [4, 2, 1]])
+        cfg_syn = get_config_value(config, 'anatomical.registration.syn_params',
+                                   default=[0.1, 3.0, 0.0])
+    else:
+        cfg_smoothing = [[3, 2, 1, 0], [2, 1, 0]]
+        cfg_shrink = [[8, 4, 2, 1], [4, 2, 1]]
+        cfg_syn = [0.1, 3.0, 0.0]
+
     reg_params = {
         'p30': {
-            'smoothing_sigmas': [[3, 2, 1, 0], [2, 1, 0]],
-            'shrink_factors': [[8, 4, 2, 1], [4, 2, 1]],
-            'transform_parameters': [(0.1,), (0.1, 3.0, 0.0)]  # SyN regularization
+            'smoothing_sigmas': cfg_smoothing,
+            'shrink_factors': cfg_shrink,
+            'transform_parameters': [(0.1,), tuple(cfg_syn)]
         },
         'p60': {
-            'smoothing_sigmas': [[3, 2, 1, 0], [2, 1, 0]],
-            'shrink_factors': [[8, 4, 2, 1], [4, 2, 1]],
-            'transform_parameters': [(0.1,), (0.1, 3.0, 0.0)]
+            'smoothing_sigmas': cfg_smoothing,
+            'shrink_factors': cfg_shrink,
+            'transform_parameters': [(0.1,), tuple(cfg_syn)]
         },
         'p90': {
-            'smoothing_sigmas': [[3, 2, 1, 0], [2, 1, 0]],
-            'shrink_factors': [[8, 4, 2, 1], [4, 2, 1]],
-            'transform_parameters': [(0.1,), (0.1, 3.0, 0.0)]
+            'smoothing_sigmas': cfg_smoothing,
+            'shrink_factors': cfg_shrink,
+            'transform_parameters': [(0.1,), tuple(cfg_syn)]
         }
     }
 
@@ -728,24 +760,31 @@ def register_to_atlas_ants(
     reg.inputs.initial_moving_transform_com = 1  # Align centers of mass
 
     # Metric
+    metric_bins = get_config_value(config, 'anatomical.registration.metric_bins', default=32) if config else 32
     reg.inputs.metric = ['MI', 'MI']
     reg.inputs.metric_weight = [1.0, 1.0]
-    reg.inputs.radius_or_number_of_bins = [32, 32]
+    reg.inputs.radius_or_number_of_bins = [metric_bins, metric_bins]
 
     # Transforms: Affine + SyN
     reg.inputs.transforms = ['Affine', 'SyN']
     reg.inputs.transform_parameters = params['transform_parameters']
 
-    # Iterations (4 levels for both transforms)
-    reg.inputs.number_of_iterations = [[1000, 500, 250, 100], [100, 70, 50, 20]]
+    # Iterations
+    cfg_iterations = get_config_value(config, 'anatomical.registration.iterations',
+                                      default=[[1000, 500, 250, 100], [100, 70, 50, 20]]) if config else [[1000, 500, 250, 100], [100, 70, 50, 20]]
+    reg.inputs.number_of_iterations = cfg_iterations
 
     # Smoothing and shrinking (4 levels for both transforms)
     reg.inputs.smoothing_sigmas = [[3, 2, 1, 0], [3, 2, 1, 0]]
     reg.inputs.shrink_factors = [[8, 4, 2, 1], [8, 4, 2, 1]]
 
     # Convergence
-    reg.inputs.convergence_threshold = [1e-6, 1e-6]
-    reg.inputs.convergence_window_size = [10, 10]
+    cfg_conv_thresh = get_config_value(config, 'anatomical.registration.convergence_threshold',
+                                       default=1e-6) if config else 1e-6
+    cfg_conv_window = get_config_value(config, 'anatomical.registration.convergence_window_size',
+                                       default=10) if config else 10
+    reg.inputs.convergence_threshold = [cfg_conv_thresh, cfg_conv_thresh]
+    reg.inputs.convergence_window_size = [cfg_conv_window, cfg_conv_window]
 
     # Interpolation
     reg.inputs.interpolation = 'Linear'
@@ -1023,7 +1062,15 @@ def run_anatomical_preprocessing(
     # Step 2: Bias field correction (before skull stripping!)
     print("Bias field correction...")
     t2w_n4_file = work_dir / f'{subject}_{session}_T2w_n4.nii.gz'
-    bias_field_correction(t2w_input, t2w_n4_file, mask_file=None)
+    n4_iterations = get_config_value(config, 'anatomical.n4.iterations', default=[50, 50, 30, 20])
+    n4_shrink = get_config_value(config, 'anatomical.n4.shrink_factor', default=3)
+    n4_convergence = get_config_value(config, 'anatomical.n4.convergence_threshold', default=1e-6)
+    bias_field_correction(
+        t2w_input, t2w_n4_file, mask_file=None,
+        n_iterations=n4_iterations,
+        shrink_factor=n4_shrink,
+        convergence_threshold=n4_convergence,
+    )
 
     # Step 3: Skull stripping (after bias correction)
     # T2w has ~41 slices, so auto-selects atropos_bet two-pass method
@@ -1033,13 +1080,25 @@ def run_anatomical_preprocessing(
     skull_strip_work_dir = work_dir / 'skull_strip'
     skull_strip_work_dir.mkdir(exist_ok=True)
 
+    ss_method = get_config_value(config, 'anatomical.skull_strip.method', default='auto')
+    ss_n_classes = get_config_value(config, 'anatomical.skull_strip.n_classes', default=5)
+    ss_atropos_iter = get_config_value(config, 'anatomical.skull_strip.atropos_iterations', default=5)
+    ss_atropos_conv = get_config_value(config, 'anatomical.skull_strip.atropos_convergence', default=0.0)
+    ss_mrf_smooth = get_config_value(config, 'anatomical.skull_strip.mrf_smoothing_factor', default=0.1)
+    ss_mrf_radius = get_config_value(config, 'anatomical.skull_strip.mrf_radius', default=[1, 1, 1])
+
     brain_file, mask_file, skull_strip_info = skull_strip(
         input_file=t2w_n4_file,
         output_file=brain_file,
         mask_file=mask_file,
         work_dir=skull_strip_work_dir,
-        method='auto',  # Will select 'atropos_bet' for 41-slice T2w
+        method=ss_method,
         cohort=cohort,
+        n_classes=ss_n_classes,
+        atropos_iterations=ss_atropos_iter,
+        atropos_convergence=ss_atropos_conv,
+        mrf_smoothing_factor=ss_mrf_smooth,
+        mrf_radius=ss_mrf_radius,
     )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
@@ -1055,12 +1114,16 @@ def run_anatomical_preprocessing(
         print("STEP 4: Tissue Segmentation")
         print("="*60)
 
+        tissue_conf_threshold = get_config_value(
+            config, 'anatomical.skull_strip.tissue_confidence_threshold', default=0.35
+        )
         tissue_results = segment_brain_tissue(
             mask_file=mask_file,
             atropos_posteriors=atropos_posteriors,
             output_dir=work_dir,
             subject=subject,
-            session=session
+            session=session,
+            tissue_confidence_threshold=tissue_conf_threshold,
         )
     else:
         print("\n  No Atropos posteriors available (adaptive skull strip) — skipping tissue segmentation")
@@ -1152,7 +1215,8 @@ def run_anatomical_preprocessing(
     print("Normalizing intensity...")
     img = nib.load(brain_file)
     data = img.get_fdata()
-    data_norm = data * 1000.0
+    norm_factor = get_config_value(config, 'anatomical.intensity_normalization.factor', default=1000.0)
+    data_norm = data * norm_factor
     img_norm = nib.Nifti1Image(data_norm, img.affine, img.header)
     brain_norm_file = work_dir / f'{subject}_{session}_brain_norm.nii.gz'
     nib.save(img_norm, brain_norm_file)
