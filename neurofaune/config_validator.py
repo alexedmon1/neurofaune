@@ -160,6 +160,8 @@ class DWIConfigValidator(ConfigValidator):
     ]
 
     OPTIONAL_KEYS = [
+        'diffusion.skull_strip.method',
+        'diffusion.skull_strip.n_classes',
         'diffusion.eddy.phase_encoding_direction',
         'diffusion.eddy.readout_time',
         'diffusion.eddy.data_is_shelled',

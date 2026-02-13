@@ -197,11 +197,12 @@ diffusion:
     enabled: true  # Set to false to disable (not recommended)
     target_max: 10000.0  # Target maximum intensity after normalization
 
-  # Brain extraction method for DWI
-  # Options: 'atropos' (recommended) or 'bet'
-  # Atropos uses intensity-based segmentation which is more robust for:
-  # - Partial brain acquisitions (e.g., hippocampal DTI)
-  # - Data with unusual intensity ranges from different Bruker settings
+  # Skull stripping for DWI b0
+  skull_strip:
+    method: "atropos_bet"          # 'atropos_bet', 'atropos', 'bet', or 'auto'
+    n_classes: 3                   # 3-class: brightest class = brain (proven for DWI b0)
+
+  # Brain extraction method for DWI (legacy key, use skull_strip instead)
   brain_extraction:
     method: atropos  # 'atropos' or 'bet'
 

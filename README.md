@@ -1,34 +1,30 @@
 # Neurofaune
 
-Rodent-specific MRI preprocessing and analysis pipeline built on ANTs and FSL. Designed for multi-modal rat brain imaging with age-cohort support and standardized normalization to the SIGMA rat brain atlas.
-
----
+Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles multi-modal rat brain imaging with age-cohort templates and standardized normalization to the SIGMA rat brain atlas.
 
 ## Prerequisites
 
 - Python 3.10+
-- FSL 6.0+
-- ANTs 2.3+
+- [FSL 6.0+](https://fsl.fmrib.ox.ac.uk/fsl/)
+- [ANTs 2.3+](https://github.com/ANTsX/ANTs)
 - CUDA (optional, for GPU-accelerated eddy correction)
 
 ```bash
-git clone https://github.com/yourusername/neurofaune.git
+git clone https://github.com/alexedmon1/neurofaune.git
 cd neurofaune
 uv pip install -e ".[dev]"
 ```
 
----
+## Workflow Overview
 
-## Workflow
-
-Neurofaune processing follows a strict order. Anatomical preprocessing must complete first because all other modalities register through T2w to reach SIGMA atlas space.
+Processing follows a strict order. Anatomical preprocessing must complete first because all other modalities register through T2w to reach SIGMA atlas space.
 
 ```
-1. Initialize Study
-2. Bruker → BIDS Conversion
-3. Anatomical Preprocessing (template building, then full preprocessing)
-4. Other Modalities (DTI, fMRI, MSME — require T2w transforms)
-5. Group Analysis (all subjects warped to SIGMA space)
+1. Initialize Study        → directory structure, config, study-space atlas
+2. Bruker → BIDS           → convert raw scanner data to standard format
+3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
+4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
+5. Group Analysis          → TBSS, ROI extraction, classification, connectivity
 ```
 
 ### Normalization Strategy
@@ -40,27 +36,25 @@ Subject native → Subject T2w → Cohort Template → SIGMA Atlas
                     Affine/Rigid      SyN              SyN
 ```
 
-SIGMA atlas labels (183 regions) are applied directly in SIGMA space after warping. This avoids interpolation artifacts from warping discrete labels through multiple non-linear transforms.
+## Quick Start
 
----
-
-## Step 1: Initialize Study
-
-Creates directory structure, discovers data, generates configuration, and sets up the study-space SIGMA atlas.
+### 1. Initialize a Study
 
 ```bash
 uv run python scripts/init_study.py /path/to/study \
     --name "My Study" --code mystudy \
     --bids-root /path/to/bids \
-    --sigma-atlas /path/to/SIGMA_scaled
+    --sigma-atlas /path/to/SIGMA_scaled \
+    --validate-workflows
 ```
 
-This creates:
+This creates the directory structure, generates `config.yaml` with all preprocessing parameters, sets up the study-space SIGMA atlas, and discovers available BIDS data:
+
 ```
 {study_root}/
-├── config.yaml                  # Study configuration
+├── config.yaml                  # Study configuration (all preprocessing params)
 ├── atlas/SIGMA_study_space/     # SIGMA reoriented to study acquisition orientation
-├── raw/bids/                    # Symlink or copy of BIDS data
+├── raw/bids/                    # BIDS data
 ├── derivatives/                 # Preprocessed outputs (per subject/session)
 ├── templates/                   # Age-specific templates
 ├── transforms/                  # Cross-modal transforms
@@ -68,113 +62,7 @@ This creates:
 └── work/                        # Temporary files (deletable)
 ```
 
-**Study-space SIGMA atlas**: The SIGMA atlas is reoriented once to match the study's native acquisition orientation (thick coronal slices). This avoids resampling every image to atlas orientation.
-
----
-
-## Automated Bruker Session Processing
-
-For processing a single Bruker session without a full study setup, `process_bruker_session` automates scan discovery, conversion, and preprocessing in one command. It inventories the raw Bruker session directory, identifies the best scan for each modality, converts to NIfTI, and runs every applicable preprocessing pipeline.
-
-```bash
-uv run python scripts/process_bruker_session.py \
-    /path/to/bruker_session \
-    /path/to/output_dir \
-    --subject sub-001 --session ses-01
-```
-
-This will:
-1. Inventory all scans and classify by modality (T2w, DWI, fMRI, MSME, fieldmap, spectroscopy)
-2. Auto-select the best scan per modality (most slices for T2w, highest b-value for DWI, etc.)
-3. Convert selected scans from Bruker to NIfTI (with 10x voxel scaling, JSON sidecars)
-4. Run anatomical preprocessing (N4, skull strip, tissue segmentation)
-5. Run DWI preprocessing if present (5D→4D, b-value shelling, eddy, DTI fitting)
-6. Run functional preprocessing if present (motion correction, ICA, filtering)
-7. Run MSME preprocessing if present (T2 mapping, MWF)
-8. Write scan inventory CSV and QC reports
-
-### Options
-
-```bash
-# Inventory only (list scans without processing)
-uv run python scripts/process_bruker_session.py \
-    /path/to/bruker_session /path/to/output \
-    --subject sub-001 --session ses-01 --inventory-only
-
-# With custom config and explicit registration
-uv run python scripts/process_bruker_session.py \
-    /path/to/bruker_session /path/to/output \
-    --subject sub-001 --session ses-01 \
-    --config config.yaml --run-registration
-
-# CPU-only eddy (no CUDA)
-uv run python scripts/process_bruker_session.py \
-    /path/to/bruker_session /path/to/output \
-    --subject sub-001 --session ses-01 --no-gpu
-
-# Force re-processing (ignore existing outputs)
-uv run python scripts/process_bruker_session.py \
-    /path/to/bruker_session /path/to/output \
-    --subject sub-001 --session ses-01 --force
-```
-
-### Scan Selection Criteria
-
-| Modality | Method Filter | Selection Priority |
-|----------|--------------|-------------------|
-| T2w | Bruker:RARE | Most slices, penalize <10 slices and localizers |
-| DWI | Bruker:DtiEpi | Highest max b-value, then most volumes |
-| fMRI | Bruker:EPI | Most repetitions, then most slices |
-| MSME | Bruker:MSME | Most echoes, then most slices |
-
-### Output Structure
-
-```
-{output_dir}/
-├── raw/bids/{subject}/{session}/     # Converted NIfTI + JSON sidecars
-│   ├── anat/                         #   T2w
-│   └── dwi/                          #   DWI + bval/bvec
-├── derivatives/{subject}/{session}/  # Preprocessed outputs
-│   ├── anat/                         #   Preproc T2w, brain mask, tissue maps
-│   └── dwi/                          #   Preproc DWI, FA, MD, AD, RD
-├── qc/{subject}/{session}/           # QC reports + scan_inventory.csv
-├── work/{subject}/{session}/         # Intermediate files (deletable)
-└── transforms/{subject}/{session}/   # Transform registry
-```
-
-### Programmatic Use
-
-```python
-from neurofaune.preprocess.workflows.bruker_session import process_bruker_session
-
-results = process_bruker_session(
-    session_dir=Path('/path/to/bruker_session'),
-    output_dir=Path('/path/to/output'),
-    subject='sub-001',
-    session='ses-01',
-    use_gpu=True,
-    skip_registration=True,  # No template registration
-)
-# results['inventory']  -- scan inventory list
-# results['anat']       -- anatomical preprocessing outputs
-# results['dwi']        -- DWI preprocessing outputs (if DWI present)
-```
-
-### When to Use This vs the Full Pipeline
-
-| | Automated Session | Full Pipeline (Steps 2-4) |
-|---|---|---|
-| **Use case** | Single session, quick exploration | Full study with multiple subjects |
-| **Atlas registration** | Optional (skipped by default) | Required (SIGMA atlas) |
-| **Template building** | No | Yes (age-specific templates) |
-| **Scan selection** | Automatic from Bruker metadata | Manual BIDS conversion |
-| **Config** | Optional (sensible defaults) | Required (config.yaml) |
-
----
-
-## Step 2: Bruker to BIDS Conversion
-
-Convert raw Bruker ParaVision data to BIDS-formatted NIfTI:
+### 2. Convert Bruker Data
 
 ```bash
 uv run python scripts/convert_bruker_to_bids.py \
@@ -182,526 +70,235 @@ uv run python scripts/convert_bruker_to_bids.py \
     --output-root /path/to/study/raw/bids
 ```
 
-Produces standard BIDS layout:
-```
-raw/bids/sub-Rat001/ses-p60/
-├── anat/sub-Rat001_ses-p60_T2w.nii.gz
-├── dwi/sub-Rat001_ses-p60_dwi.nii.gz
-├── func/sub-Rat001_ses-p60_bold.nii.gz
-└── msme/sub-Rat001_ses-p60_MSME.nii.gz
-```
-
-### Handling 3D Isotropic T2w Acquisitions
-
-Some studies may have subjects with **3D isotropic RARE** acquisitions instead of the standard 2D multi-slice T2w. This is common in earlier cohorts where acquisition protocols evolved over time.
-
-| Acquisition | Typical Geometry | Resolution |
-|-------------|-----------------|------------|
-| 2D multi-slice | 256×256×41 | 0.125×0.125×0.8mm |
-| 3D isotropic | 256×140×110 | 0.2×0.2×0.2mm |
-
-The standard BIDS converter may not recognize 3D RARE as T2w. Use the dedicated script to convert these:
+### 3. Build Templates and Preprocess
 
 ```bash
-# Dry run to see what would be converted
-uv run python scripts/convert_3d_rare_to_bids.py \
-    --bruker-root /path/to/bruker \
-    --bids-root /path/to/study/raw/bids \
-    --dry-run
-
-# Run the conversion
-uv run python scripts/convert_3d_rare_to_bids.py \
-    --bruker-root /path/to/bruker \
-    --bids-root /path/to/study/raw/bids
-```
-
-This creates T2w files with the `acq-3D` label to distinguish them:
-```
-raw/bids/sub-Rat001/ses-p60/anat/sub-Rat001_ses-p60_acq-3D_run-6_T2w.nii.gz
-```
-
-The 3D acquisitions can then be processed through the standard anatomical pipeline (see below for how 3D data is handled during preprocessing).
-
-To list all 3D-only subjects in a BIDS dataset:
-```bash
-uv run python scripts/list_3d_subjects.py /path/to/bids
-uv run python scripts/list_3d_subjects.py /path/to/bids --json    # JSON output
-uv run python scripts/list_3d_subjects.py /path/to/bids --cohort p60
-```
-
----
-
-## Step 3: Anatomical Preprocessing
-
-Anatomical T2w preprocessing must happen first because it produces the T2w-to-Template transforms that all other modalities chain through.
-
-### 3a: Build Age-Specific Templates
-
-Select a subset of subjects (top quality) and build cohort templates:
-
-```bash
-# Preprocess a subset for template building (20% of subjects)
+# Build age-specific templates (subset of best subjects)
 uv run python scripts/batch_preprocess_for_templates.py \
-    --bids-root /path/to/bids \
-    --output-root /path/to/study \
-    --cohorts p30 p60 p90 \
-    --fraction 0.20
+    --bids-root /path/to/bids --output-root /path/to/study --cohorts p30 p60 p90
 
-# Build templates and register to SIGMA
-uv run python scripts/build_templates.py \
-    --config /path/to/study/config.yaml \
-    --cohorts p30 p60 p90
+uv run python scripts/build_templates.py --config config.yaml --cohorts p30 p60 p90
+
+# Preprocess all subjects
+uv run python scripts/batch_preprocess_anat.py --config config.yaml
+uv run python scripts/batch_preprocess_dwi.py --config config.yaml --bids-root /path/to/bids --output-root /path/to/study
+uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/study
+uv run python scripts/batch_preprocess_msme.py /path/to/bids /path/to/study
 ```
 
-This creates age-specific T2w templates and computes Template-to-SIGMA transforms:
-```
-templates/anat/p90/
-├── tpl-BPARat_p90_T2w.nii.gz              # Template
-├── tpl-BPARat_p90_label-{GM,WM,CSF}_probseg.nii.gz  # Tissue priors
-└── transforms/
-    ├── tpl-to-SIGMA_0GenericAffine.mat     # Template → SIGMA affine
-    └── tpl-to-SIGMA_1Warp.nii.gz           # Template → SIGMA warp
-```
-
-### 3b: Preprocess All Subjects
-
-Run full anatomical preprocessing with registration to template:
+### 4. Group Analysis
 
 ```bash
-uv run python scripts/batch_preprocess_anat.py \
-    --config /path/to/study/config.yaml
+# TBSS voxel-wise analysis
+uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml --output-dir /study/analysis/tbss/
+uv run python scripts/run_tbss_analysis.py --tbss-dir /study/analysis/tbss --config config.yaml
+
+# ROI extraction, classification, connectivity — see scripts/ directory
 ```
 
-Per-subject pipeline:
-1. N4 bias field correction
-2. Skull stripping (two-pass Atropos+BET for full-coverage T2w)
-3. Tissue segmentation (GM, WM, CSF from Atropos posteriors)
-4. **3D resampling** (if 3D acquisition detected, resample to 2D-like geometry)
-5. Register T2w to age-matched template (ANTs SyN)
+## Configuration System
 
-#### 3D T2w Resampling
+Neurofaune uses a two-layer YAML configuration system:
 
-Subjects with 3D isotropic T2w (e.g., 140x256x110 at 2mm isotropic) are automatically detected and resampled to the standard 2D multi-slice geometry (256x256x41 at 1.25x1.25x8mm) using the cohort template as reference. Detection uses the `acq-3D` BIDS tag and geometry heuristics (isotropic voxels + >60 slices). All outputs (brain, mask, GM/WM/CSF probabilities, segmentation) are resampled consistently. 3D originals are preserved in the work directory.
+- **`configs/default.yaml`** — Package defaults shipped with neurofaune (never edit per-study)
+- **`{study_root}/config.yaml`** — Study-specific overrides generated by `init_study.py`
 
-To exclude 3D-only subjects from batch processing:
-```bash
-uv run python scripts/batch_preprocess_anat.py ... --exclude-3d
-```
+At runtime, `load_config()` merges defaults with study overrides and resolves `${variable}` references:
 
-The `--exclude-3d` flag is available on all batch scripts (`batch_preprocess_anat.py`, `batch_preprocess_dwi.py`, `batch_preprocess_func.py`, `batch_preprocess_msme.py`).
-
-Outputs:
-```
-derivatives/sub-Rat001/ses-p60/anat/
-├── sub-Rat001_ses-p60_desc-preproc_T2w.nii.gz
-├── sub-Rat001_ses-p60_desc-brain_mask.nii.gz
-├── sub-Rat001_ses-p60_label-{GM,WM,CSF}_probseg.nii.gz
-└── sub-Rat001_ses-p60_dseg.nii.gz
-
-transforms/sub-Rat001/ses-p60/
-├── sub-Rat001_ses-p60_T2w_to_template_0GenericAffine.mat
-└── sub-Rat001_ses-p60_T2w_to_template_1Warp.nii.gz
-```
-
----
-
-## Step 4: Other Modalities
-
-These require completed anatomical preprocessing (T2w transforms must exist).
-
-### DTI Preprocessing
-
-```bash
-uv run python scripts/batch_preprocess_dwi.py \
-    --bids-root /path/to/bids \
-    --output-root /path/to/study \
-    --config /path/to/study/config.yaml
-```
-
-Pipeline:
-1. 5D to 4D conversion (Bruker multi-average)
-2. Intensity normalization (handles Bruker reconstruction differences)
-3. Skull stripping (two-pass Atropos+BET for 11-slice coverage)
-4. Eddy correction with slice padding (GPU when available)
-5. DTI fitting (FA, MD, AD, RD)
-6. QC reports
-7. **FA to T2w registration** (ANTs affine)
-
-The FA-to-T2w transform completes the chain to SIGMA:
-```
-FA → T2w (affine) → Template (SyN) → SIGMA (SyN)
-```
-
-### Functional (fMRI) Preprocessing
-
-```bash
-uv run python scripts/batch_preprocess_func.py \
-    --bids-root /path/to/bids \
-    --output-root /path/to/study
-```
-
-Pipeline:
-1. Volume discarding (T1 equilibration)
-2. Slice timing correction (optional)
-3. Skull stripping (adaptive slice-wise BET for 9-slice partial coverage)
-4. Motion correction (MCFLIRT)
-5. ICA denoising (MELODIC with rodent-specific classification)
-6. Spatial smoothing
-7. Temporal filtering (0.01-0.1 Hz bandpass)
-8. Confound extraction (24 motion regressors)
-9. aCompCor (CSF/WM physiological noise, optional)
-10. QC reports
-11. **BOLD to T2w registration** (NCC Z-initialization + rigid)
-
-BOLD registration handles partial-coverage data (9 slices out of 41 T2w slices):
-- NCC scan finds optimal Z position (both images have origin at 0,0,0)
-- Rigid-only transform (6 DOF — affine over-fits on 9 slices)
-- Conservative shrink factors (4x2x1x1) to preserve Z information
-
-### MSME T2 Mapping
-
-```bash
-uv run python scripts/batch_preprocess_msme.py \
-    --bids-root /path/to/bids \
-    --output-root /path/to/study
-```
-
-Pipeline:
-1. Skull stripping (adaptive slice-wise BET for 5-slice partial coverage)
-2. Multi-echo T2 fitting
-3. Myelin Water Fraction (MWF) via NNLS
-4. T2 compartment analysis (myelin, intra/extracellular, CSF)
-5. **MSME to T2w registration** (NCC Z-initialization + rigid)
-6. QC reports
-
----
-
-## Step 5: Group Analysis
-
-Once subjects are preprocessed and registered, warp data to SIGMA space for group-level analysis.
-
-### Voxel-Based Analysis (TBSS-style)
-
-For a full DTI walkthrough including preprocessing, registration, and statistical analysis, see the **[TBSS Guide](docs/TBSS_GUIDE.md)**.
-
-The TBSS pipeline supports **multiple modalities** (DTI and MSME) with a standardized provenance chain that prevents subject/design mismatches.
-
-#### DTI TBSS
-
-```bash
-# 1. Prepare: collect SIGMA-space DTI metrics, create WM analysis mask, build 4D volumes
-uv run python -m neurofaune.analysis.tbss.prepare_tbss \
-    --config config.yaml \
-    --output-dir /study/analysis/tbss/ \
-    --exclude-file /study/analysis/tbss/exclude_bad_dti.txt
-
-# 2. Create design matrices (requires neuroaider)
-uv run python scripts/prepare_tbss_designs.py \
-    --study-tracker /study/study_tracker.csv \
-    --tbss-dir /study/analysis/tbss \
-    --output-dir /study/analysis/tbss/designs
-
-# 3. Run voxel-wise analysis (FSL randomise, 5000 permutations, TFCE)
-uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /study/analysis/tbss \
-    --config config.yaml \
-    --n-permutations 5000
-```
-
-#### MSME TBSS
-
-MSME metrics (MWF, IWF, CSFF, T2) use the same WM analysis mask derived from DTI FA, enabling direct cross-modality comparison:
-
-```bash
-# 1. Prepare: stack SIGMA-space MSME maps into masked 4D volumes
-uv run python scripts/prepare_msme_tbss.py \
-    --derivatives-dir /study/derivatives \
-    --dti-tbss-dir /study/analysis/tbss \
-    --output-dir /study/analysis/tbss_msme \
-    --study-tracker /study/study_tracker.csv
-
-# 2. Create design matrices (same scripts, pointed at MSME TBSS dir)
-uv run python scripts/prepare_tbss_designs.py \
-    --study-tracker /study/study_tracker.csv \
-    --tbss-dir /study/analysis/tbss_msme \
-    --output-dir /study/analysis/tbss_msme/designs
-
-uv run python scripts/prepare_tbss_dose_response_designs.py \
-    --study-tracker /study/study_tracker.csv \
-    --tbss-dir /study/analysis/tbss_msme \
-    --output-dir /study/analysis/tbss_msme/designs
-
-# 3. Run voxel-wise analysis with MSME metrics
-uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /study/analysis/tbss_msme \
-    --config config.yaml \
-    --metrics MWF T2 IWF CSFF \
-    --analyses dose_response_p30 dose_response_p60 dose_response_p90 dose_response_pooled \
-    --n-permutations 5000
-```
-
-#### Analysis Approach
-
-Uses WM-masked voxel-based analysis (not skeleton-based TBSS):
-- Rodent WM tracts are only 1-3 voxels wide, making skeletonization inappropriate
-- Analysis mask: interior WM (tissue probability + erosion) intersected with FA >= 0.3
-- FSL randomise with TFCE correction
-- Cluster labeling via SIGMA atlas parcellation
-
-#### Provenance Safety
-
-Design scripts write `provenance.json` (containing the SHA256 hash of `subject_list.txt`) into each design directory. Before running randomise, `run_tbss_analysis.py` validates that the current subject list matches what the design was built for, preventing silent subject/design mismatches. Designs created before provenance tracking produce a warning but are still accepted.
-
-### ROI-Level Metric Extraction
-
-```bash
-# Extract DTI ROI means (FA, MD, AD, RD) using SIGMA parcellation
-uv run python scripts/extract_roi_means.py \
-    --derivatives-dir /study/derivatives \
-    --parcellation /study/atlas/SIGMA_study_space/SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz \
-    --labels-csv /path/to/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv \
-    --study-tracker /study/study_tracker.csv \
-    --modality dwi --metrics FA MD AD RD \
-    --output-dir /study/analysis/roi
-
-# Extract MSME metrics (T2, MWF, etc.)
-uv run python scripts/extract_roi_means.py \
-    --modality msme --metrics T2 MWF IWF CSFF \
-    ...  # same parcellation/tracker/output args
-```
-
-Computes mean metric values within each of the 234 SIGMA atlas regions and 11 anatomical territories (volume-weighted). Outputs wide and long (tidy) CSVs with phenotype data merged from the study tracker, ready for mixed models, ANOVA, or other ROI-level statistical analyses.
-
-The module is also available as a library:
 ```python
-from neurofaune.analysis.roi import extract_all_subjects, to_long_format
+from neurofaune.config import load_config, get_config_value
+
+config = load_config(Path('config.yaml'))
+n_classes = get_config_value(config, 'anatomical.skull_strip.n_classes', default=5)
 ```
 
-### Covariance Network Analysis (CovNet)
+### Variable Substitution
 
-Tests whether inter-regional correlation structure differs between experimental groups:
-
-```bash
-uv run python scripts/run_covnet_analysis.py \
-    --roi-dir /study/analysis/roi \
-    --output-dir /study/analysis/covnet \
-    --exclusion-csv /study/dti_nonstandard_slices.csv \
-    --metrics FA MD AD RD \
-    --n-permutations 5000 --seed 42
-```
-
-Methods:
-- **Spearman correlation matrices** per group (PND x dose, full, territory)
-- **Network-Based Statistic (NBS)** — permutation-corrected graph component analysis for treatment vs control
-- **Territory-level Fisher z-tests** with FDR correction
-- **Graph metrics** — clustering, centrality, small-worldness with permutation comparison
-
-Supports bilateral ROI averaging and multiple grouping strategies (dose, PND x dose, sex x PND x dose).
-
-### Multivariate Group Classification
-
-Tests whether joint ROI patterns can discriminate dose groups — complementing TBSS (mass-univariate, per-voxel) and CovNet (correlation structure):
-
-```bash
-uv run python scripts/run_classification_analysis.py \
-    --roi-dir /study/analysis/roi \
-    --output-dir /study/analysis/classification \
-    --exclusion-csv /study/dti_nonstandard_slices.csv \
-    --metrics FA MD AD RD \
-    --feature-sets bilateral territory \
-    --n-permutations 1000 --seed 42
-```
-
-Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/territory):
-
-| Method | Purpose | Output |
-|--------|---------|--------|
-| **PERMANOVA** | Non-parametric omnibus test (do centroids differ?) | Pseudo-F, R², permutation p-value |
-| **PCA** | Unsupervised dimensionality reduction | PC1 vs PC2 scatter with 95% confidence ellipses, scree plot |
-| **LDA** | Supervised dimensionality reduction (maximise group separation) | LD1 vs LD2 scatter, structure correlations, top features |
-| **Classification** | Cross-validated prediction (LOOCV) | SVM + logistic regression accuracy, confusion matrix, permutation p-value |
-
-Two feature sets provide a built-in robustness check:
-- **bilateral** (~50 bilateral-averaged ROIs) — fine-grained regional patterns
-- **territory** (~15 territory aggregates) — coarser anatomical groupings
-
-Outputs are organised as `{metric}/{cohort}/{feature_set}/{method}/` with summary JSON and diagnostic figures at each level.
-
-### Dose-Response Regression
-
-Tests whether joint ROI patterns predict ordinal dose level (C=0, L=1, M=2, H=3) — complementing classification (discrete group discrimination) with a continuous dose-response approach:
-
-```bash
-uv run python scripts/run_regression_analysis.py \
-    --roi-dir /study/analysis/roi \
-    --output-dir /study/analysis/regression \
-    --exclusion-csv /study/dti_nonstandard_slices.csv \
-    --metrics FA MD AD RD \
-    --feature-sets bilateral territory \
-    --n-permutations 1000 --seed 42
-```
-
-Runs per metric, per cohort (p30/p60/p90/pooled), per feature set (bilateral/territory):
-
-| Method | Purpose | Output |
-|--------|---------|--------|
-| **SVR** | Linear Support Vector Regression (LOOCV) | R², MAE, Spearman ρ, permutation p-value |
-| **Ridge** | L2-regularised linear regression (LOOCV) | R², MAE, Spearman ρ, permutation p-value |
-| **PLS** | Partial Least Squares regression (LOOCV) | R², MAE, Spearman ρ, predicted-vs-actual scatter |
-
-Classification asks "can we tell groups apart?" while regression asks "is there a linear dose-response relationship?" — both use LOOCV with permutation testing for empirical p-values.
-
-### MVPA (Multi-Voxel Pattern Analysis)
-
-Tests whether spatial *patterns* of brain metrics discriminate dose groups — complementing ROI-level classification (summary statistics) with full voxel-level decoding:
-
-```bash
-# 1. Prepare designs (discovers SIGMA-space NIfTIs, creates NeuroAider design matrices)
-uv run python scripts/prepare_mvpa_designs.py \
-    --study-tracker /study/study_tracker.csv \
-    --derivatives-root /study/derivatives \
-    --output-dir /study/analysis/mvpa/designs \
-    --metrics FA MD AD RD
-
-# 2. Run whole-brain decoding (+ optional searchlight)
-uv run python scripts/run_mvpa_analysis.py \
-    --design-dir /study/analysis/mvpa/designs \
-    --derivatives-root /study/derivatives \
-    --output-dir /study/analysis/mvpa \
-    --mask /study/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Template_Masked.nii.gz \
-    --metrics FA MD AD RD \
-    --n-permutations 1000
-
-# With searchlight mapping (computationally expensive):
-uv run python scripts/run_mvpa_analysis.py \
-    ... \
-    --run-searchlight --searchlight-radius 2.0 --searchlight-n-jobs 4
-```
-
-Runs per metric, per cohort (p30/p60/p90/pooled), with two analysis modes:
-
-| Method | Purpose | Output |
-|--------|---------|--------|
-| **Whole-brain decoding** | nilearn Decoder with ANOVA screening (top 20% voxels) | SVM classification accuracy or Ridge R², permutation p-value, weight maps |
-| **Searchlight** (optional) | Sliding sphere (2mm radius) mapping local discriminability | Accuracy/R² map, FWER-corrected significant voxels |
-
-Two analysis types per design:
-- **Classification**: categorical dose groups (C/L/M/H), StratifiedKFold(5), Linear SVM
-- **Dose-response**: ordinal dose (0/1/2/3), StratifiedKFold(5), Ridge regression
-
-Data source: individual SIGMA-space NIfTIs from derivatives (e.g. `sub-Rat001_ses-p60_space-SIGMA_FA.nii.gz`), stacked with `nilearn.image.concat_imgs()`. No dependency on TBSS 4D volumes.
-
-Outputs are organised as `{metric}/{design}/{analysis_type}/{whole_brain,searchlight}/` with weight maps, glass brain projections, decoding score histograms, and summary JSON at each level.
-
-### Functional Normalization
-
-```bash
-# Warp preprocessed BOLD to SIGMA space
-uv run python scripts/batch_warp_bold_to_sigma.py \
-    --study-root /path/to/study
-```
-
-Chains BOLD→T2w→Template→SIGMA transforms using `antsApplyTransforms -e 3` for 4D timeseries. Produces `space-SIGMA_bold.nii.gz` for group ICA or connectivity analysis.
-
----
-
-## Quality Control
-
-QC is integrated into all preprocessing workflows and can also be run retroactively:
-
-```bash
-# Generate batch QC summary
-uv run python scripts/generate_batch_qc.py /path/to/study --modality dwi --slice-qc
-uv run python scripts/generate_batch_qc.py /path/to/study --modality anat
-uv run python scripts/generate_batch_qc.py /path/to/study --modality func
-
-# Retroactive QC for already-preprocessed data
-uv run python scripts/generate_anat_qc_retroactive.py /path/to/study
-uv run python scripts/generate_func_qc_retroactive.py /path/to/study
-```
-
-QC outputs:
-```
-qc/
-├── sub/{subject}/{session}/{modality}/  # Per-subject metrics + figures
-├── dwi_batch_summary/                   # Batch aggregation + exclusion lists
-├── anat_batch_summary/
-└── func_batch_summary/
-```
-
-Features:
-- Subject-level exclusion lists (with categorized reasons)
-- Slice-level QC for DTI (identifies bad slices per subject)
-- Cohort-specific exclusion lists
-- Visual heatmaps and distribution plots
-
----
-
-## Configuration
-
-YAML-based configuration with variable substitution:
+Config values can reference other config keys using `${section.key}` syntax, with chained references resolved automatically:
 
 ```yaml
-study:
-  name: "BPA-Rat Study"
-  species: "rat"
-
 paths:
-  study_root: "/mnt/arborea/bpa-rat"
+  study_root: "/mnt/data/my-study"
   derivatives: "${paths.study_root}/derivatives"
 
 atlas:
-  name: "SIGMA"
-  base_path: "/mnt/arborea/atlases/SIGMA_scaled"
-
-execution:
-  n_procs: 6
-
-anatomical:
-  bet:
-    frac: 0.3
-
-diffusion:
-  eddy:
-    use_cuda: true
-  intensity_normalization:
-    enabled: true
-    target_max: 10000
+  study_space:
+    base_path: "${paths.study_root}/atlas/SIGMA_study_space"
+    template: "${atlas.study_space.base_path}/SIGMA_InVivo_Brain_Template.nii.gz"
 ```
 
-See `configs/default.yaml` for all parameters and `configs/bpa_rat_example.yaml` for a complete example.
+### Per-Modality Configuration
 
----
+All preprocessing parameters are configurable. Workflows read from config with sensible defaults — existing behavior is unchanged unless you override a value.
+
+**Anatomical T2w** (`anatomical.*`):
+
+```yaml
+anatomical:
+  skull_strip:
+    method: "atropos_bet"          # 'atropos_bet', 'atropos', 'bet', or 'auto'
+    n_classes: 5                   # Atropos tissue classes
+    atropos_iterations: 5
+    atropos_convergence: 0.0
+    mrf_smoothing_factor: 0.1
+    mrf_radius: [1, 1, 1]
+    tissue_confidence_threshold: 0.35
+    adaptive_bet:
+      cnr_thresholds: [1.5, 3.0]
+      frac_mapping: [0.20, 0.28, 0.38]
+  n4:
+    iterations: [50, 50, 30, 20]
+    shrink_factor: 3
+    convergence_threshold: 1.0e-6
+  intensity_normalization:
+    factor: 1000.0
+  registration:
+    smoothing_sigmas: [[3, 2, 1, 0], [2, 1, 0]]
+    shrink_factors: [[8, 4, 2, 1], [4, 2, 1]]
+    iterations: [[1000, 500, 250, 100], [100, 70, 50, 20]]
+    syn_params: [0.1, 3.0, 0.0]
+    metric_bins: 32
+```
+
+**Diffusion DWI** (`diffusion.*`):
+
+```yaml
+diffusion:
+  skull_strip:
+    method: "atropos_bet"
+    n_classes: 3                   # 3-class: brightest = brain (for b0 images)
+  eddy:
+    phase_encoding_direction: "0 -1 0"
+    readout_time: 0.05
+    repol: true
+    data_is_shelled: true
+    slice_padding: 2
+```
+
+**MSME T2 Mapping** (`msme.*`):
+
+```yaml
+msme:
+  skull_strip:
+    method: "atropos_bet"
+    n_classes: 3
+  t2_fitting:
+    n_components: 120              # NNLS spectrum components
+    t2_range: [10, 2000]           # T2 distribution range (ms)
+    lambda_reg: 0.5                # Tikhonov regularization
+    myelin_water_cutoff: 25        # T2 cutoff for myelin water (ms)
+    intra_extra_cutoff: 40         # Intra/extra-cellular boundary (ms)
+```
+
+**Functional fMRI** (`functional.*`):
+
+```yaml
+functional:
+  skull_strip_adaptive:
+    target_ratio: 0.15
+    frac_range: [0.30, 0.90]
+    frac_step: 0.05
+  motion_qc:
+    fd_threshold: 0.5
+```
+
+See `configs/default.yaml` for all parameters and `configs/bpa_rat_example.yaml` for a complete study example.
+
+### Config Validation
+
+Validate that all required parameters are present before running preprocessing:
+
+```bash
+# Validate during initialization
+uv run python scripts/init_study.py /path/to/study --name "My Study" --code mystudy --validate-workflows
+
+# Validate programmatically
+uv run python -c "
+from neurofaune.config import load_config
+from neurofaune.config_validator import validate_all_workflows
+config = load_config('config.yaml')
+validate_all_workflows(config)
+"
+```
+
+## Skull Stripping
+
+Neurofaune automatically selects the skull stripping method based on image geometry. This is critical because rodent MRI modalities have vastly different slice coverage:
+
+| Modality | Slices | Method | Strategy |
+|----------|--------|--------|----------|
+| T2w anatomical | 41 | `atropos_bet` (5-class) | Middle 3 classes by volume = brain |
+| DTI diffusion | 11 | `atropos_bet` (3-class) | Brightest class = brain |
+| BOLD functional | 9 | `adaptive` | Per-slice BET with iterative frac |
+| MSME T2 mapping | 5 | `atropos_bet` (3-class) | Brightest class = brain |
+
+The threshold between methods is 10 slices. Standard 3D BET fails on partial-coverage data (BOLD, MSME) where the volume is essentially a flat slab.
+
+```python
+from neurofaune.preprocess.utils.skull_strip import skull_strip
+
+brain, mask, info = skull_strip(
+    input_file=image_path,
+    output_file=brain_path,
+    mask_file=mask_path,
+    work_dir=work_dir,
+    method='auto',  # selects based on slice count
+)
+```
+
+All skull stripping parameters are configurable per modality in `config.yaml`.
+
+## Preprocessing Pipelines
+
+### Anatomical (T2w)
+
+N4 bias correction, two-pass Atropos+BET skull stripping, tissue segmentation (GM/WM/CSF), optional 3D-to-2D resampling, registration to age-matched template (ANTs SyN). 3D isotropic acquisitions are automatically detected and resampled to standard 2D geometry.
+
+### DTI
+
+5D-to-4D conversion, intensity normalization, skull stripping, GPU-accelerated eddy correction with slice padding, DTI tensor fitting (FA, MD, AD, RD), FA-to-T2w registration (ANTs affine).
+
+### Functional (fMRI)
+
+Volume discarding, adaptive skull stripping, motion correction (MCFLIRT), ICA denoising (MELODIC), spatial smoothing, temporal bandpass filtering, confound extraction (24 motion + aCompCor), BOLD-to-T2w registration (NCC Z-init + rigid).
+
+### MSME T2 Mapping
+
+Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartment analysis, MSME-to-T2w registration.
+
+## Group Analysis
+
+Neurofaune includes several group-level analysis tools, all operating in SIGMA atlas space:
+
+- **TBSS** — WM-masked voxel-wise analysis for DTI and MSME metrics (FSL randomise + TFCE)
+- **ROI Extraction** — Mean metrics per SIGMA atlas region (234 regions, 11 territories)
+- **CovNet** — Covariance network analysis (correlation matrices, NBS, graph metrics)
+- **Classification** — PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV
+- **Regression** — Dose-response with SVR, Ridge, PLS
+- **MVPA** — Whole-brain decoding and searchlight mapping
+
+See `scripts/` for runner scripts and `neurofaune/analysis/` for library code.
 
 ## Architecture
 
 ```
 neurofaune/
 ├── config.py                        # YAML config with variable substitution
-├── atlas/                           # SIGMA atlas management
+├── config_validator.py              # Per-modality config validation
+├── study_initialization.py          # Study setup, BIDS discovery, config generation
+├── atlas/                           # SIGMA atlas management + slice extraction
 ├── preprocess/
 │   ├── workflows/                   # Per-modality pipelines
 │   │   ├── anat_preprocess.py       # T2w: N4, skull strip, segment, register
 │   │   ├── dwi_preprocess.py        # DTI: eddy, tensor fit, FA→T2w
 │   │   ├── func_preprocess.py       # fMRI: motion, ICA, filter, BOLD→T2w
 │   │   ├── msme_preprocess.py       # MSME: T2 mapping, MWF, MSME→T2w
-│   │   └── bruker_session.py        # Automated single-session orchestrator
+│   │   └── bruker_session.py        # Single-session orchestrator
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
 │       └── skull_strip.py           # Unified skull stripping dispatcher
 ├── templates/                       # Template building and registration
-│   ├── builder.py                   # ANTs template construction
-│   ├── registration.py              # Subject→template, atlas propagation
-│   └── slice_registration.py        # Study-space atlas setup
-├── analysis/                        # Group-level analysis
-│   ├── roi/                         # ROI-level metric extraction (SIGMA atlas)
-│   ├── tbss/                        # WM-masked voxel-based analysis (DTI + MSME)
-│   ├── covnet/                      # Covariance network (correlation matrices, NBS)
-│   ├── classification/              # Multivariate classification (PERMANOVA, LDA, SVM, PCA)
-│   ├── regression/                  # Dose-response regression (SVR, Ridge, PLS)
-│   ├── mvpa/                        # Multi-Voxel Pattern Analysis (whole-brain decoding, searchlight)
-│   ├── stats/                       # FSL randomise, cluster reports
-│   └── reporting/                   # Unified analysis registry + HTML dashboard
+├── analysis/                        # Group-level analysis (TBSS, ROI, CovNet, etc.)
 ├── registration/                    # Cross-modal registration utilities
 └── utils/                           # Transforms, exclusions, orientation
 ```
@@ -711,109 +308,19 @@ Key design decisions:
 - **ANTs for all registrations** (better quality than FSL for rodent brains)
 - **10x voxel scaling** for FSL/ANTs compatibility (sub-mm rodent voxels)
 - **Age cohorts** (p30, p60, p90) with cohort-specific templates
-- **All normalization goes to SIGMA space** (subject data warped up, labels applied there)
-- **Unified skull stripping** with automatic method selection based on image geometry
-
----
-
-## Skull Stripping
-
-Neurofaune provides a unified skull stripping interface that automatically selects the optimal method based on image geometry. This is critical for rodent MRI where different modalities have vastly different slice coverage.
-
-### The Challenge
-
-Rodent MRI acquisitions vary significantly in slice coverage:
-
-| Modality | Typical Slices | Coverage |
-|----------|---------------|----------|
-| T2w anatomical | 41 | Full brain |
-| DTI diffusion | 11 | Hippocampus-focused |
-| BOLD functional | 9 | Partial brain |
-| MSME T2 mapping | 5 | Very partial |
-
-Standard 3D skull stripping (BET, ANTs) assumes a roughly spherical brain geometry. This fails catastrophically on partial-coverage data like BOLD (9 slices) or MSME (5 slices) where the volume is essentially a flat slab.
-
-### Unified Dispatcher
-
-Neurofaune's `skull_strip()` function automatically selects the appropriate method:
-
-```python
-from neurofaune.preprocess.utils.skull_strip import skull_strip
-
-# Auto-selects method based on slice count
-brain, mask, info = skull_strip(
-    input_file=image_path,
-    output_file=brain_path,
-    mask_file=mask_path,
-    work_dir=work_dir,
-    method='auto',  # <10 slices → adaptive, ≥10 → atropos_bet
-)
-```
-
-### Methods
-
-**Adaptive Slice-wise BET** (for <10 slices: BOLD, MSME)
-- Processes each 2D slice independently
-- Iterative frac optimization to achieve target ~15% brain extraction per slice
-- Configurable center-of-gravity offset for off-center brain positioning
-- Handles the flat-slab geometry where 3D methods fail
-
-**Two-pass Atropos+BET** (for ≥10 slices: T2w, DTI)
-- Pass 1: Atropos 5-component segmentation provides rough brain mask and tissue posteriors
-- Pass 2: BET refinement using Atropos center-of-gravity for initialization
-- Adaptive frac calculation based on image contrast
-- Returns posteriors for tissue segmentation reuse (GM, WM, CSF)
-
-### Configuration
-
-Skull stripping parameters can be configured per modality in `config.yaml`:
-
-```yaml
-functional:
-  skull_strip_adaptive:
-    target_ratio: 0.15      # Target brain extraction per slice
-    frac_range: [0.30, 0.90]
-    frac_step: 0.05
-
-msme:
-  skull_strip:
-    target_ratio: 0.15
-    frac_min: 0.30
-    frac_max: 0.80
-    cog_offset_x: 0         # X offset for COG estimation
-    cog_offset_y: -40       # Y offset (negative = inferior)
-```
-
-### Why This Matters
-
-Without geometry-aware skull stripping:
-- 3D BET on 5-slice MSME data produces empty or nonsensical masks
-- Registration fails because the brain boundary is undefined
-- Downstream analysis (T2 mapping, connectivity) becomes unreliable
-
-With the unified dispatcher:
-- MSME (5 slices) → adaptive method → 14-16% extraction → successful registration
-- BOLD (9 slices) → adaptive method → consistent masks across protocols
-- DTI (11 slices) → atropos_bet → robust extraction with tissue posteriors
-- T2w (41 slices) → atropos_bet → high-quality masks for template building
-
----
+- **Config-driven** — all preprocessing parameters configurable via YAML, validated per modality
 
 ## Testing
 
 ```bash
 uv run pytest                                    # All tests
 uv run pytest tests/unit/ -v                     # Unit tests
-uv run pytest -m "not slow"                      # Skip slow tests
 uv run pytest --cov=neurofaune --cov-report=term-missing  # Coverage
 ```
 
-Tests use synthetic data generation (no external data required). Integration tests (`@pytest.mark.integration`) require FSL/ANTs installed.
-
----
+Tests use synthetic data generation (no external data required). Integration tests (`@pytest.mark.integration`) require FSL/ANTs.
 
 ## Acknowledgments
 
-- SIGMA rat brain atlas ([Barriere et al., 2019](https://doi.org/10.1016/j.neuroimage.2019.06.063))
-- Built on ANTs, FSL, and Nipype
-- Architecture adapted from neurovrai
+- [SIGMA rat brain atlas](https://doi.org/10.1016/j.neuroimage.2019.06.063) (Barriere et al., 2019)
+- Built on [ANTs](https://github.com/ANTsX/ANTs), [FSL](https://fsl.fmrib.ox.ac.uk/fsl/), and [Nipype](https://nipype.readthedocs.io/)

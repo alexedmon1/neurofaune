@@ -156,7 +156,12 @@ anatomical:
 
 # Diffusion preprocessing parameters
 diffusion:
-  # Brain extraction
+  # Skull stripping
+  skull_strip:
+    method: "atropos_bet"          # 'atropos_bet', 'atropos', 'bet', or 'auto'
+    n_classes: 3                   # 3-class: brightest class = brain (for DWI b0)
+
+  # Brain extraction (legacy)
   bet:
     frac: 0.3
     robust: true

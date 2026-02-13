@@ -582,14 +582,16 @@ def run_dwi_preprocessing(
     skull_strip_work_dir.mkdir(exist_ok=True)
 
     cohort = session.split('-')[1] if '-' in session else 'p60'
+    dwi_ss_method = get_config_value(config, 'diffusion.skull_strip.method', default='atropos_bet')
+    dwi_ss_n_classes = get_config_value(config, 'diffusion.skull_strip.n_classes', default=3)
     _, _, skull_strip_info = skull_strip(
         input_file=b0_file,
         output_file=b0_brain_file,
         mask_file=brain_mask_file,
         work_dir=skull_strip_work_dir,
-        method='atropos_bet',  # Always use 3-class Atropos+BET for DWI b0
+        method=dwi_ss_method,
         cohort=cohort,
-        n_classes=3,  # 3-class: brightest class = brain (proven for DWI b0)
+        n_classes=dwi_ss_n_classes,
     )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
