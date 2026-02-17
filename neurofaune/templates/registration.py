@@ -8,6 +8,7 @@ age-matched study templates.
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import nibabel as nib
@@ -974,20 +975,73 @@ def propagate_atlas_to_bold(
     return output_path
 
 
+def _warp_single_volume(
+    t: int,
+    vol_data: np.ndarray,
+    input_affine: np.ndarray,
+    input_header,
+    transforms: List[str],
+    reference: Path,
+    ref_affine: np.ndarray,
+    mask_data: np.ndarray,
+    tmpdir_path: Path,
+) -> str:
+    """Warp, mask, and save one 3D volume. Returns path to masked output."""
+    vol_img = nib.Nifti1Image(vol_data, input_affine, input_header)
+    vol_img.header.set_data_shape(vol_data.shape)
+
+    vol_in = tmpdir_path / f"vol_{t:04d}_in.nii.gz"
+    vol_out = tmpdir_path / f"vol_{t:04d}_out.nii.gz"
+    masked_path = tmpdir_path / f"vol_{t:04d}_masked.nii.gz"
+    nib.save(vol_img, vol_in)
+
+    cmd = [
+        "antsApplyTransforms",
+        "-d", "3",
+        "-i", str(vol_in),
+        "-r", str(reference),
+        "-o", str(vol_out),
+        "-n", "Linear",
+    ]
+    for tf in transforms:
+        cmd.extend(["-t", tf])
+
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"volume {t}: {result.stderr[:300]}")
+
+    # Load warped volume, apply mask, save back to disk
+    warped_vol = nib.load(vol_out).get_fdata(dtype=np.float32)
+    warped_vol *= mask_data
+    nib.save(nib.Nifti1Image(warped_vol, ref_affine), masked_path)
+
+    # Clean up intermediate files
+    vol_in.unlink(missing_ok=True)
+    vol_out.unlink(missing_ok=True)
+
+    return str(masked_path)
+
+
 def _warp_4d_volumewise(
     input_path: Path,
     output_path: Path,
     transforms: List[str],
     reference: Path,
     mask_data: np.ndarray,
+    n_threads: int = 6,
 ) -> bool:
     """
-    Warp a 4D NIfTI volume-by-volume to reduce peak memory.
+    Warp a 4D NIfTI volume-by-volume to keep memory low.
 
-    Instead of passing the full 4D timeseries to antsApplyTransforms -e 3
-    (which loads it all into RAM), this extracts each 3D volume, warps it
-    individually, applies the brain mask, and accumulates results into a
-    pre-allocated output array.
+    Extracts each 3D volume, warps it with antsApplyTransforms, masks it,
+    saves it as a temp file, then concatenates all volumes with fslmerge.
+    Volumes are warped in parallel using ``n_threads`` concurrent workers.
+
+    Peak RAM ≈ n_threads × one 3D SIGMA volume (~14 MB each) rather than
+    the full 4D (~5-10 GB).
 
     Parameters
     ----------
@@ -1001,6 +1055,8 @@ def _warp_4d_volumewise(
         Reference image defining output geometry (e.g. SIGMA template).
     mask_data : np.ndarray
         Boolean brain mask in reference space.
+    n_threads : int
+        Number of volumes to warp concurrently (default 6).
 
     Returns
     -------
@@ -1014,70 +1070,66 @@ def _warp_4d_volumewise(
     tmpdir = tempfile.mkdtemp(prefix="neurofaune_warp4d_")
     tmpdir_path = Path(tmpdir)
 
-    # Use a disk-backed memory-mapped array for the 4D output so that
-    # each worker uses ~tens of MB of RAM instead of ~4.3 GB.
-    out_shape = ref_img.shape + (n_timepoints,)
-    mmap_path = tmpdir_path / "output.dat"
-    out_data = np.memmap(
-        mmap_path, dtype=np.float32, mode="w+", shape=out_shape
-    )
-
     try:
+        # Pre-extract all volumes from the compressed input so that
+        # parallel threads don't contend on the same gzip stream.
+        # Each 3D volume is small (~0.5 MB for 92×160×9 native BOLD).
+        vol_arrays = []
         for t in range(n_timepoints):
-            if t % 50 == 0:
-                print(f"    Warping volume {t}/{n_timepoints}...")
+            vol_arrays.append(np.asarray(input_img.dataobj[..., t]))
 
-            # Extract single volume (memory-mapped read of one 3D frame)
-            vol_data = np.asarray(input_img.dataobj[..., t])
-            vol_img = nib.Nifti1Image(vol_data, input_img.affine, input_img.header)
-            # Clear time dimension from header for 3D output
-            vol_img.header.set_data_shape(vol_data.shape)
+        # Submit all volumes to the thread pool
+        futures = {}
+        done_count = 0
+        with ThreadPoolExecutor(max_workers=n_threads) as pool:
+            for t in range(n_timepoints):
+                fut = pool.submit(
+                    _warp_single_volume,
+                    t=t,
+                    vol_data=vol_arrays[t],
+                    input_affine=input_img.affine,
+                    input_header=input_img.header,
+                    transforms=transforms,
+                    reference=reference,
+                    ref_affine=ref_img.affine,
+                    mask_data=mask_data,
+                    tmpdir_path=tmpdir_path,
+                )
+                futures[fut] = t
 
-            vol_in = tmpdir_path / f"vol_{t:04d}_in.nii.gz"
-            vol_out = tmpdir_path / f"vol_{t:04d}_out.nii.gz"
-            nib.save(vol_img, vol_in)
+            for fut in as_completed(futures):
+                done_count += 1
+                t = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:
+                    print(f"    ERROR at volume {t}: {e}")
+                    return False
+                if done_count % 50 == 0 or done_count == n_timepoints:
+                    print(f"    Warped {done_count}/{n_timepoints} volumes...")
 
-            cmd = [
-                "antsApplyTransforms",
-                "-d", "3",
-                "-i", str(vol_in),
-                "-r", str(reference),
-                "-o", str(vol_out),
-                "-n", "Linear",
-            ]
-            for tf in transforms:
-                cmd.extend(["-t", tf])
+        # Free the extracted volume arrays
+        del vol_arrays
 
-            result = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
+        print(f"    Merging {n_timepoints} volumes...")
 
-            if result.returncode != 0:
-                print(f"    ERROR at volume {t}: {result.stderr[:300]}")
-                return False
+        # Collect masked paths in temporal order for fslmerge
+        masked_paths = [
+            str(tmpdir_path / f"vol_{t:04d}_masked.nii.gz")
+            for t in range(n_timepoints)
+        ]
 
-            # Load warped volume, mask, store in memmap
-            warped_vol = nib.load(vol_out).get_fdata(dtype=np.float32)
-            warped_vol *= mask_data
-            out_data[..., t] = warped_vol
+        merge_cmd = ["fslmerge", "-t", str(output_path)] + masked_paths
+        result = subprocess.run(
+            merge_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            print(f"    ERROR in fslmerge: {result.stderr[:300]}")
+            return False
 
-            # Clean up this volume's temp files
-            vol_in.unlink(missing_ok=True)
-            vol_out.unlink(missing_ok=True)
-
-        print(f"    Warped {n_timepoints}/{n_timepoints} volumes.")
-
-        # Flush memmap to disk, then save as NIfTI.
-        # nibabel writes from the memmap without loading the full array
-        # into resident memory — the OS pages data in/out as needed.
-        out_data.flush()
-        out_img = nib.Nifti1Image(out_data, ref_img.affine)
-        nib.save(out_img, output_path)
         return True
 
     finally:
-        # Delete memmap reference before removing the backing file
-        del out_data
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -1090,6 +1142,7 @@ def warp_bold_to_sigma(
     subject: str,
     session: str,
     low_memory: bool = True,
+    n_threads: int = 6,
 ) -> Dict[str, Path]:
     """
     Warp BOLD-space maps to SIGMA atlas space.
@@ -1137,8 +1190,10 @@ def warp_bold_to_sigma(
         Session ID
     low_memory : bool, optional
         If True (default), warp 4D timeseries volume-by-volume to reduce
-        peak memory (~4.3 GB instead of ~13 GB). If False, pass the full
-        4D file to antsApplyTransforms -e 3 (faster but high memory).
+        peak memory. If False, pass the full 4D to antsApplyTransforms -e 3.
+    n_threads : int, optional
+        Number of volumes to warp in parallel (default 6). Only used when
+        low_memory is True.
 
     Returns
     -------
@@ -1181,13 +1236,14 @@ def warp_bold_to_sigma(
 
         if is_4d and low_memory:
             # Volume-by-volume warping to reduce peak memory
-            print(f"    Using volume-by-volume warping ({img.shape[3]} volumes)")
+            print(f"    Using volume-by-volume warping ({img.shape[3]} volumes, {n_threads} threads)")
             success = _warp_4d_volumewise(
                 input_path=input_path,
                 output_path=output_path,
                 transforms=transforms,
                 reference=sigma_template,
                 mask_data=mask_data,
+                n_threads=n_threads,
             )
             if not success:
                 print(f"    ERROR: volume-by-volume warping failed for {desc}")
