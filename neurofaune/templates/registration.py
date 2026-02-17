@@ -5,7 +5,9 @@ This module provides functions for registering individual subjects to
 age-matched study templates.
 """
 
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import nibabel as nib
@@ -972,6 +974,104 @@ def propagate_atlas_to_bold(
     return output_path
 
 
+def _warp_4d_volumewise(
+    input_path: Path,
+    output_path: Path,
+    transforms: List[str],
+    reference: Path,
+    mask_data: np.ndarray,
+) -> bool:
+    """
+    Warp a 4D NIfTI volume-by-volume to reduce peak memory.
+
+    Instead of passing the full 4D timeseries to antsApplyTransforms -e 3
+    (which loads it all into RAM), this extracts each 3D volume, warps it
+    individually, applies the brain mask, and accumulates results into a
+    pre-allocated output array.
+
+    Parameters
+    ----------
+    input_path : Path
+        4D NIfTI input file.
+    output_path : Path
+        Where to write the warped+masked 4D output.
+    transforms : list of str
+        Ordered transform files for antsApplyTransforms.
+    reference : Path
+        Reference image defining output geometry (e.g. SIGMA template).
+    mask_data : np.ndarray
+        Boolean brain mask in reference space.
+
+    Returns
+    -------
+    bool
+        True on success, False if any volume failed.
+    """
+    input_img = nib.load(input_path)
+    n_timepoints = input_img.shape[3]
+    ref_img = nib.load(reference)
+
+    # Pre-allocate output array (ref_shape x n_timepoints)
+    out_data = np.zeros(ref_img.shape + (n_timepoints,), dtype=np.float32)
+
+    tmpdir = tempfile.mkdtemp(prefix="neurofaune_warp4d_")
+    tmpdir_path = Path(tmpdir)
+
+    try:
+        for t in range(n_timepoints):
+            if t % 50 == 0:
+                print(f"    Warping volume {t}/{n_timepoints}...")
+
+            # Extract single volume (memory-mapped read of one 3D frame)
+            vol_data = np.asarray(input_img.dataobj[..., t])
+            vol_img = nib.Nifti1Image(vol_data, input_img.affine, input_img.header)
+            # Clear time dimension from header for 3D output
+            vol_img.header.set_data_shape(vol_data.shape)
+
+            vol_in = tmpdir_path / f"vol_{t:04d}_in.nii.gz"
+            vol_out = tmpdir_path / f"vol_{t:04d}_out.nii.gz"
+            nib.save(vol_img, vol_in)
+
+            cmd = [
+                "antsApplyTransforms",
+                "-d", "3",
+                "-i", str(vol_in),
+                "-r", str(reference),
+                "-o", str(vol_out),
+                "-n", "Linear",
+            ]
+            for tf in transforms:
+                cmd.extend(["-t", tf])
+
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+
+            if result.returncode != 0:
+                print(f"    ERROR at volume {t}: {result.stderr[:300]}")
+                return False
+
+            # Load warped volume, mask, store
+            warped_vol = nib.load(vol_out).get_fdata(dtype=np.float32)
+            warped_vol *= mask_data
+            out_data[..., t] = warped_vol
+
+            # Clean up this volume's temp files
+            vol_in.unlink(missing_ok=True)
+            vol_out.unlink(missing_ok=True)
+
+        print(f"    Warped {n_timepoints}/{n_timepoints} volumes.")
+
+        # Save the full 4D result
+        out_img = nib.Nifti1Image(out_data, ref_img.affine)
+        nib.save(out_img, output_path)
+        return True
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def warp_bold_to_sigma(
     input_files: Dict[str, Path],
     transforms: List[str],
@@ -980,6 +1080,7 @@ def warp_bold_to_sigma(
     output_dir: Path,
     subject: str,
     session: str,
+    low_memory: bool = True,
 ) -> Dict[str, Path]:
     """
     Warp BOLD-space maps to SIGMA atlas space.
@@ -1025,6 +1126,10 @@ def warp_bold_to_sigma(
         Subject ID
     session : str
         Session ID
+    low_memory : bool, optional
+        If True (default), warp 4D timeseries volume-by-volume to reduce
+        peak memory (~4.3 GB instead of ~13 GB). If False, pass the full
+        4D file to antsApplyTransforms -e 3 (faster but high memory).
 
     Returns
     -------
@@ -1065,47 +1170,62 @@ def warp_bold_to_sigma(
         img = nib.load(input_path)
         is_4d = len(img.shape) == 4 and img.shape[3] > 1
 
-        cmd = [
-            "antsApplyTransforms",
-            "-d", "3",
-            "-i", str(input_path),
-            "-r", str(sigma_template),
-            "-o", str(output_path),
-            "-n", "Linear",
-        ]
-
-        if is_4d:
-            cmd.extend(["-e", "3"])  # time-series mode
-
-        for t in transforms:
-            cmd.extend(["-t", t])
-
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-
-        if result.returncode != 0:
-            print(f"    ERROR: antsApplyTransforms failed for {desc}")
-            print(f"    {result.stderr[:500]}")
-            continue
-
-        # Apply brain mask
-        warped_img = nib.load(output_path)
-        warped_data = warped_img.get_fdata()
-
-        if is_4d:
-            warped_data *= mask_data[..., np.newaxis]
+        if is_4d and low_memory:
+            # Volume-by-volume warping to reduce peak memory
+            print(f"    Using volume-by-volume warping ({img.shape[3]} volumes)")
+            success = _warp_4d_volumewise(
+                input_path=input_path,
+                output_path=output_path,
+                transforms=transforms,
+                reference=sigma_template,
+                mask_data=mask_data,
+            )
+            if not success:
+                print(f"    ERROR: volume-by-volume warping failed for {desc}")
+                continue
         else:
-            warped_data *= mask_data
+            # Standard single-call warping (3D maps, or 4D with low_memory=False)
+            cmd = [
+                "antsApplyTransforms",
+                "-d", "3",
+                "-i", str(input_path),
+                "-r", str(sigma_template),
+                "-o", str(output_path),
+                "-n", "Linear",
+            ]
 
-        nib.save(
-            nib.Nifti1Image(
-                warped_data.astype(np.float32),
-                warped_img.affine,
-                warped_img.header,
-            ),
-            output_path,
-        )
+            if is_4d:
+                cmd.extend(["-e", "3"])  # time-series mode
+
+            for t in transforms:
+                cmd.extend(["-t", t])
+
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+
+            if result.returncode != 0:
+                print(f"    ERROR: antsApplyTransforms failed for {desc}")
+                print(f"    {result.stderr[:500]}")
+                continue
+
+            # Apply brain mask
+            warped_img = nib.load(output_path)
+            warped_data = warped_img.get_fdata()
+
+            if is_4d:
+                warped_data *= mask_data[..., np.newaxis]
+            else:
+                warped_data *= mask_data
+
+            nib.save(
+                nib.Nifti1Image(
+                    warped_data.astype(np.float32),
+                    warped_img.affine,
+                    warped_img.header,
+                ),
+                output_path,
+            )
 
         sigma_outputs[desc] = output_path
         print(f"    {output_path.name}")
