@@ -26,19 +26,28 @@
 
 3. **Verified volume-by-volume warping works** — sub-Rat102 sequential test reached 150/355 volumes with Python at 304 MB RSS before being stopped to test parallel version
 
-**Not yet verified:**
-- Parallel (6-thread) volume warping — code committed but not yet tested end-to-end
-- Full batch FC run across all 166 sessions
+4. **Temp file location fix** — `/tmp` is often tmpfs (RAM-backed), so temp files there consumed RAM and defeated the purpose. Added `work_dir` parameter to `_warp_4d_volumewise` and `warp_bold_to_sigma`, defaulting to `{study_root}/work/`. Updated `batch_fc_analysis.py` to pass it.
+
+5. **End-to-end test passed** — sub-Rat102/ses-p60
+   - 355 volumes warped with 6 parallel threads, merged with fslmerge
+   - FC matrix computed: 182 ROIs × 182 ROIs (Pearson r → Fisher z)
+   - System memory: 2.7 GB used (26 GB free) during warping; fslmerge peaked at ~5 GB
+   - Python process RSS: ~320 MB
 
 **Commits this session:**
 - `7bc5610` — Fix OOM in BOLD-to-SIGMA warping by splitting 4D into volume-by-volume
 - `22f981d` — Use np.memmap for 4D output in volume-by-volume SIGMA warping
 - `3836657` — Parallelize volume-by-volume SIGMA warping and use fslmerge
+- `6901a5a` — Use output dir for temp files instead of /tmp
+- `c51224c` — Use study work dir for warp temp files, not /tmp or derivatives
 
-**Next steps for FC analysis:**
-1. Test parallel warping: `PYTHONUNBUFFERED=1 uv run python scripts/batch_fc_analysis.py --n-workers 1 --subjects sub-Rat102`
-2. If successful, run full batch: `uv run python scripts/batch_fc_analysis.py --n-workers 1` (1 batch worker, 6 internal threads per subject)
-3. Note: use `--n-workers 1` for batch since parallelism is now inside each subject's volume warping
+**Running in background (nohup) — check next session:**
+
+| Analysis | PID | Log file | Status |
+|----------|-----|----------|--------|
+| FC batch (163 sessions, 1 worker) | 34759 | `fc_batch_overnight.log` | Running |
+
+Monitor with: `tail -f fc_batch_overnight.log`
 
 ### Session Summary (2026-02-17)
 
