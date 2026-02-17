@@ -6,6 +6,40 @@
 
 ## Current Phase: 15 - Resting-State Analysis Scripts
 
+### Session Summary (2026-02-17b)
+
+**Completed this session:**
+
+1. **Fixed OOM in BOLD-to-SIGMA warping** — `neurofaune/templates/registration.py`
+   - Root cause: `warp_bold_to_sigma()` passed full 4D to `antsApplyTransforms -e 3`, loading entire timeseries into RAM. SIGMA-space output is 128×128×218×355 float64 = **10.1 GB per session**. With 6 batch workers, this exceeded 32 GB and OOM-killed processes.
+   - Fix: Volume-by-volume warping with `fslmerge` concatenation
+     - Added `_warp_single_volume()` helper — extracts one 3D volume, runs `antsApplyTransforms -d 3`, masks, saves to temp file (~14 MB each)
+     - Added `_warp_4d_volumewise()` — dispatches volumes to `ThreadPoolExecutor(max_workers=n_threads)` for parallel warping, then `fslmerge -t` concatenates from disk
+     - Peak memory per subject: ~6 × (14 MB output + 196 MB ANTs) ≈ 1.3 GB (vs 10-13 GB before)
+   - `warp_bold_to_sigma()` gains `low_memory=True` (default) and `n_threads=6` params
+   - 3D maps (fALFF, ReHo) still use single-call path unchanged
+   - Iteration: tried np.zeros pre-allocation (still 5 GB RSS), then np.memmap (nib.save pulled it all back through gzip), then fslmerge (works)
+
+2. **Cleaned 4 corrupt SIGMA BOLD files** from prior OOM crashes
+   - sub-Rat102/ses-p60 (1307 MB), sub-Rat110/ses-p90 (699 MB), sub-Rat111/ses-p90 (17 MB), sub-Rat115/ses-p60 (337 MB)
+   - Truncated .nii.gz from processes killed mid-write
+
+3. **Verified volume-by-volume warping works** — sub-Rat102 sequential test reached 150/355 volumes with Python at 304 MB RSS before being stopped to test parallel version
+
+**Not yet verified:**
+- Parallel (6-thread) volume warping — code committed but not yet tested end-to-end
+- Full batch FC run across all 166 sessions
+
+**Commits this session:**
+- `7bc5610` — Fix OOM in BOLD-to-SIGMA warping by splitting 4D into volume-by-volume
+- `22f981d` — Use np.memmap for 4D output in volume-by-volume SIGMA warping
+- `3836657` — Parallelize volume-by-volume SIGMA warping and use fslmerge
+
+**Next steps for FC analysis:**
+1. Test parallel warping: `PYTHONUNBUFFERED=1 uv run python scripts/batch_fc_analysis.py --n-workers 1 --subjects sub-Rat102`
+2. If successful, run full batch: `uv run python scripts/batch_fc_analysis.py --n-workers 1` (1 batch worker, 6 internal threads per subject)
+3. Note: use `--n-workers 1` for batch since parallelism is now inside each subject's volume warping
+
 ### Session Summary (2026-02-17)
 
 **Completed this session:**
@@ -381,8 +415,9 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | T2w -> Template transforms | - | 183 subjects | **Complete** - all cohorts |
 | DTI (FA, MD, AD, RD) | 181 sessions | 181 sessions | Complete |
 | FA -> T2w transforms | - | 118 subjects | |
-| Functional BOLD | 294 sessions | 1 session | Pipeline updated, needs batch run |
-| BOLD -> Template transforms | - | 1 subject | |
+| Functional BOLD | 294 sessions | 166 sessions | Pipeline complete, resting-state scripts ready |
+| BOLD -> Template transforms | - | 166 sessions | |
+| BOLD -> SIGMA warping | - | ~62 sessions | Volume-by-volume warping implemented, ~104 remaining |
 | MSME T2 mapping | 189 sessions | **189 sessions** | **Complete** - all reprocessed 2026-02-13 |
 
 ---
@@ -498,7 +533,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 
 1. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
 2. **3D T2w registration quality** — resampled 3D correlates at r=0.679 with template (vs r=0.842 for real 2D). Cross-modal registration for these subjects may need verification.
-3. **BOLD batch not run** — Only 1 subject processed with updated pipeline (nuisance regression + corrected FD)
+3. **FC analysis incomplete** — 166 sessions preprocessed, ~62 warped to SIGMA, ~104 need SIGMA warping before FC can run. Volume-by-volume parallel warping implemented but not yet batch-tested.
 
 ---
 
