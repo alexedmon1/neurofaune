@@ -1,10 +1,32 @@
 # Project Status
 
-**Last Updated:** 2026-02-13
+**Last Updated:** 2026-02-17
 
 ---
 
-## Current Phase: 14 - fMRI Pipeline Fixes + MSME/DTI Batch Analyses
+## Current Phase: 15 - Resting-State Analysis Scripts
+
+### Session Summary (2026-02-17)
+
+**Completed this session:**
+
+1. **Split monolithic resting-state script into standalone batch scripts**
+   - Extracted `batch_resting_state_analysis.py` (fALFF + ReHo + FC in one script) into three focused scripts:
+   - `scripts/batch_falff_analysis.py` — fALFF/ALFF computation + z-scoring + SIGMA warping
+   - `scripts/batch_reho_analysis.py` — ReHo computation + z-scoring + SIGMA warping
+   - `scripts/batch_fc_analysis.py` — ROI-to-ROI functional connectivity in SIGMA space
+   - All three handle BOLD-to-template registration on-the-fly if transform is missing
+   - Each saves its own metadata JSON (`desc-falff_analysis.json`, `desc-reho_analysis.json`, `desc-fc_analysis.json`)
+
+2. **Common CLI interface across all three scripts**
+   - `--study-root`, `--config`, `--n-workers`, `--force`, `--dry-run`, `--subjects`
+   - `--skip-sigma` on fALFF and ReHo (FC requires SIGMA space, so no skip option)
+   - Dry-run shows per-session data availability and SIGMA transform status
+
+3. **Key differences between scripts**
+   - fALFF: operates on unfiltered regressed BOLD (reconstructs from smooth + confounds if needed)
+   - ReHo: operates on bandpass-filtered preproc_bold (simpler, no reconstruction needed)
+   - FC: requires SIGMA-space BOLD, warps preproc_bold to SIGMA on-the-fly if missing
 
 ### Session Summary (2026-02-13b)
 
@@ -524,5 +546,8 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/run_tbss_analysis.py` | Run FSL randomise with provenance validation (DTI + MSME) |
 | `scripts/run_classification_analysis.py` | ROI-level multivariate classification (PERMANOVA, PCA, LDA, SVM) |
 | `scripts/run_regression_analysis.py` | ROI-level dose-response regression (SVR, Ridge, PLS) |
+| `scripts/batch_falff_analysis.py` | Batch fALFF/ALFF computation + SIGMA warping |
+| `scripts/batch_reho_analysis.py` | Batch ReHo computation + SIGMA warping |
+| `scripts/batch_fc_analysis.py` | Batch ROI-to-ROI functional connectivity in SIGMA space |
 | `scripts/test_3d_t2w_preprocess.py` | Test 3D T2w preprocessing on single subject |
 | `scripts/visualize_msme_skull_strip.py` | MSME skull stripping QC visualization |

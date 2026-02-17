@@ -87,6 +87,7 @@ bids/
 # But DO track source code QC modules
 !neurofaune/preprocess/qc/
 !neurofaune/preprocess/qc/**
+neurofaune/preprocess/qc/**/__pycache__/
 
 # Configuration files with sensitive paths
 # (Keep templates, ignore instance-specific configs)

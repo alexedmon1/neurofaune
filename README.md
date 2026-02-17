@@ -86,7 +86,24 @@ uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/study
 uv run python scripts/batch_preprocess_msme.py /path/to/bids /path/to/study
 ```
 
-### 4. Group Analysis
+### 4. Resting-State Analysis
+
+Individual focused scripts for each resting-state metric (run after functional preprocessing):
+
+```bash
+# fALFF (fractional ALFF) — from unfiltered regressed BOLD
+uv run python scripts/batch_falff_analysis.py --config config.yaml --n-workers 6
+
+# ReHo (Regional Homogeneity) — from bandpass-filtered BOLD
+uv run python scripts/batch_reho_analysis.py --config config.yaml --n-workers 6
+
+# Functional Connectivity — ROI-to-ROI in SIGMA space
+uv run python scripts/batch_fc_analysis.py --config config.yaml --n-workers 6
+```
+
+All three support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and `--skip-sigma` (fALFF/ReHo only). Each script handles BOLD-to-template registration on-the-fly if the transform is missing.
+
+### 5. Group Analysis
 
 ```bash
 # TBSS voxel-wise analysis
