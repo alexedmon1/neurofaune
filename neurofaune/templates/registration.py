@@ -1067,7 +1067,12 @@ def _warp_4d_volumewise(
     n_timepoints = input_img.shape[3]
     ref_img = nib.load(reference)
 
-    tmpdir = tempfile.mkdtemp(prefix="neurofaune_warp4d_")
+    # Use the output file's parent directory for temp files, NOT /tmp.
+    # /tmp is often tmpfs (RAM-backed) which defeats the purpose of
+    # keeping data on disk.
+    tmpdir = tempfile.mkdtemp(
+        prefix="neurofaune_warp4d_", dir=output_path.parent
+    )
     tmpdir_path = Path(tmpdir)
 
     try:
