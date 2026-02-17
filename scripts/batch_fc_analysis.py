@@ -233,6 +233,7 @@ def process_session(session_info: dict, config: dict,
                 output_dir=deriv_dir,
                 subject=subject,
                 session=session,
+                work_dir=session_info["study_root"] / "work",
             )
             result["outputs"]["sigma_warp"] = {
                 k: str(v) for k, v in sigma_outputs.items()

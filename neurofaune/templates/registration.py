@@ -1032,6 +1032,7 @@ def _warp_4d_volumewise(
     reference: Path,
     mask_data: np.ndarray,
     n_threads: int = 6,
+    work_dir: Optional[Path] = None,
 ) -> bool:
     """
     Warp a 4D NIfTI volume-by-volume to keep memory low.
@@ -1057,6 +1058,9 @@ def _warp_4d_volumewise(
         Boolean brain mask in reference space.
     n_threads : int
         Number of volumes to warp concurrently (default 6).
+    work_dir : Path, optional
+        Directory for temp files. Must be on a real filesystem, not tmpfs.
+        Defaults to output_path's parent directory.
 
     Returns
     -------
@@ -1067,12 +1071,11 @@ def _warp_4d_volumewise(
     n_timepoints = input_img.shape[3]
     ref_img = nib.load(reference)
 
-    # Use the output file's parent directory for temp files, NOT /tmp.
-    # /tmp is often tmpfs (RAM-backed) which defeats the purpose of
-    # keeping data on disk.
-    tmpdir = tempfile.mkdtemp(
-        prefix="neurofaune_warp4d_", dir=output_path.parent
-    )
+    # Temp files go on a real filesystem — never /tmp which is often
+    # tmpfs (RAM-backed) and would defeat the point of low-memory warping.
+    tmpdir_base = work_dir or output_path.parent
+    tmpdir_base.mkdir(parents=True, exist_ok=True)
+    tmpdir = tempfile.mkdtemp(prefix="neurofaune_warp4d_", dir=tmpdir_base)
     tmpdir_path = Path(tmpdir)
 
     try:
@@ -1148,6 +1151,7 @@ def warp_bold_to_sigma(
     session: str,
     low_memory: bool = True,
     n_threads: int = 6,
+    work_dir: Optional[Path] = None,
 ) -> Dict[str, Path]:
     """
     Warp BOLD-space maps to SIGMA atlas space.
@@ -1199,6 +1203,9 @@ def warp_bold_to_sigma(
     n_threads : int, optional
         Number of volumes to warp in parallel (default 6). Only used when
         low_memory is True.
+    work_dir : Path, optional
+        Directory for temp files during volume-by-volume warping. Must be
+        on a real filesystem (not tmpfs). Defaults to output_dir.
 
     Returns
     -------
@@ -1249,6 +1256,7 @@ def warp_bold_to_sigma(
                 reference=sigma_template,
                 mask_data=mask_data,
                 n_threads=n_threads,
+                work_dir=work_dir,
             )
             if not success:
                 print(f"    ERROR: volume-by-volume warping failed for {desc}")
