@@ -1011,11 +1011,16 @@ def _warp_4d_volumewise(
     n_timepoints = input_img.shape[3]
     ref_img = nib.load(reference)
 
-    # Pre-allocate output array (ref_shape x n_timepoints)
-    out_data = np.zeros(ref_img.shape + (n_timepoints,), dtype=np.float32)
-
     tmpdir = tempfile.mkdtemp(prefix="neurofaune_warp4d_")
     tmpdir_path = Path(tmpdir)
+
+    # Use a disk-backed memory-mapped array for the 4D output so that
+    # each worker uses ~tens of MB of RAM instead of ~4.3 GB.
+    out_shape = ref_img.shape + (n_timepoints,)
+    mmap_path = tmpdir_path / "output.dat"
+    out_data = np.memmap(
+        mmap_path, dtype=np.float32, mode="w+", shape=out_shape
+    )
 
     try:
         for t in range(n_timepoints):
@@ -1051,7 +1056,7 @@ def _warp_4d_volumewise(
                 print(f"    ERROR at volume {t}: {result.stderr[:300]}")
                 return False
 
-            # Load warped volume, mask, store
+            # Load warped volume, mask, store in memmap
             warped_vol = nib.load(vol_out).get_fdata(dtype=np.float32)
             warped_vol *= mask_data
             out_data[..., t] = warped_vol
@@ -1062,13 +1067,17 @@ def _warp_4d_volumewise(
 
         print(f"    Warped {n_timepoints}/{n_timepoints} volumes.")
 
-        # Save the full 4D result
+        # Flush memmap to disk, then save as NIfTI.
+        # nibabel writes from the memmap without loading the full array
+        # into resident memory — the OS pages data in/out as needed.
+        out_data.flush()
         out_img = nib.Nifti1Image(out_data, ref_img.affine)
         nib.save(out_img, output_path)
         return True
 
     finally:
-        # Clean up temp directory
+        # Delete memmap reference before removing the backing file
+        del out_data
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
