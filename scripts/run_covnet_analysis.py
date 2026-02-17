@@ -43,6 +43,9 @@ from neurofaune.analysis.covnet.graph_metrics import (
     compare_metrics,
     compute_metrics,
 )
+from neurofaune.analysis.covnet.whole_network import (
+    run_all_comparisons as run_whole_network_comparisons,
+)
 from neurofaune.analysis.covnet.visualization import (
     plot_all_group_heatmaps,
     plot_correlation_heatmap,
@@ -186,6 +189,7 @@ def run_single_metric(
     seed: int,
     skip_nbs: bool,
     skip_graph: bool,
+    skip_whole_network: bool = False,
 ) -> dict:
     """Run full CovNet pipeline for a single metric."""
     logger.info(f"\n{'=' * 60}")
@@ -413,6 +417,40 @@ def run_single_metric(
     else:
         logger.info("\n[Phase 7] Skipping graph metrics (--skip-graph)")
 
+    # Phase 8: Whole-network similarity tests
+    if not skip_whole_network:
+        logger.info(f"\n[Phase 8] Whole-network similarity tests ({n_perm} permutations)...")
+        wn_dir = output_dir / "whole_network" / metric
+        wn_dir.mkdir(parents=True, exist_ok=True)
+
+        group_arrays = {
+            label: subset[bilateral_region_cols].values
+            for label, subset in groups_pnd_dose.items()
+        }
+
+        wn_df, wn_nulls = run_whole_network_comparisons(
+            group_data=group_arrays,
+            n_perm=n_perm,
+            seed=seed,
+        )
+        wn_df.to_csv(wn_dir / "whole_network_results.csv", index=False)
+
+        # Save null distributions
+        null_arrays = {}
+        for comp_label, dists in wn_nulls.items():
+            for stat_name, arr in dists.items():
+                null_arrays[f"{comp_label}__{stat_name}"] = arr
+        np.savez(wn_dir / "null_distributions.npz", **null_arrays)
+
+        n_sig = int((wn_df[["mantel_p", "frobenius_p", "spectral_p"]] < 0.05).any(axis=1).sum())
+        logger.info(
+            f"Whole-network: {n_sig}/{len(wn_df)} comparisons with at least "
+            f"one significant statistic (p < 0.05)"
+        )
+        summary["whole_network_significant"] = n_sig
+    else:
+        logger.info("\n[Phase 8] Skipping whole-network tests (--skip-whole-network)")
+
     return summary
 
 
@@ -493,6 +531,18 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         lines.append("4. Graph metrics: SKIPPED")
         lines.append("")
 
+    if not args.skip_whole_network:
+        lines.append("5. Whole-network similarity tests")
+        lines.append("   - Mantel test: Pearson r between vectorized upper triangles")
+        lines.append("   - Frobenius distance: L2 norm of upper triangle difference")
+        lines.append("   - Spectral divergence: L2 distance between eigenvalue spectra")
+        lines.append(f"   - Permutation test: {args.n_permutations} permutations")
+        lines.append("   - Comparisons: each dose vs control within each PND")
+        lines.append("")
+    else:
+        lines.append("5. Whole-network similarity tests: SKIPPED")
+        lines.append("")
+
     lines.append("PARAMETERS")
     lines.append("----------")
     lines.append(f"Permutations: {args.n_permutations}")
@@ -543,6 +593,10 @@ def main():
         "--skip-graph", action="store_true",
         help="Skip graph metrics analysis",
     )
+    parser.add_argument(
+        "--skip-whole-network", action="store_true",
+        help="Skip whole-network similarity tests (Mantel, Frobenius, spectral)",
+    )
 
     args = parser.parse_args()
 
@@ -564,6 +618,7 @@ def main():
         "seed": args.seed,
         "skip_nbs": args.skip_nbs,
         "skip_graph": args.skip_graph,
+        "skip_whole_network": args.skip_whole_network,
         "timestamp": datetime.now().isoformat(),
     }
     with open(args.output_dir / "analysis_config.json", "w") as f:
@@ -584,6 +639,7 @@ def main():
             seed=args.seed,
             skip_nbs=args.skip_nbs,
             skip_graph=args.skip_graph,
+            skip_whole_network=args.skip_whole_network,
         )
         all_summaries[metric] = summary
 

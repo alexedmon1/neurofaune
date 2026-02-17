@@ -351,6 +351,14 @@ functional:
     target_space: "SIGMA"
     reuse_transforms: true  # Reuse anatomical transforms
 
+  # Resting-state analysis parameters
+  analysis:
+    falff:
+      low_freq: 0.01   # Lower bound (Hz) for ALFF/fALFF
+      high_freq: 0.08   # Upper bound (Hz) — Zou et al. (2008) canonical range
+    reho:
+      neighborhood: 27   # 7 (faces), 19 (faces+edges), or 27 (full 3x3x3 cube)
+
   # QC settings
   run_qc: true
 
@@ -379,7 +387,7 @@ spectroscopy:
 msme:
   # Skull stripping for MSME data
   skull_strip:
-    method: "atropos_bet"          # 'atropos_bet' (recommended for 5-slice MSME)
+    method: "adaptive"             # Per-slice BET; 'atropos_bet' fails on 5-slice MSME
     n_classes: 3                   # Fewer classes for partial-coverage data
     # Adaptive slice-wise parameters (used when method='adaptive')
     target_ratio: 0.15             # Target 15% extraction per slice

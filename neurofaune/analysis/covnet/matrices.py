@@ -292,6 +292,49 @@ def compute_spearman_matrices(
     return results
 
 
+def spearman_matrix(data: np.ndarray) -> np.ndarray:
+    """Compute Spearman correlation matrix from (n_subjects, n_rois) data.
+
+    Uses a fast vectorized path when there are no NaN values (rank-transform
+    then Pearson via numpy). Falls back to pairwise complete observations
+    when NaNs are present.
+
+    Parameters
+    ----------
+    data : ndarray, shape (n_subjects, n_rois)
+        ROI values per subject.
+
+    Returns
+    -------
+    corr : ndarray, shape (n_rois, n_rois)
+        Symmetric Spearman correlation matrix with 1s on the diagonal.
+    """
+    if not np.any(np.isnan(data)) and data.shape[0] >= 4:
+        # Fast path: rank each column, then Pearson corrcoef
+        ranked = np.apply_along_axis(stats.rankdata, 0, data)
+        corr = np.corrcoef(ranked, rowvar=False)
+        # Replace NaN (from constant columns) with 0.0
+        np.nan_to_num(corr, copy=False, nan=0.0)
+        # Ensure exact 1s on diagonal (floating point)
+        np.fill_diagonal(corr, 1.0)
+        return corr
+
+    # Slow path: pairwise complete observations
+    n_rois = data.shape[1]
+    corr = np.eye(n_rois)
+    for i in range(n_rois):
+        for j in range(i + 1, n_rois):
+            x = data[:, i]
+            y = data[:, j]
+            valid = ~(np.isnan(x) | np.isnan(y))
+            if valid.sum() < 4:
+                corr[i, j] = corr[j, i] = 0.0
+                continue
+            r, _ = stats.spearmanr(x[valid], y[valid])
+            corr[i, j] = corr[j, i] = r
+    return corr
+
+
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Fisher z-transform correlation coefficients.
 

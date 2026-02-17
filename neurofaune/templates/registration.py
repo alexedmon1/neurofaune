@@ -7,8 +7,9 @@ age-matched study templates.
 
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import nibabel as nib
+import numpy as np
 
 
 def register_subject_to_template(
@@ -969,3 +970,145 @@ def propagate_atlas_to_bold(
     print(f"  Unique labels: {n_labels}")
 
     return output_path
+
+
+def warp_bold_to_sigma(
+    input_files: Dict[str, Path],
+    transforms: List[str],
+    sigma_template: Path,
+    sigma_brain_mask: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+) -> Dict[str, Path]:
+    """
+    Warp BOLD-space maps to SIGMA atlas space.
+
+    Applies a pre-built transform chain (BOLD -> ... -> SIGMA), then
+    masks with the SIGMA brain mask. Supports both 3D maps (fALFF, ReHo)
+    and 4D timeseries (preprocessed BOLD).
+
+    The transform chain is passed as an ordered list of transform file
+    paths (ANTs convention: listed outermost-first, applied last-first).
+    For the typical 3-hop chain (BOLD -> T2w -> Template -> SIGMA)::
+
+        transforms = [
+            tpl-to-SIGMA_1Warp.nii.gz,       # SyN warp
+            tpl-to-SIGMA_0GenericAffine.mat,  # affine
+            T2w_to_template_1Warp.nii.gz,     # SyN warp
+            T2w_to_template_0GenericAffine.mat,# affine
+            BOLD_to_T2w_0GenericAffine.mat,   # rigid
+        ]
+
+    For a 2-hop chain (BOLD -> Template -> SIGMA)::
+
+        transforms = [
+            tpl-to-SIGMA_1Warp.nii.gz,
+            tpl-to-SIGMA_0GenericAffine.mat,
+            BOLD_to_template_0GenericAffine.mat,
+        ]
+
+    Parameters
+    ----------
+    input_files : dict
+        Mapping of description to path, e.g.
+        {'desc-fALFF_bold': path, 'desc-preproc_bold': path, ...}
+    transforms : list of str
+        Ordered transform files for antsApplyTransforms (outermost first).
+    sigma_template : Path
+        SIGMA reference image (defines output geometry)
+    sigma_brain_mask : Path
+        SIGMA brain mask for masking warped outputs
+    output_dir : Path
+        Directory for SIGMA-space outputs (derivatives func dir)
+    subject : str
+        Subject ID
+    session : str
+        Session ID
+
+    Returns
+    -------
+    dict
+        Mapping of description to SIGMA-space output path
+    """
+    print("\n" + "=" * 60)
+    print("Warp BOLD Maps to SIGMA Space")
+    print("=" * 60)
+
+    print(f"\n  Transform chain ({len(transforms)} transforms):")
+    for t in transforms:
+        print(f"    {Path(t).name}")
+    print(f"  Reference: {sigma_template.name}")
+    print(f"  Brain mask: {sigma_brain_mask.name}")
+
+    # Load brain mask once
+    mask_img = nib.load(sigma_brain_mask)
+    mask_data = mask_img.get_fdata().astype(bool)
+
+    sigma_outputs = {}
+
+    for desc, input_path in input_files.items():
+        output_path = output_dir / f"{subject}_{session}_space-SIGMA_{desc}.nii.gz"
+
+        if output_path.exists():
+            print(f"\n  {desc}: already exists, skipping")
+            sigma_outputs[desc] = output_path
+            continue
+
+        if not input_path.exists():
+            print(f"\n  {desc}: input not found ({input_path.name}), skipping")
+            continue
+
+        print(f"\n  {desc}: warping to SIGMA space...")
+
+        # Detect dimensionality
+        img = nib.load(input_path)
+        is_4d = len(img.shape) == 4 and img.shape[3] > 1
+
+        cmd = [
+            "antsApplyTransforms",
+            "-d", "3",
+            "-i", str(input_path),
+            "-r", str(sigma_template),
+            "-o", str(output_path),
+            "-n", "Linear",
+        ]
+
+        if is_4d:
+            cmd.extend(["-e", "3"])  # time-series mode
+
+        for t in transforms:
+            cmd.extend(["-t", t])
+
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+        if result.returncode != 0:
+            print(f"    ERROR: antsApplyTransforms failed for {desc}")
+            print(f"    {result.stderr[:500]}")
+            continue
+
+        # Apply brain mask
+        warped_img = nib.load(output_path)
+        warped_data = warped_img.get_fdata()
+
+        if is_4d:
+            warped_data *= mask_data[..., np.newaxis]
+        else:
+            warped_data *= mask_data
+
+        nib.save(
+            nib.Nifti1Image(
+                warped_data.astype(np.float32),
+                warped_img.affine,
+                warped_img.header,
+            ),
+            output_path,
+        )
+
+        sigma_outputs[desc] = output_path
+        print(f"    {output_path.name}")
+
+    print(f"\n  Warped {len(sigma_outputs)}/{len(input_files)} maps to SIGMA space")
+    return sigma_outputs

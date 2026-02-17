@@ -21,6 +21,7 @@ from scipy import stats
 from neurofaune.analysis.covnet.matrices import (
     compute_spearman_matrices,
     fisher_z_transform,
+    spearman_matrix,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,8 +124,8 @@ def network_based_statistic(
     )
 
     # Observed test statistics
-    corr_a = _spearman_matrix(data_a)
-    corr_b = _spearman_matrix(data_b)
+    corr_a = spearman_matrix(data_a)
+    corr_b = spearman_matrix(data_b)
     test_stat = np.zeros((n_rois, n_rois))
     for i in range(n_rois):
         for j in range(i + 1, n_rois):
@@ -149,8 +150,8 @@ def network_based_statistic(
         perm_a = pooled[perm_idx[:n_a]]
         perm_b = pooled[perm_idx[n_a:]]
 
-        corr_pa = _spearman_matrix(perm_a)
-        corr_pb = _spearman_matrix(perm_b)
+        corr_pa = spearman_matrix(perm_a)
+        corr_pb = spearman_matrix(perm_b)
 
         perm_stat = np.zeros((n_rois, n_rois))
         for i in range(n_rois):
@@ -179,22 +180,6 @@ def network_based_statistic(
         "n_b": n_b,
     }
 
-
-def _spearman_matrix(data: np.ndarray) -> np.ndarray:
-    """Compute Spearman correlation matrix from (n_subjects, n_rois) data."""
-    n_rois = data.shape[1]
-    corr = np.eye(n_rois)
-    for i in range(n_rois):
-        for j in range(i + 1, n_rois):
-            x = data[:, i]
-            y = data[:, j]
-            valid = ~(np.isnan(x) | np.isnan(y))
-            if valid.sum() < 4:
-                corr[i, j] = corr[j, i] = 0.0
-                continue
-            r, _ = stats.spearmanr(x[valid], y[valid])
-            corr[i, j] = corr[j, i] = r
-    return corr
 
 
 def run_all_comparisons(

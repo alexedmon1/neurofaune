@@ -905,6 +905,17 @@ def main():
         }, f, indent=2, default=str)
 
     print(f"\nSummary saved to: {summary_file}")
+
+    # Generate omnibus skull strip QC report
+    total_preprocessed = sum(r['preprocessed'] for r in all_results.values())
+    if total_preprocessed > 0:
+        try:
+            from neurofaune.preprocess.qc.batch_summary import generate_skull_strip_omnibus
+            report = generate_skull_strip_omnibus(args.output_dir, 'anat')
+            print(f"\nSkull strip omnibus report: {report}")
+        except Exception as e:
+            print(f"\nWarning: Could not generate omnibus QC report: {e}")
+
     print("\nDone!")
 
 

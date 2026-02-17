@@ -101,7 +101,7 @@ def run_classification(
     rng = np.random.default_rng(seed)
 
     classifiers = {
-        "svm": SVC(kernel="linear", C=1.0),
+        "svm": SVC(kernel="linear", C=1.0, max_iter=10000),
         "logistic": LogisticRegression(
             solver="lbfgs", max_iter=5000,
         ),

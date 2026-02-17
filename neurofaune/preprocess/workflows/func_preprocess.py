@@ -1414,6 +1414,11 @@ def run_functional_preprocessing(
     print(f"  Regressed {confounds_matrix.shape[1]} nuisance regressors from {n_timepoints} volumes")
     print(f"  Variance reduction: {100*(1 - post_var/pre_var):.1f}%")
 
+    # Save regressed (unfiltered) data to derivatives for fALFF analysis
+    regressed_deriv = derivatives_dir / f"{subject}_{session}_desc-regressed_bold.nii.gz"
+    shutil.copy(str(bold_regressed), str(regressed_deriv))
+    print(f"  Saved unfiltered regressed data: {regressed_deriv.name}")
+
     # =========================================================================
     # STEP 10: Temporal Filtering (AFTER nuisance regression)
     # =========================================================================

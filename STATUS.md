@@ -4,7 +4,54 @@
 
 ---
 
-## Current Phase: 13 - Config-Driven Preprocessing
+## Current Phase: 14 - fMRI Pipeline Fixes + MSME/DTI Batch Analyses
+
+### Session Summary (2026-02-13b)
+
+**Completed this session:**
+
+1. **fMRI preprocessing — single subject test (sub-Rat49/ses-p90)**
+   - Full pipeline run: 80×80×9×360 BOLD, TR=0.5s, run-14
+   - All 13 steps completed including ICA denoising (31 components, 5 noise removed) and template registration
+
+2. **Bug fix: tissue mask space mismatch** — `func_preprocess.py`
+   - CSF/WM masks from anat preprocessing are in T2w space (256×256×41) but ICA classification and aCompCor operate in BOLD space (80×80×9)
+   - Added `nibabel.processing.resample_from_to` to resample masks to BOLD space before use
+   - Affects both ICA component CSF overlap calculation and aCompCor tissue timeseries extraction
+
+3. **Bug fix: FD inflated by 10× voxel scaling** — `motion_qc.py`
+   - MCFLIRT estimates motion in 10×-scaled voxel space, so FD and translation summaries were 10× too large
+   - Added `voxel_scale=10.0` parameter to `calculate_framewise_displacement()`, divides FD by scale factor
+   - Translation summaries also corrected
+   - Changed default `fd_threshold` from 0.5mm (human) to 0.05mm (rodent real space) in `default.yaml`
+   - Threshold now read from config (`functional.motion_qc.fd_threshold`) instead of hardcoded
+
+4. **New: nuisance regression step** — `func_preprocess.py`
+   - 24 motion regressors + 10 aCompCor regressors (34 total) regressed from BOLD via OLS in a single pass
+   - Previously confounds were extracted but never applied
+   - 38.8% variance reduction on test subject
+
+5. **Pipeline reordering: regression before bandpass**
+   - Old: smooth → bandpass → extract confounds (unused) → aCompCor (unused) → save
+   - New: smooth → extract confounds → aCompCor → **regress (34 params)** → **bandpass** → save
+   - Prevents bandpass from reintroducing frequencies removed by regression
+
+6. **MSME batch reprocessing complete** — 189/189 sessions, 0 failures
+   - All sessions reprocessed with registration to SIGMA space
+   - Output: MWF, IWF, CSFF, T2 maps + SIGMA-space versions
+
+7. **Committed and pushed** (`b949e19`) — "Fix func preprocessing: nuisance regression, FD scaling, mask resampling"
+
+**Running in background (nohup) — check next session:**
+
+| Analysis | PID | Log file | Status |
+|----------|-----|----------|--------|
+| DTI Regression (FA/MD/AD/RD, 1000 perms) | 432913 | `analysis/regression_run.log` | Running |
+| MSME TBSS categorical (p60/p90/pooled, 5000 perms) | 433751 | `analysis/logs/tbss_msme_categorical.log` | Running |
+| MSME Classification (MWF/T2/IWF/CSFF, 1000 perms) | 433774 | `analysis/logs/classification_msme.log` | Running |
+| MSME Regression (MWF/T2/IWF/CSFF, 1000 perms) | 433807 | `analysis/logs/regression_msme.log` | Running |
+| MSME TBSS per_pnd_p30 CSFF (5000 perms) | 429130 | (from earlier run) | randomise running |
+| DTI TBSS pooled RD (5000 perms) | 394666 | (from earlier run) | randomise running |
 
 ### Session Summary (2026-02-13)
 
@@ -118,7 +165,6 @@
    - 62 new ANTs SyN registrations (1 was already done)
    - Registration correlations: min 0.626, max 0.907, avg 0.720
    - 0 failures across all cohorts
-   - SIGMA atlas propagated to all subjects
 
 2. **Created template manifest files**
    - Generated `template_manifest.json` for p30, p60, p90 cohorts
@@ -193,34 +239,74 @@
 
 ## Next Session TODOs
 
-### High Priority
-1. **Review MSME TBSS randomise results** (running in background)
-   - 16 randomise jobs (4 dose-response analyses × 4 metrics)
-   - Check significance, generate cluster reports
-   - Cross-reference with DTI P90 MD/RD findings
+### High Priority — Review Background Analyses
 
-2. **Run MSME categorical TBSS** (per_pnd + pooled designs already generated)
-   - `run_tbss_analysis.py --analyses per_pnd_p30 per_pnd_p60 per_pnd_p90 pooled`
+1. **Check DTI regression results** — `analysis/regression/`
+   - 4 metrics × 4 cohorts × 2 feature sets × 3 regressors (SVR, Ridge, PLS)
+   - Log: `analysis/regression_run.log`
 
-3. **Review DTI dose-response and pooled results** (still running)
-   - DTI dose-response: P30+P60+P90+pooled × FA/MD/AD/RD
-   - DTI categorical pooled: MD still running, AD+RD queued
+2. **Check MSME classification results** — `analysis/classification_msme/`
+   - 4 metrics (MWF, T2, IWF, CSFF) × 4 cohorts × 2 feature sets
+   - PERMANOVA, PCA, LDA, SVM + logistic LOOCV with 1000 permutations
+   - Log: `analysis/logs/classification_msme.log`
+
+3. **Check MSME regression results** — `analysis/regression_msme/`
+   - SVR, Ridge, PLS with LOOCV + 1000 permutations
+   - Log: `analysis/logs/regression_msme.log`
+
+4. **Check MSME TBSS categorical results** — `analysis/tbss_msme/randomise/`
+   - per_pnd_p60, per_pnd_p90, pooled (per_pnd_p30 finishing now)
+   - 5000 permutations per analysis × 4 metrics
+   - Log: `analysis/logs/tbss_msme_categorical.log`
+   - Cross-reference with DTI P90 MD/RD findings (lower RD → check MWF)
+
+5. **Check DTI TBSS remaining** — pooled RD still running (DTI dose-response results)
 
 ### Medium Priority
-4. **Run BOLD preprocessing batch**
-   - Only 33/294 BOLD scans preprocessed
-   - Large backlog needs processing
 
-5. **Fix unscaled BOLD headers** for 3 subjects
-   - Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30
+6. **Consolidate all TBSS results into summary table**
+   - DTI categorical + dose-response (8 analyses)
+   - MSME categorical + dose-response (8 analyses)
+   - Identify significant voxel clusters across modalities
 
-6. **Test config-driven workflow end-to-end**
-   - Run single-subject anat preprocessing with custom config overrides
-   - Verify parameter changes (e.g., skull strip n_classes=3) propagate correctly
+7. **Run BOLD preprocessing batch** — Only 1/294 BOLD scans fully preprocessed with new pipeline
+   - New pipeline includes nuisance regression + corrected FD
+   - Consider running batch for p90 cohort first (matches MSME/DTI findings)
 
 ### Low Priority
-7. **Generate batch QC summary for 3D subjects**
-8. **Update exclusion lists based on QC**
+
+8. **Fix 3 subjects with unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30)
+9. **Generate batch QC summary for 3D subjects**
+
+---
+
+## fMRI Preprocessing Pipeline (Updated 2026-02-13)
+
+Pipeline order after fixes:
+
+```
+1.  Image validation
+2.  Discard initial volumes (5 for T1 equilibration)
+2.5 Slice timing correction (custom order, before motion correction)
+3.  Brain extraction (adaptive per-slice BET, 9 slices)
+4.  Motion correction (MCFLIRT, middle reference)
+5.  ICA denoising (MELODIC → classify → remove noise components)
+6.  Spatial smoothing (0.5mm FWHM)
+7.  Extract 24 motion confound regressors
+8.  aCompCor extraction (5 CSF + 5 WM components)
+9.  Nuisance regression (34 regressors in single OLS pass)
+10. Temporal bandpass filtering (0.01-0.1 Hz, AFTER regression)
+11. Save outputs and metadata
+12. QC reports (motion, confounds, skull strip, ICA, aCompCor)
+13. BOLD → template registration (rigid + NCC Z-offset initialization)
+```
+
+Key fixes applied:
+- Tissue masks (CSF/WM) resampled from T2w to BOLD space before ICA/aCompCor
+- FD divided by 10× voxel scale factor (real mean FD ~0.065mm, not 0.645mm)
+- FD threshold from config (default 0.05mm for rodents)
+- Nuisance regression applied (was previously extract-only)
+- Regression before bandpass (prevents frequency reintroduction)
 
 ---
 
@@ -257,8 +343,8 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | T2w -> Template (3D) | Complete (63 sessions) | r=0.63-0.91, avg 0.72 |
 | Template -> SIGMA | Complete (3 cohorts) | ANTs SyN, via study-space atlas |
 | FA -> T2w | Complete (118 subjects) | ANTs affine, integrated in dwi_preprocess.py |
-| BOLD -> T2w | In progress (33 subjects) | ANTs rigid + NCC Z-init, integrated in func_preprocess.py |
-| MSME -> T2w | In progress (~24/189) | ANTs rigid + NCC Z-init, adaptive slice-wise BET |
+| BOLD -> Template | 1 subject | ANTs rigid + NCC Z-init |
+| MSME -> T2w | Complete (189 sessions) | ANTs rigid + NCC Z-init |
 
 ---
 
@@ -273,13 +359,13 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | T2w -> Template transforms | - | 183 subjects | **Complete** - all cohorts |
 | DTI (FA, MD, AD, RD) | 181 sessions | 181 sessions | Complete |
 | FA -> T2w transforms | - | 118 subjects | |
-| Functional BOLD | 294 sessions | 33 sessions | **Backlog** |
-| BOLD -> T2w transforms | - | 33 subjects | |
-| MSME T2 mapping | 189 sessions | 183 subjects | **Complete** (SIGMA-space maps for all) |
+| Functional BOLD | 294 sessions | 1 session | Pipeline updated, needs batch run |
+| BOLD -> Template transforms | - | 1 subject | |
+| MSME T2 mapping | 189 sessions | **189 sessions** | **Complete** - all reprocessed 2026-02-13 |
 
 ---
 
-## TBSS Analysis Status
+## Group Analysis Status
 
 ### DTI TBSS (`/analysis/tbss/`)
 - **Subjects:** 148 (with complete DTI + transforms)
@@ -289,21 +375,37 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | Design Type | Analyses | Status | Significant Results |
 |-------------|----------|--------|---------------------|
 | Categorical (per-PND) | p30(45), p60(41), p90(61) | **Complete** | P90: MD C>H (1388 vox), RD C>H (3484 vox) |
-| Categorical (pooled) | pooled (147) | Running | FA: ns (all 18 contrasts) |
-| Dose-response (per-PND) | p30(45), p60(41), p90(61) | Running | FA: ns for p30, p60 |
-| Dose-response (pooled) | pooled (147) | Queued | — |
+| Categorical (pooled) | pooled (147) | Running (RD) | FA: ns |
+| Dose-response (per-PND) | p30, p60, p90 | **Complete** | — |
+| Dose-response (pooled) | pooled (147) | **Complete** | — |
 
 ### MSME TBSS (`/analysis/tbss_msme/`)
-- **Subjects:** 181 (more than DTI due to broader MSME coverage)
+- **Subjects:** 181
 - **Metrics:** MWF, IWF, CSFF, T2
 - **Analysis mask:** Same DTI-derived mask (92,435 voxels)
 
-| Design Type | Analyses | Status |
-|-------------|----------|--------|
-| Categorical (per-PND) | p30(54), p60(49), p90(78) | Designs ready |
-| Categorical (pooled) | pooled (181) | Designs ready |
-| Dose-response (per-PND) | p30(54), p60(49), p90(78) | **Running** (5000 perms) |
-| Dose-response (pooled) | pooled (181) | Running |
+| Design Type | Analyses | Status | Significant Results |
+|-------------|----------|--------|---------------------|
+| Dose-response (per-PND) | p30(54), p60(49), p90(78) | **Complete** | P60: T2 dose_neg (2322 vox), IWF dose_neg (2316 vox), CSFF dose_neg (3235 vox) |
+| Dose-response (pooled) | pooled (181) | **Complete** | — |
+| Categorical (per-PND) | p30, p60, p90 | **Running** (p30 finishing, p60/p90 started) | — |
+| Categorical (pooled) | pooled (181) | **Running** | — |
+
+### DTI Classification (`/analysis/classification/`)
+- **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets = 32 combos
+- 1000 permutations, PERMANOVA + PCA + LDA + SVM + logistic LOOCV
+
+### DTI Regression (`/analysis/regression/`)
+- **Running:** FA, MD, AD, RD × 4 cohorts × 2 feature sets
+- SVR, Ridge, PLS with LOOCV + 1000 permutations
+
+### MSME Classification (`/analysis/classification_msme/`)
+- **Running:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets = 32 combos
+- Same pipeline as DTI classification
+
+### MSME Regression (`/analysis/regression_msme/`)
+- **Running:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets
+- Same pipeline as DTI regression
 
 ---
 
@@ -345,7 +447,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 |----------|--------------|--------------------------|-------------|------------|---------------|------------|
 | Anatomical (`anat_preprocess.py`) | Complete | T2w->Template (SyN) | atropos_bet | Yes (resample) | Yes (~20 params) | Yes |
 | DTI (`dwi_preprocess.py`) | Complete | FA->T2w (Affine) | atropos_bet | --exclude-3d | Yes (~4 params) | Yes |
-| Functional (`func_preprocess.py`) | Complete | BOLD->T2w (Rigid) | adaptive | --exclude-3d | Yes (1 param) | Yes |
+| Functional (`func_preprocess.py`) | Complete | BOLD->Template (Rigid) | adaptive | --exclude-3d | Yes (FD threshold) | Yes |
 | MSME (`msme_preprocess.py`) | Complete | MSME->T2w (Rigid) | adaptive | --exclude-3d | Yes (~8 params) | Yes |
 
 ### Configuration System
@@ -365,16 +467,16 @@ Unified dispatcher with automatic method selection based on image geometry:
 | DWI | 181 | 40 (22%) | 26 subjects with bad slices |
 | Anatomical (2D) | 126 | 7 (6%) | Skull stripping/segmentation metrics |
 | Anatomical (3D) | 63 | TBD | Needs batch QC review |
-| Functional | 33 | TBD | Needs QC generation |
-| MSME | ~24 | TBD | Needs QC generation |
+| Functional | 1 | TBD | Pipeline updated, needs batch run |
+| MSME | 189 | TBD | All reprocessed, needs QC review |
 
 ---
 
 ## Known Issues
 
-1. **Slice timing correction disabled** in functional workflow due to acquisition artifacts
-2. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) -- need header fix
-3. **3D T2w registration quality** -- resampled 3D correlates at r=0.679 with template (vs r=0.842 for real 2D). Cross-modal registration for these subjects may need verification.
+1. **3 subjects have unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30) — need header fix
+2. **3D T2w registration quality** — resampled 3D correlates at r=0.679 with template (vs r=0.842 for real 2D). Cross-modal registration for these subjects may need verification.
+3. **BOLD batch not run** — Only 1 subject processed with updated pipeline (nuisance regression + corrected FD)
 
 ---
 
@@ -387,7 +489,15 @@ Unified dispatcher with automatic method selection based on image geometry:
 ├── templates/anat/{cohort}/        # Age-specific T2w templates
 ├── atlas/SIGMA_study_space/        # Study-space SIGMA atlas (reoriented)
 ├── transforms/{subject}/{session}/ # Subject transforms (FA->T2w, BOLD->T2w, T2w->Template)
-├── analysis/                       # Group analysis outputs (TBSS, connectivity)
+├── analysis/                       # Group analysis outputs
+│   ├── tbss/                       #   DTI voxel-wise TBSS
+│   ├── tbss_msme/                  #   MSME voxel-wise TBSS
+│   ├── roi/                        #   ROI extractions (DTI + MSME CSVs)
+│   ├── classification/             #   DTI classification (complete)
+│   ├── classification_msme/        #   MSME classification (running)
+│   ├── regression/                 #   DTI regression (running)
+│   ├── regression_msme/            #   MSME regression (running)
+│   └── logs/                       #   Analysis log files
 ├── qc/                             # Quality control reports
 └── work/                           # Temporary files
 
@@ -412,5 +522,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/prepare_tbss_designs.py` | Create categorical design matrices with provenance |
 | `scripts/prepare_tbss_dose_response_designs.py` | Create ordinal dose-response designs with provenance |
 | `scripts/run_tbss_analysis.py` | Run FSL randomise with provenance validation (DTI + MSME) |
+| `scripts/run_classification_analysis.py` | ROI-level multivariate classification (PERMANOVA, PCA, LDA, SVM) |
+| `scripts/run_regression_analysis.py` | ROI-level dose-response regression (SVR, Ridge, PLS) |
 | `scripts/test_3d_t2w_preprocess.py` | Test 3D T2w preprocessing on single subject |
 | `scripts/visualize_msme_skull_strip.py` | MSME skull stripping QC visualization |

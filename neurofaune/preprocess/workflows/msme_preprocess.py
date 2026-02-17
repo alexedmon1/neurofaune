@@ -395,10 +395,16 @@ def run_msme_preprocessing(
     nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
     print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
 
-    # Skull stripping with configurable method and classes
+    # Skull stripping with configurable method and parameters
     brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
-    msme_ss_method = get_config_value(config, 'msme.skull_strip.method', default='atropos_bet')
+    msme_ss_method = get_config_value(config, 'msme.skull_strip.method', default='adaptive')
     msme_ss_n_classes = get_config_value(config, 'msme.skull_strip.n_classes', default=3)
+    msme_ss_target_ratio = get_config_value(config, 'msme.skull_strip.target_ratio', default=0.15)
+    msme_ss_frac_min = get_config_value(config, 'msme.skull_strip.frac_min', default=0.3)
+    msme_ss_frac_max = get_config_value(config, 'msme.skull_strip.frac_max', default=0.8)
+    msme_ss_frac_step = get_config_value(config, 'msme.skull_strip.frac_step', default=0.05)
+    msme_ss_cog_x = get_config_value(config, 'msme.skull_strip.cog_offset_x', default=0)
+    msme_ss_cog_y = get_config_value(config, 'msme.skull_strip.cog_offset_y', default=-40)
 
     brain_file, mask_file_out, skull_strip_result = skull_strip(
         input_file=first_echo_file,
@@ -407,6 +413,11 @@ def run_msme_preprocessing(
         work_dir=work_dir / 'skull_strip',
         method=msme_ss_method,
         n_classes=msme_ss_n_classes,
+        target_ratio=msme_ss_target_ratio,
+        frac_range=(msme_ss_frac_min, msme_ss_frac_max),
+        frac_step=msme_ss_frac_step,
+        cog_offset_x=msme_ss_cog_x,
+        cog_offset_y=msme_ss_cog_y,
     )
 
     # Apply mask to all echoes

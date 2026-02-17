@@ -171,6 +171,23 @@ This avoids resampling every image to atlas orientation.
 5. **SIGMA atlas** - standard rat brain atlas, scaled 10x for FSL/ANTs compatibility
 6. **Voxel scaling** - rodent MRI has sub-mm voxels; scale 10x for FSL/ANTs compatibility
 
+## Resource Monitoring
+
+**Before launching any resource-intensive script** (batch preprocessing, template building, ANTs registrations, or any parallelized pipeline), always check system resources first:
+
+```bash
+# Check CPU and memory usage
+top -bn1 | head -20
+
+# Check available memory
+free -h
+
+# Check running preprocessing/ANTs/FSL processes
+ps aux | grep -E '(antsRegistration|antsBuildTemplate|bet|eddy|mcflirt|melodic|python.*batch_)' | grep -v grep
+```
+
+If the system is already under heavy load (e.g., >80% memory used, multiple ANTs registrations running, or high CPU utilization), **do not start additional resource-intensive jobs**. Instead, inform the user of the current load and ask how to proceed (wait, reduce parallelism, or queue for later).
+
 ## System Dependencies
 
 - **FSL 6.0+**: BET, eddy, MCFLIRT, MELODIC

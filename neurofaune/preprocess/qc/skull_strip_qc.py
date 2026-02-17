@@ -150,12 +150,9 @@ def plot_slicesdir_mosaic(
         row, col = divmod(idx, n_cols)
         ax = axes[row, col]
 
-        img_slice = np.rot90(original_data[:, :, slice_idx])
+        # Show skull-stripped image (original * mask) so quality is immediately visible
+        img_slice = np.rot90(original_data[:, :, slice_idx] * mask_bool[:, :, slice_idx])
         ax.imshow(img_slice, cmap='gray', vmin=0, vmax=vmax, interpolation='nearest')
-
-        mask_slice = np.rot90(mask_bool[:, :, slice_idx].astype(float))
-        if np.any(mask_slice > 0):
-            ax.contour(mask_slice, levels=[0.5], colors=color, linewidths=0.8)
 
         ax.text(
             0.02, 0.98, str(slice_idx), transform=ax.transAxes,
@@ -226,36 +223,25 @@ def plot_mask_edge_triplanar(
         mid_y = original_data.shape[1] // 2
         mid_z = original_data.shape[2] // 2
 
+        # Show skull-stripped images so quality is immediately visible
         # Sagittal
-        axes[0].imshow(np.rot90(original_data[mid_x, :, :]), cmap='gray', vmin=0, vmax=vmax)
-        mask_slice = np.rot90(mask_bool[mid_x, :, :].astype(float))
-        if np.any(mask_slice > 0):
-            axes[0].contour(mask_slice, levels=[0.5], colors='lime', linewidths=2)
+        axes[0].imshow(np.rot90(original_data[mid_x, :, :] * mask_bool[mid_x, :, :]), cmap='gray', vmin=0, vmax=vmax)
         axes[0].set_title('Sagittal')
         axes[0].axis('off')
 
         # Coronal
-        axes[1].imshow(np.rot90(original_data[:, mid_y, :]), cmap='gray', vmin=0, vmax=vmax)
-        mask_slice = np.rot90(mask_bool[:, mid_y, :].astype(float))
-        if np.any(mask_slice > 0):
-            axes[1].contour(mask_slice, levels=[0.5], colors='lime', linewidths=2)
+        axes[1].imshow(np.rot90(original_data[:, mid_y, :] * mask_bool[:, mid_y, :]), cmap='gray', vmin=0, vmax=vmax)
         axes[1].set_title('Coronal')
         axes[1].axis('off')
 
         # Axial
-        axes[2].imshow(np.rot90(original_data[:, :, mid_z]), cmap='gray', vmin=0, vmax=vmax)
-        mask_slice = np.rot90(mask_bool[:, :, mid_z].astype(float))
-        if np.any(mask_slice > 0):
-            axes[2].contour(mask_slice, levels=[0.5], colors='lime', linewidths=2)
+        axes[2].imshow(np.rot90(original_data[:, :, mid_z] * mask_bool[:, :, mid_z]), cmap='gray', vmin=0, vmax=vmax)
         axes[2].set_title('Axial')
         axes[2].axis('off')
     else:
         fig, ax = plt.subplots(1, 1, figsize=(6, 5))
         mid_z = original_data.shape[2] // 2
-        ax.imshow(np.rot90(original_data[:, :, mid_z]), cmap='gray', vmin=0, vmax=vmax)
-        mask_slice = np.rot90(mask_bool[:, :, mid_z].astype(float))
-        if np.any(mask_slice > 0):
-            ax.contour(mask_slice, levels=[0.5], colors='lime', linewidths=2)
+        ax.imshow(np.rot90(original_data[:, :, mid_z] * mask_bool[:, :, mid_z]), cmap='gray', vmin=0, vmax=vmax)
         ax.set_title('Axial (center)')
         ax.axis('off')
 

@@ -14,10 +14,16 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from neurofaune.analysis.covnet.matrices import spearman_matrix
+
 logger = logging.getLogger(__name__)
 
 
-def compute_metrics(corr_matrix: np.ndarray, density: float = 0.15) -> dict:
+def compute_metrics(
+    corr_matrix: np.ndarray,
+    density: float = 0.15,
+    fast: bool = False,
+) -> dict:
     """Compute graph-theoretic metrics from a correlation matrix.
 
     The matrix is thresholded at a proportional density (keeping the top
@@ -30,6 +36,9 @@ def compute_metrics(corr_matrix: np.ndarray, density: float = 0.15) -> dict:
         Spearman correlation matrix.
     density : float
         Fraction of edges to retain (0-1). Default 0.15.
+    fast : bool
+        If True, skip small-worldness computation (expensive random graph
+        generation). Use during permutation testing.
 
     Returns
     -------
@@ -103,7 +112,10 @@ def compute_metrics(corr_matrix: np.ndarray, density: float = 0.15) -> dict:
         cpl = float("inf")
 
     # Small-worldness: sigma = (C/C_rand) / (L/L_rand)
-    small_worldness = _compute_small_worldness(G, clustering, cpl)
+    if fast:
+        small_worldness = float("nan")
+    else:
+        small_worldness = _compute_small_worldness(G, clustering, cpl)
 
     return {
         "global_efficiency": global_eff,
@@ -219,9 +231,7 @@ def compare_metrics(
     # Compute observed metrics per group per density
     observed = {}
     for label, data in groups_data.items():
-        from neurofaune.analysis.covnet.nbs import _spearman_matrix
-
-        corr = _spearman_matrix(data)
+        corr = spearman_matrix(data)
         observed[label] = {}
         for d in densities:
             observed[label][d] = compute_metrics(corr, density=d)
@@ -229,44 +239,60 @@ def compare_metrics(
     # Pairwise permutation tests
     rows = []
     group_labels = sorted(groups_data.keys())
+    n_pairs = len(group_labels) * (len(group_labels) - 1) // 2
 
-    for label_a, label_b in combinations(group_labels, 2):
+    for pair_idx, (label_a, label_b) in enumerate(
+        combinations(group_labels, 2), 1
+    ):
         data_a = groups_data[label_a]
         data_b = groups_data[label_b]
         pooled = np.vstack([data_a, data_b])
         n_a = len(data_a)
         n_total = len(pooled)
 
+        # Observed differences for all densities
+        obs_diffs = {}
         for d in densities:
-            # Observed differences
-            obs_diffs = {}
+            obs_diffs[d] = {}
             for m in metric_names:
-                val_a = observed[label_a][d][m]
-                val_b = observed[label_b][d][m]
-                obs_diffs[m] = val_a - val_b
+                obs_diffs[d][m] = observed[label_a][d][m] - observed[label_b][d][m]
 
-            # Permutation null
-            null_diffs = {m: np.zeros(n_perm) for m in metric_names}
-            for p in range(n_perm):
-                idx = rng.permutation(n_total)
-                perm_a = pooled[idx[:n_a]]
-                perm_b = pooled[idx[n_a:]]
+        # Permutation null — compute correlations once, threshold at all densities
+        null_diffs = {
+            d: {m: np.zeros(n_perm) for m in metric_names}
+            for d in densities
+        }
+        for p in range(n_perm):
+            idx = rng.permutation(n_total)
+            perm_a = pooled[idx[:n_a]]
+            perm_b = pooled[idx[n_a:]]
 
-                corr_pa = _spearman_matrix(perm_a)
-                corr_pb = _spearman_matrix(perm_b)
-                met_a = compute_metrics(corr_pa, density=d)
-                met_b = compute_metrics(corr_pb, density=d)
+            corr_pa = spearman_matrix(perm_a)
+            corr_pb = spearman_matrix(perm_b)
+
+            for d in densities:
+                met_a = compute_metrics(corr_pa, density=d, fast=True)
+                met_b = compute_metrics(corr_pb, density=d, fast=True)
 
                 for m in metric_names:
-                    null_diffs[m][p] = met_a[m] - met_b[m]
+                    null_diffs[d][m][p] = met_a[m] - met_b[m]
 
-            # P-values (two-sided)
+            if (p + 1) % 500 == 0:
+                logger.info(
+                    "  %s vs %s: permutation %d/%d",
+                    label_a, label_b, p + 1, n_perm,
+                )
+
+        # P-values (two-sided)
+        for d in densities:
             for m in metric_names:
-                obs_d = obs_diffs[m]
+                obs_d = obs_diffs[d][m]
                 if np.isnan(obs_d) or np.isinf(obs_d):
                     p_val = float("nan")
                 else:
-                    p_val = float(np.mean(np.abs(null_diffs[m]) >= abs(obs_d)))
+                    p_val = float(
+                        np.mean(np.abs(null_diffs[d][m]) >= abs(obs_d))
+                    )
                 rows.append({
                     "group_a": label_a,
                     "group_b": label_b,
@@ -278,8 +304,9 @@ def compare_metrics(
                     "p_value": p_val,
                 })
 
-            logger.info(
-                f"  {label_a} vs {label_b} @ density={d}: done"
-            )
+        logger.info(
+            "  %s vs %s complete (%d/%d pairs)",
+            label_a, label_b, pair_idx, n_pairs,
+        )
 
     return pd.DataFrame(rows)

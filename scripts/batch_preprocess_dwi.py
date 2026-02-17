@@ -542,6 +542,15 @@ def main():
             if r['status'] == 'error':
                 print(f"  {r['subject']}/{r['session']}: {r['reason']}")
 
+    # Generate omnibus skull strip QC report
+    if results['success'] > 0:
+        try:
+            from neurofaune.preprocess.qc.batch_summary import generate_skull_strip_omnibus
+            report = generate_skull_strip_omnibus(args.output_root, 'dwi')
+            print(f"\nSkull strip omnibus report: {report}")
+        except Exception as e:
+            print(f"\nWarning: Could not generate omnibus QC report: {e}")
+
     return 0 if results['error'] == 0 else 1
 
 
