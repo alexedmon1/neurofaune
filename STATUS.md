@@ -1,10 +1,39 @@
 # Project Status
 
-**Last Updated:** 2026-02-17
+**Last Updated:** 2026-02-18
 
 ---
 
-## Current Phase: 15 - Resting-State Analysis Scripts
+## Current Phase: 16 - Whole-Brain Voxelwise fMRI Analysis
+
+### Session Summary (2026-02-18)
+
+**Completed this session:**
+
+1. **Created `scripts/prepare_fmri_voxelwise.py`** — Discovers SIGMA-space fALFF/ReHo maps, merges with study tracker, stacks into masked 4D volumes using SIGMA brain mask (whole-brain, not WM skeleton)
+   - 133 sessions found, 131 matched with tracker (sub-Rat158/sub-Rat228 not in tracker)
+   - Distribution: P30=37, P60=33, P90=61
+   - 4D volumes: `all_fALFF.nii.gz` and `all_ReHo.nii.gz` (128×128×218×131)
+   - Analysis mask: SIGMA brain mask, 751,262 voxels (vs 92,435 for WM skeleton)
+
+2. **Added 3D TFCE support to `randomise_wrapper.py`** — New `tfce_2d` parameter (default `True` for backward compat). When `False`, uses `-T` (3D TFCE) instead of `--T2` (2D skeleton TFCE).
+
+3. **Created `scripts/run_voxelwise_fmri_analysis.py`** — Runner for whole-brain analysis, calls `run_randomise(..., tfce_2d=False)`. Handles all 8 designs × 2 metrics with subsetting, cluster reporting, and provenance validation.
+
+4. **Generated all design matrices** — 8 design directories (4 categorical + 4 dose-response), all full-rank, all with provenance tracking. Design scripts are modality-agnostic — just need `subject_list.txt`.
+
+5. **Launched randomise** — 4 batches of 4 analyses each (fALFF categorical, fALFF dose-response, ReHo categorical, ReHo dose-response), running sequentially via orchestrator script.
+
+**Running in background:**
+
+| Batch | Analyses | Metric | Status |
+|-------|----------|--------|--------|
+| 1 | per_pnd_p30, p60, p90, pooled | fALFF | Running |
+| 2 | dose_response_p30, p60, p90, pooled | fALFF | Queued |
+| 3 | per_pnd_p30, p60, p90, pooled | ReHo | Queued |
+| 4 | dose_response_p30, p60, p90, pooled | ReHo | Queued |
+
+Monitor: `tail -f /mnt/arborea/bpa-rat/analysis/voxelwise_fmri/logs/orchestrator.log`
 
 ### Session Summary (2026-02-17b)
 
@@ -457,6 +486,19 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | Categorical (per-PND) | p30, p60, p90 | **Running** (p30 finishing, p60/p90 started) | — |
 | Categorical (pooled) | pooled (181) | **Running** | — |
 
+### Voxelwise fMRI (`/analysis/voxelwise_fmri/`)
+- **Subjects:** 131 (with complete fALFF + ReHo in SIGMA space)
+- **Metrics:** fALFF, ReHo
+- **Analysis mask:** 751,262 whole-brain voxels (SIGMA brain mask)
+- **TFCE:** 3D (`-T`), not 2D skeleton (`--T2`)
+
+| Design Type | Analyses | Status | Significant Results |
+|-------------|----------|--------|---------------------|
+| Categorical (per-PND) | p30(37), p60(33), p90(61) | **Running** | — |
+| Categorical (pooled) | pooled (131) | **Running** | — |
+| Dose-response (per-PND) | p30(37), p60(33), p90(61) | Queued | — |
+| Dose-response (pooled) | pooled (131) | Queued | — |
+
 ### DTI Classification (`/analysis/classification/`)
 - **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets = 32 combos
 - 1000 permutations, PERMANOVA + PCA + LDA + SVM + logistic LOOCV
@@ -563,6 +605,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 │   ├── classification_msme/        #   MSME classification (running)
 │   ├── regression/                 #   DTI regression (running)
 │   ├── regression_msme/            #   MSME regression (running)
+│   ├── voxelwise_fmri/            #   Whole-brain fALFF/ReHo (3D TFCE)
 │   └── logs/                       #   Analysis log files
 ├── qc/                             # Quality control reports
 └── work/                           # Temporary files
@@ -587,7 +630,9 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/prepare_msme_tbss.py` | Prepare MSME metrics for TBSS (4D volumes + provenance) |
 | `scripts/prepare_tbss_designs.py` | Create categorical design matrices with provenance |
 | `scripts/prepare_tbss_dose_response_designs.py` | Create ordinal dose-response designs with provenance |
-| `scripts/run_tbss_analysis.py` | Run FSL randomise with provenance validation (DTI + MSME) |
+| `scripts/run_tbss_analysis.py` | Run FSL randomise with 2D TFCE for TBSS (DTI + MSME) |
+| `scripts/prepare_fmri_voxelwise.py` | Prepare fALFF/ReHo for whole-brain voxelwise analysis |
+| `scripts/run_voxelwise_fmri_analysis.py` | Run FSL randomise with 3D TFCE for whole-brain fMRI |
 | `scripts/run_classification_analysis.py` | ROI-level multivariate classification (PERMANOVA, PCA, LDA, SVM) |
 | `scripts/run_regression_analysis.py` | ROI-level dose-response regression (SVR, Ridge, PLS) |
 | `scripts/batch_falff_analysis.py` | Batch fALFF/ALFF computation + SIGMA warping |

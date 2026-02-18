@@ -106,9 +106,25 @@ All three support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and 
 ### 5. Group Analysis
 
 ```bash
-# TBSS voxel-wise analysis
+# TBSS voxel-wise analysis (WM skeleton, 2D TFCE)
 uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml --output-dir /study/analysis/tbss/
 uv run python scripts/run_tbss_analysis.py --tbss-dir /study/analysis/tbss --config config.yaml
+
+# Whole-brain voxelwise fMRI analysis (fALFF/ReHo, 3D TFCE)
+uv run python scripts/prepare_fmri_voxelwise.py \
+    --study-root /path/to/study \
+    --output-dir /path/to/study/analysis/voxelwise_fmri
+uv run python scripts/prepare_tbss_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --tbss-dir /path/to/study/analysis/voxelwise_fmri \
+    --output-dir /path/to/study/analysis/voxelwise_fmri/designs
+uv run python scripts/prepare_tbss_dose_response_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --tbss-dir /path/to/study/analysis/voxelwise_fmri \
+    --output-dir /path/to/study/analysis/voxelwise_fmri/designs
+uv run python scripts/run_voxelwise_fmri_analysis.py \
+    --analysis-dir /path/to/study/analysis/voxelwise_fmri \
+    --config config.yaml
 
 # ROI extraction, classification, connectivity — see scripts/ directory
 ```
@@ -287,7 +303,8 @@ Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartm
 
 Neurofaune includes several group-level analysis tools, all operating in SIGMA atlas space:
 
-- **TBSS** — WM-masked voxel-wise analysis for DTI and MSME metrics (FSL randomise + TFCE)
+- **TBSS** — WM-skeleton voxel-wise analysis for DTI and MSME metrics (FSL randomise + 2D TFCE)
+- **Voxelwise fMRI** — Whole-brain voxel-wise analysis for fALFF and ReHo (FSL randomise + 3D TFCE)
 - **ROI Extraction** — Mean metrics per SIGMA atlas region (234 regions, 11 territories)
 - **CovNet** — Covariance network analysis (correlation matrices, NBS, graph metrics)
 - **Classification** — PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV

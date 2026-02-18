@@ -91,6 +91,7 @@ def run_randomise(
     mask: Optional[Path] = None,
     n_permutations: int = 5000,
     tfce: bool = True,
+    tfce_2d: bool = True,
     voxel_threshold: Optional[float] = None,
     demean: bool = False,
     variance_smoothing: Optional[float] = None,
@@ -107,6 +108,8 @@ def run_randomise(
         mask: Optional binary mask (3D volume)
         n_permutations: Number of permutations (default: 5000)
         tfce: Use Threshold-Free Cluster Enhancement (default: True)
+        tfce_2d: Use 2D TFCE (--T2) for TBSS skeletons (default: True).
+            Set to False for 3D TFCE (-T) for whole-brain volumetric data.
         voxel_threshold: Cluster-forming threshold (only if tfce=False)
         demean: Demean data temporally
         variance_smoothing: Variance smoothing in mm
@@ -145,7 +148,10 @@ def run_randomise(
         cmd.extend(['-m', str(mask)])
 
     if tfce:
-        cmd.append('--T2')
+        if tfce_2d:
+            cmd.append('--T2')
+        else:
+            cmd.append('-T')
     elif voxel_threshold is not None:
         cmd.extend(['-c', str(voxel_threshold)])
 
@@ -163,7 +169,8 @@ def run_randomise(
     logger.info(f"  Design: {design_mat}")
     logger.info(f"  Contrasts: {contrast_con}")
     logger.info(f"  Permutations: {n_permutations}")
-    logger.info(f"  TFCE: {tfce}")
+    tfce_desc = f"{tfce} ({'2D --T2' if tfce_2d else '3D -T'})" if tfce else str(tfce)
+    logger.info(f"  TFCE: {tfce_desc}")
     logger.info(f"  Output: {output_dir}")
     logger.info(f"  Command: {' '.join(cmd)}")
 
