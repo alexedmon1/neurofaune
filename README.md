@@ -308,7 +308,7 @@ Neurofaune includes several group-level analysis tools, all operating in SIGMA a
 - **TBSS** — WM-skeleton voxel-wise analysis for DTI and MSME metrics (FSL randomise + 2D TFCE)
 - **Voxelwise fMRI** — Whole-brain voxel-wise analysis for fALFF and ReHo (FSL randomise + 3D TFCE)
 - **ROI Extraction** — Mean metrics per SIGMA atlas region (234 regions, 11 territories)
-- **CovNet** — Covariance network analysis (correlation matrices, NBS, graph metrics)
+- **CovNet** — Covariance network analysis (correlation matrices, NBS, graph metrics, whole-network tests) with dose-vs-control and cross-timepoint comparisons
 - **Classification** — PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV
 - **Regression** — Dose-response with SVR, Ridge, PLS
 - **MVPA** — Whole-brain decoding and searchlight mapping

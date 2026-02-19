@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from neurofaune.analysis.covnet.matrices import spearman_matrix
+from neurofaune.analysis.covnet.matrices import default_dose_comparisons, spearman_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ def run_all_comparisons(
         'spectral' arrays.
     """
     if comparisons is None:
-        comparisons = _default_comparisons(list(group_data.keys()))
+        comparisons = default_dose_comparisons(list(group_data.keys()))
 
     rows = []
     null_dists = {}
@@ -255,34 +255,3 @@ def run_all_comparisons(
 
     results_df = pd.DataFrame(rows)
     return results_df, null_dists
-
-
-def _default_comparisons(group_labels: list[str]) -> list[tuple[str, str]]:
-    """Generate default comparisons: each dose vs control within each PND."""
-    comparisons = []
-    pnds = ["p30", "p60", "p90"]
-
-    dose_sets = [
-        {"control": "C", "doses": ["L", "M", "H"]},
-        {"control": "control", "doses": ["low", "medium", "high"]},
-    ]
-
-    for dose_set in dose_sets:
-        for pnd in pnds:
-            control = f"{pnd}_{dose_set['control']}"
-            if control not in group_labels:
-                continue
-            for dose in dose_set["doses"]:
-                treatment = f"{pnd}_{dose}"
-                if treatment in group_labels:
-                    comparisons.append((treatment, control))
-
-        if comparisons:
-            break
-
-    if not comparisons:
-        logger.warning(
-            "No default comparisons matched group labels. "
-            f"Available: {group_labels}"
-        )
-    return comparisons

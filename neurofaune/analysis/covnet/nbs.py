@@ -20,6 +20,7 @@ from scipy import stats
 
 from neurofaune.analysis.covnet.matrices import (
     compute_spearman_matrices,
+    default_dose_comparisons,
     fisher_z_transform,
     spearman_matrix,
 )
@@ -218,7 +219,7 @@ def run_all_comparisons(
         ``roi_cols``.
     """
     if comparisons is None:
-        comparisons = _default_comparisons(list(group_data.keys()))
+        comparisons = default_dose_comparisons(list(group_data.keys()))
 
     results = {}
     for label_a, label_b in comparisons:
@@ -245,42 +246,6 @@ def run_all_comparisons(
         results[comparison_label] = result
 
     return results
-
-
-def _default_comparisons(group_labels: list[str]) -> list[tuple[str, str]]:
-    """Generate default comparisons: each dose vs control within each PND.
-
-    Supports both full dose names (p60_control, p60_low) and abbreviated
-    labels (p60_C, p60_L) as used in the study tracker.
-    """
-    comparisons = []
-    pnds = ["p30", "p60", "p90"]
-
-    # Try abbreviated labels first (C, L, M, H), then full names
-    dose_sets = [
-        {"control": "C", "doses": ["L", "M", "H"]},
-        {"control": "control", "doses": ["low", "medium", "high"]},
-    ]
-
-    for dose_set in dose_sets:
-        for pnd in pnds:
-            control = f"{pnd}_{dose_set['control']}"
-            if control not in group_labels:
-                continue
-            for dose in dose_set["doses"]:
-                treatment = f"{pnd}_{dose}"
-                if treatment in group_labels:
-                    comparisons.append((treatment, control))
-
-        if comparisons:
-            break  # Found matches with this naming convention
-
-    if not comparisons:
-        logger.warning(
-            "No default comparisons matched group labels. "
-            f"Available: {group_labels}"
-        )
-    return comparisons
 
 
 def fisher_z_edge_test(

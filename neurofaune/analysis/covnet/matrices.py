@@ -335,6 +335,92 @@ def spearman_matrix(data: np.ndarray) -> np.ndarray:
     return corr
 
 
+def default_dose_comparisons(group_labels: list[str]) -> list[tuple[str, str]]:
+    """Generate default comparisons: each dose vs control within each PND.
+
+    Supports both abbreviated labels (p60_C, p60_L) and full dose names
+    (p60_control, p60_low).
+
+    Parameters
+    ----------
+    group_labels : list[str]
+        Available group labels.
+
+    Returns
+    -------
+    comparisons : list of (str, str)
+        Pairs of (treatment, control) group labels.
+    """
+    comparisons = []
+    pnds = ["p30", "p60", "p90"]
+
+    dose_sets = [
+        {"control": "C", "doses": ["L", "M", "H"]},
+        {"control": "control", "doses": ["low", "medium", "high"]},
+    ]
+
+    for dose_set in dose_sets:
+        for pnd in pnds:
+            control = f"{pnd}_{dose_set['control']}"
+            if control not in group_labels:
+                continue
+            for dose in dose_set["doses"]:
+                treatment = f"{pnd}_{dose}"
+                if treatment in group_labels:
+                    comparisons.append((treatment, control))
+
+        if comparisons:
+            break
+
+    if not comparisons:
+        logger.warning(
+            "No default comparisons matched group labels. "
+            f"Available: {group_labels}"
+        )
+    return comparisons
+
+
+def cross_timepoint_comparisons(
+    group_labels: list[str],
+) -> list[tuple[str, str]]:
+    """Generate cross-PND comparisons within each dose level.
+
+    For each dose (C/L/M/H or control/low/medium/high), produces all pairwise
+    PND comparisons (p30 vs p60, p30 vs p90, p60 vs p90).
+
+    Parameters
+    ----------
+    group_labels : list[str]
+        Available group labels (e.g. ["p30_C", "p30_L", ..., "p90_H"]).
+
+    Returns
+    -------
+    comparisons : list of (str, str)
+        Pairs of group labels to compare.
+    """
+    pnds = ["p30", "p60", "p90"]
+    dose_sets = [
+        ["C", "L", "M", "H"],
+        ["control", "low", "medium", "high"],
+    ]
+
+    # Detect which naming convention is used
+    doses = dose_sets[0]  # default
+    for candidate in dose_sets:
+        if any(f"{pnds[0]}_{d}" in group_labels for d in candidate):
+            doses = candidate
+            break
+
+    comparisons = []
+    for dose in doses:
+        groups_for_dose = [f"{p}_{dose}" for p in pnds if f"{p}_{dose}" in group_labels]
+        for i, ga in enumerate(groups_for_dose):
+            for gb in groups_for_dose[i + 1 :]:
+                comparisons.append((ga, gb))
+
+    return comparisons
+
+
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Fisher z-transform correlation coefficients.
 
