@@ -129,6 +129,8 @@ uv run python scripts/run_voxelwise_fmri_analysis.py \
 # ROI extraction, classification, connectivity — see scripts/ directory
 ```
 
+Both design scripts (`prepare_tbss_designs.py` and `prepare_tbss_dose_response_designs.py`) automatically pre-create per-analysis 4D subset volumes after generating designs. This avoids large memory spikes at randomise runtime by loading each master 4D volume once and subsetting sequentially (~2.6 GB peak instead of ~25 GB when parallelizing). Use `--skip-subset` to skip this step if subsets already exist.
+
 ## Configuration System
 
 Neurofaune uses a two-layer YAML configuration system:

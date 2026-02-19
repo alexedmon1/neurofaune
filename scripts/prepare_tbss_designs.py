@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import gc
 import hashlib
 import json
 import logging
@@ -26,7 +27,9 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
+import nibabel as nib
 import numpy as np
 import pandas as pd
 
@@ -70,6 +73,116 @@ def write_provenance(
     with open(design_dir / 'provenance.json', 'w') as f:
         json.dump(provenance, f, indent=2)
     logger.info(f"  Wrote provenance.json (hash: {subject_list_hash[:16]}...)")
+
+
+def pre_subset_4d_volumes(
+    tbss_dir: Path,
+    design_dirs: List[Path],
+    metrics: Optional[List[str]] = None,
+) -> None:
+    """
+    Pre-create per-analysis 4D subsets from the master volumes.
+
+    Iterates sequentially (one metric at a time) to keep peak memory at
+    ~2.6 GB instead of loading multiple volumes in parallel.
+
+    Args:
+        tbss_dir: TBSS root directory containing stats/ and subject_list.txt
+        design_dirs: List of design directories, each with subject_order.txt
+        metrics: Metric names to subset (read from tbss_config.json if None)
+    """
+    # Discover metrics from tbss_config.json
+    if metrics is None:
+        config_file = tbss_dir / 'tbss_config.json'
+        if not config_file.exists():
+            logger.warning(f"No tbss_config.json found at {tbss_dir}, skipping subset")
+            return
+        with open(config_file) as f:
+            metrics = json.load(f)['metrics']
+
+    stats_dir = tbss_dir / 'stats'
+    randomise_dir = tbss_dir / 'randomise'
+
+    # Load master subject list
+    subject_list_file = tbss_dir / 'subject_list.txt'
+    with open(subject_list_file) as f:
+        master_subjects = [line.strip() for line in f if line.strip()]
+
+    logger.info(f"\n[Pre-subset] Creating 4D subsets for {len(design_dirs)} analyses × {len(metrics)} metrics")
+    logger.info(f"  Master subject list: {len(master_subjects)} subjects")
+
+    master_index = {subj: i for i, subj in enumerate(master_subjects)}
+
+    for metric in metrics:
+        master_4d_path = stats_dir / f'all_{metric}.nii.gz'
+        if not master_4d_path.exists():
+            logger.warning(f"  Master 4D not found: {master_4d_path}, skipping {metric}")
+            continue
+
+        # Load master volume once per metric
+        logger.info(f"\n  Loading master {metric} ({master_4d_path.name})...")
+        master_img = nib.load(master_4d_path)
+        master_data = master_img.get_fdata()
+
+        if master_data.shape[3] != len(master_subjects):
+            logger.error(
+                f"  {metric}: 4D has {master_data.shape[3]} volumes but "
+                f"subject list has {len(master_subjects)} — skipping"
+            )
+            del master_data
+            gc.collect()
+            continue
+
+        for design_dir in design_dirs:
+            analysis_name = design_dir.name
+            subject_order_file = design_dir / 'subject_order.txt'
+            if not subject_order_file.exists():
+                logger.warning(f"  No subject_order.txt in {design_dir}, skipping")
+                continue
+
+            with open(subject_order_file) as f:
+                design_subjects = [line.strip() for line in f if line.strip()]
+
+            subset_dir = randomise_dir / analysis_name / 'data'
+            subset_file = subset_dir / f'all_{metric}.nii.gz'
+
+            # Skip if already exists with correct shape
+            if subset_file.exists():
+                existing_shape = nib.load(subset_file).shape
+                if len(existing_shape) == 4 and existing_shape[3] == len(design_subjects):
+                    logger.info(f"  {analysis_name}/{metric}: exists ({existing_shape[3]} vols), skipping")
+                    continue
+                else:
+                    logger.info(f"  {analysis_name}/{metric}: wrong shape {existing_shape}, re-creating")
+
+            # Build index mapping and subset
+            indices = []
+            missing = []
+            for subj in design_subjects:
+                if subj in master_index:
+                    indices.append(master_index[subj])
+                else:
+                    missing.append(subj)
+
+            if missing:
+                logger.error(
+                    f"  {analysis_name}/{metric}: {len(missing)} subjects not in master — skipping"
+                )
+                continue
+
+            subset_data = master_data[:, :, :, indices].astype(np.float32)
+            subset_dir.mkdir(parents=True, exist_ok=True)
+            nib.save(nib.Nifti1Image(subset_data, master_img.affine, master_img.header), subset_file)
+            logger.info(
+                f"  {analysis_name}/{metric}: {master_data.shape[3]} -> {subset_data.shape[3]} volumes"
+            )
+            del subset_data
+
+        # Free master volume before loading next metric
+        del master_data
+        gc.collect()
+
+    logger.info("\n[Pre-subset] Done")
 
 
 def load_and_merge_data(
@@ -310,6 +423,10 @@ def main():
         '--output-dir', type=Path, required=True,
         help='Output directory for design files'
     )
+    parser.add_argument(
+        '--skip-subset', action='store_true',
+        help='Skip pre-creating 4D subsets for each analysis'
+    )
     args = parser.parse_args()
 
     # Load and merge data
@@ -331,6 +448,15 @@ def main():
     create_pooled_design(data, args.output_dir, tbss_dir=args.tbss_dir)
 
     logger.info(f"\nAll designs saved to {args.output_dir}")
+
+    # Pre-create 4D subsets
+    if not args.skip_subset:
+        design_dirs = sorted(args.output_dir.glob('per_pnd_*')) + \
+                      [args.output_dir / 'pooled']
+        design_dirs = [d for d in design_dirs if d.is_dir()]
+        pre_subset_4d_volumes(args.tbss_dir, design_dirs)
+    else:
+        logger.info("\nSkipping 4D subset creation (--skip-subset)")
 
 
 if __name__ == '__main__':

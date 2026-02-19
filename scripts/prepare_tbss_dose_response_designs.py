@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 # Reuse shared functions from the categorical design script
-from prepare_tbss_designs import load_and_merge_data, write_provenance
+from prepare_tbss_designs import load_and_merge_data, write_provenance, pre_subset_4d_volumes
 
 # Add neuroaider to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'neuroaider'))
@@ -227,6 +227,10 @@ def main():
         '--output-dir', type=Path, required=True,
         help='Output directory for design files'
     )
+    parser.add_argument(
+        '--skip-subset', action='store_true',
+        help='Skip pre-creating 4D subsets for each analysis'
+    )
     args = parser.parse_args()
 
     # Load and merge data (same function as categorical design script)
@@ -248,6 +252,14 @@ def main():
     create_pooled_dose_design(data, args.output_dir, tbss_dir=args.tbss_dir)
 
     logger.info(f"\nAll dose-response designs saved to {args.output_dir}")
+
+    # Pre-create 4D subsets
+    if not args.skip_subset:
+        design_dirs = sorted(args.output_dir.glob('dose_response_*'))
+        design_dirs = [d for d in design_dirs if d.is_dir()]
+        pre_subset_4d_volumes(args.tbss_dir, design_dirs)
+    else:
+        logger.info("\nSkipping 4D subset creation (--skip-subset)")
 
 
 if __name__ == '__main__':
