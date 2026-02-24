@@ -417,6 +417,13 @@ msme:
     myelin_water_cutoff: 25        # T2 cutoff for myelin water (ms)
     intra_extra_cutoff: 40         # T2 cutoff for intra/extra-cellular water (ms)
 
+  # Geometry (from Bruker method file, set during study initialization)
+  geometry:
+    slice_thickness_mm: 0.8        # PVM_SliceThick
+    slice_gap_mm: 0.0              # PVM_SPackArrSliceGap (0 if contiguous)
+    in_plane_resolution_mm: null   # PVM_SpatResol; null = read from NIfTI header
+    voxel_scale: 10.0              # Scale factor applied during Bruker → NIfTI conversion
+
   # Registration
   registration:
     method: "ants"

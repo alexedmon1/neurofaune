@@ -364,6 +364,12 @@ def run_msme_preprocessing(
 
     print(f"\nTE values: {len(te_values)} echoes from {te_values[0]:.1f} to {te_values[-1]:.1f} ms")
 
+    # Read geometry from config (set during study init from Bruker method file)
+    slice_thick_mm = get_config_value(config, 'msme.geometry.slice_thickness_mm', default=0.8)
+    voxel_scale = get_config_value(config, 'msme.geometry.voxel_scale', default=10.0)
+    slice_vox_z = float(slice_thick_mm * voxel_scale)
+    print(f"Geometry: slice_thickness={slice_thick_mm}mm, voxel_scale={voxel_scale}x, Z voxel={slice_vox_z}mm")
+
     # ==========================================================================
     # Step 1: Skull stripping
     # ==========================================================================
@@ -383,17 +389,17 @@ def run_msme_preprocessing(
     # Use first echo for skull stripping
     # MSME shape: (X, Y, echoes, slices) — echoes in dim 2, slices in dim 3
     # Extract first echo (highest SNR) across all spatial slices
-    first_echo = data[:, :, 0, :]  # First echo, all slices → shape (160, 160, 5)
+    first_echo = data[:, :, 0, :]  # First echo, all slices
 
     # Create 3D NIfTI with correct spatial header
-    # Original header has echoes in Z (8mm "voxel size") and slices in T (1mm)
-    # Correct spatial voxels: in-plane from header, slice thickness = 8mm
+    # Original 4D has echoes in dim2 and slices in dim3 — not a standard spatial layout.
+    # Build a proper spatial affine: in-plane from header, Z = slice_thickness * scale
     in_plane = img.header.get_zooms()[:2]
-    echo1_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
+    echo1_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
 
     first_echo_file = work_dir / f'{subject}_{session}_echo1.nii.gz'
     nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
-    print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
+    print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
 
     # Skull stripping with configurable method and parameters
     brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
@@ -466,8 +472,7 @@ def run_msme_preprocessing(
     )
 
     # Save output maps with correct spatial affine
-    # Output maps have shape (x, y, slices) = (160, 160, 5)
-    # Use echo1_affine which has correct voxel sizes: (2.0, 2.0, 8.0)mm
+    # Output maps have shape (x, y, slices) — use echo1_affine from config geometry
     nib.save(nib.Nifti1Image(mwf_map, echo1_affine), mwf_file)
     nib.save(nib.Nifti1Image(iwf_map, echo1_affine), iwf_file)
     nib.save(nib.Nifti1Image(csf_map, echo1_affine), csf_file)
@@ -537,7 +542,7 @@ def run_msme_preprocessing(
                     first_echo = msme_data[:, :, 0, :]  # First echo, all slices
 
                     in_plane = img.header.get_zooms()[:2]
-                    ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), 8.0, 1.0])
+                    ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
 
                     msme_ref_raw = reg_work_dir / f'{subject}_{session}_msme_echo1_raw.nii.gz'
                     nib.save(
@@ -545,7 +550,7 @@ def run_msme_preprocessing(
                         msme_ref_raw
                     )
 
-                    print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, 8.0)mm")
+                    print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
 
                     # Skull stripping with configurable method
                     msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
