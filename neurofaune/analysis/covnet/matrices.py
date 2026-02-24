@@ -421,6 +421,54 @@ def cross_timepoint_comparisons(
     return comparisons
 
 
+def cross_dose_timepoint_comparisons(
+    group_labels: list[str],
+) -> list[tuple[str, str]]:
+    """Generate cross-dose-cross-timepoint comparisons.
+
+    Pairs each dosed group at an earlier PND with controls at a later PND.
+    Tests whether BPA-exposed young animals resemble older controls
+    (accelerated maturation hypothesis).
+
+    Parameters
+    ----------
+    group_labels : list[str]
+        Available group labels (e.g. ["p30_C", "p30_L", ..., "p90_H"]).
+
+    Returns
+    -------
+    comparisons : list of (str, str)
+        Pairs of (treatment, control) group labels. Treatment is a dosed
+        group at an earlier PND, control is a control group at a later PND.
+    """
+    pnds = ["p30", "p60", "p90"]
+    dose_sets = [
+        {"control": "C", "doses": ["L", "M", "H"]},
+        {"control": "control", "doses": ["low", "medium", "high"]},
+    ]
+
+    # Detect which naming convention is used
+    naming = dose_sets[0]  # default
+    for candidate in dose_sets:
+        if any(f"{pnds[0]}_{candidate['control']}" in group_labels
+               or f"{pnds[0]}_{d}" in group_labels for d in candidate["doses"]):
+            naming = candidate
+            break
+
+    comparisons = []
+    for i, early_pnd in enumerate(pnds):
+        for later_pnd in pnds[i + 1:]:
+            control_key = f"{later_pnd}_{naming['control']}"
+            if control_key not in group_labels:
+                continue
+            for dose in naming["doses"]:
+                treatment_key = f"{early_pnd}_{dose}"
+                if treatment_key in group_labels:
+                    comparisons.append((treatment_key, control_key))
+
+    return comparisons
+
+
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Fisher z-transform correlation coefficients.
 

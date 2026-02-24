@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from neurofaune.analysis.covnet.matrices import (
     bilateral_average,
     compute_spearman_matrices,
+    cross_dose_timepoint_comparisons,
     cross_timepoint_comparisons,
     define_groups,
     fisher_z_transform,
@@ -318,6 +319,21 @@ def run_single_metric(
                 )
                 nbs_results.update(cross_nbs)
 
+            # Cross-dose-cross-timepoint NBS comparisons
+            cross_dose_comps = cross_dose_timepoint_comparisons(list(group_arrays.keys()))
+            if cross_dose_comps:
+                logger.info(f"  Running {len(cross_dose_comps)} cross-dose-timepoint NBS comparisons...")
+                cross_dose_nbs = run_all_comparisons(
+                    group_data=group_arrays,
+                    group_sizes={k: len(v) for k, v in groups_pnd_dose.items()},
+                    roi_cols=bilateral_region_cols,
+                    comparisons=cross_dose_comps,
+                    n_perm=n_perm,
+                    threshold=nbs_threshold,
+                    seed=seed,
+                )
+                nbs_results.update(cross_dose_nbs)
+
         save_nbs_results(nbs_results, output_dir, metric)
 
         # NBS visualizations
@@ -413,6 +429,26 @@ def run_single_metric(
                 "p_fdr": p_fdr,
             }
 
+        # Cross-dose-cross-timepoint territory comparisons
+        cross_dose_comps = cross_dose_timepoint_comparisons(territory_labels)
+        for treatment_key, control_key in cross_dose_comps:
+            if treatment_key not in matrices_territory or control_key not in matrices_territory:
+                continue
+            corr_treat = matrices_territory[treatment_key]["corr"]
+            n_treat = matrices_territory[treatment_key]["n"]
+            corr_ctrl = matrices_territory[control_key]["corr"]
+            n_ctrl = matrices_territory[control_key]["n"]
+
+            z_stats, p_values = fisher_z_edge_test(corr_treat, n_treat, corr_ctrl, n_ctrl)
+            p_fdr = fdr_correct_matrix(p_values)
+
+            comp_label = f"{treatment_key}_vs_{control_key}"
+            territory_results[comp_label] = {
+                "z_stats": z_stats,
+                "p_values": p_values,
+                "p_fdr": p_fdr,
+            }
+
     if territory_results:
         save_territory_results(territory_results, output_dir, metric, territory_cols)
 
@@ -487,6 +523,19 @@ def run_single_metric(
                 )
                 wn_df = pd.concat([wn_df, cross_wn_df], ignore_index=True)
                 wn_nulls.update(cross_wn_nulls)
+
+            # Cross-dose-cross-timepoint whole-network comparisons
+            cross_dose_comps = cross_dose_timepoint_comparisons(list(group_arrays.keys()))
+            if cross_dose_comps:
+                logger.info(f"  Running {len(cross_dose_comps)} cross-dose-timepoint whole-network comparisons...")
+                cross_dose_wn_df, cross_dose_wn_nulls = run_whole_network_comparisons(
+                    group_data=group_arrays,
+                    comparisons=cross_dose_comps,
+                    n_perm=n_perm,
+                    seed=seed,
+                )
+                wn_df = pd.concat([wn_df, cross_dose_wn_df], ignore_index=True)
+                wn_nulls.update(cross_dose_wn_nulls)
 
         wn_df.to_csv(wn_dir / "whole_network_results.csv", index=False)
 
@@ -567,6 +616,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         lines.append("   - Comparisons: each dose vs control within each PND (9)")
         if not args.skip_cross_timepoint:
             lines.append("   - Cross-timepoint: pairwise PND comparisons within each dose (12)")
+            lines.append("   - Cross-dose-timepoint: dosed groups vs controls at later PNDs (9)")
         lines.append("")
     else:
         lines.append("2. Network-Based Statistic (NBS): SKIPPED")
@@ -578,6 +628,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
     lines.append("   - Comparisons: each dose vs control within each PND (9)")
     if not args.skip_cross_timepoint:
         lines.append("   - Cross-timepoint: pairwise PND comparisons within each dose (12)")
+        lines.append("   - Cross-dose-timepoint: dosed groups vs controls at later PNDs (9)")
     lines.append("")
 
     if not args.skip_graph:
@@ -601,6 +652,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         lines.append("   - Comparisons: each dose vs control within each PND (9)")
         if not args.skip_cross_timepoint:
             lines.append("   - Cross-timepoint: pairwise PND comparisons within each dose (12)")
+            lines.append("   - Cross-dose-timepoint: dosed groups vs controls at later PNDs (9)")
         lines.append("")
     else:
         lines.append("5. Whole-network similarity tests: SKIPPED")
