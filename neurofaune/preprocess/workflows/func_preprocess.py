@@ -1351,12 +1351,25 @@ def run_functional_preprocessing(
     tedana_config = func_config.get('tedana', {})
 
     # Try to read TR from JSON sidecar
+    # BIDS convention: RepetitionTime = effective volume TR
+    # For multi-shot EPI: effective TR = n_shots * per-shot TR
     json_file = primary_bold.with_suffix('').with_suffix('.json')
     if json_file.exists():
         with open(json_file, 'r') as f:
             sidecar_meta = json.load(f)
             tr = sidecar_meta.get('RepetitionTime', tr)
-            print(f"Read TR from JSON sidecar: {tr}s")
+            n_shots = sidecar_meta.get('NumberOfShots', 1)
+            tr_per_shot = sidecar_meta.get('RepetitionTimePerShot', None)
+            # Sanity check: if per-shot TR is available, verify effective TR
+            if tr_per_shot is not None and n_shots > 1:
+                expected_tr = n_shots * tr_per_shot
+                if abs(tr - expected_tr) > 0.01:
+                    print(f"WARNING: RepetitionTime ({tr}s) != NumberOfShots ({n_shots}) "
+                          f"× RepetitionTimePerShot ({tr_per_shot}s) = {expected_tr}s")
+                    print(f"  Using computed effective TR: {expected_tr}s")
+                    tr = expected_tr
+            print(f"Read TR from JSON sidecar: {tr}s"
+                  f"{f' ({n_shots}-shot × {tr_per_shot}s)' if tr_per_shot and n_shots > 1 else ''}")
 
     results = {}
 
