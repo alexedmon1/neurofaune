@@ -12,6 +12,7 @@ components, and assess significance via permutation.
 """
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional
 
 import networkx as nx
@@ -191,6 +192,7 @@ def run_all_comparisons(
     n_perm: int = 5000,
     threshold: float = 3.0,
     seed: int = 42,
+    n_workers: int = 1,
 ) -> dict[str, dict]:
     """Run NBS for each specified pairwise comparison.
 
@@ -211,6 +213,8 @@ def run_all_comparisons(
         Z-statistic threshold.
     seed : int
         Random seed.
+    n_workers : int
+        Number of parallel workers. 1 = sequential (default).
 
     Returns
     -------
@@ -221,7 +225,8 @@ def run_all_comparisons(
     if comparisons is None:
         comparisons = default_dose_comparisons(list(group_data.keys()))
 
-    results = {}
+    # Validate and build work list
+    valid_comparisons = []
     for label_a, label_b in comparisons:
         if label_a not in group_data:
             logger.warning(f"Group {label_a} not found, skipping comparison")
@@ -229,21 +234,50 @@ def run_all_comparisons(
         if label_b not in group_data:
             logger.warning(f"Group {label_b} not found, skipping comparison")
             continue
+        valid_comparisons.append((label_a, label_b))
 
-        comparison_label = f"{label_a}_vs_{label_b}"
-        logger.info(f"\n--- NBS: {comparison_label} ---")
+    results = {}
 
-        result = network_based_statistic(
-            data_a=group_data[label_a],
-            data_b=group_data[label_b],
-            n_perm=n_perm,
-            threshold=threshold,
-            seed=seed,
-        )
-        result["roi_cols"] = roi_cols
-        result["group_a"] = label_a
-        result["group_b"] = label_b
-        results[comparison_label] = result
+    if n_workers > 1 and len(valid_comparisons) > 1:
+        logger.info(f"Running {len(valid_comparisons)} NBS comparisons with {n_workers} workers")
+        futures = {}
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            for label_a, label_b in valid_comparisons:
+                comp_label = f"{label_a}_vs_{label_b}"
+                future = executor.submit(
+                    network_based_statistic,
+                    data_a=group_data[label_a],
+                    data_b=group_data[label_b],
+                    n_perm=n_perm,
+                    threshold=threshold,
+                    seed=seed,
+                )
+                futures[future] = (comp_label, label_a, label_b)
+
+            for future in as_completed(futures):
+                comp_label, label_a, label_b = futures[future]
+                result = future.result()
+                result["roi_cols"] = roi_cols
+                result["group_a"] = label_a
+                result["group_b"] = label_b
+                results[comp_label] = result
+                logger.info(f"  Completed: {comp_label}")
+    else:
+        for label_a, label_b in valid_comparisons:
+            comparison_label = f"{label_a}_vs_{label_b}"
+            logger.info(f"\n--- NBS: {comparison_label} ---")
+
+            result = network_based_statistic(
+                data_a=group_data[label_a],
+                data_b=group_data[label_b],
+                n_perm=n_perm,
+                threshold=threshold,
+                seed=seed,
+            )
+            result["roi_cols"] = roi_cols
+            result["group_a"] = label_a
+            result["group_b"] = label_b
+            results[comparison_label] = result
 
     return results
 

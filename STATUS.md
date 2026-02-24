@@ -1,10 +1,33 @@
 # Project Status
 
-**Last Updated:** 2026-02-18
+**Last Updated:** 2026-02-23
 
 ---
 
-## Current Phase: 16 - Whole-Brain Voxelwise fMRI Analysis
+## Current Phase: 17 - Cross-Timepoint CovNet & Results Review
+
+### Session Summary (2026-02-23)
+
+**Completed this session:**
+
+1. **Added cross-timepoint comparisons to CovNet** (`a10087c`)
+   - New `cross_timepoint_comparisons()` in `matrices.py`: pairwise PND comparisons within each dose (12 new comparisons: 4 doses × 3 PND pairs)
+   - Consolidated duplicate `_default_comparisons()` into shared `default_dose_comparisons()` in `matrices.py`
+   - Updated `run_covnet_analysis.py`: NBS, territory Fisher z, and whole-network tests now run 21 comparisons (9 dose-vs-control + 12 cross-timepoint)
+   - `--skip-cross-timepoint` flag to disable if needed
+   - Fixed missing `import networkx` in `visualization.py` (crashed NBS network plots)
+
+2. **Reviewed all completed voxel-based analyses** — see Group Analysis Status below
+
+3. **Fixed ReHo voxelwise failure** — orchestrator referenced removed `configs/bpa_rat_example.yaml` (commit `9e9b4d0`). Updated to `/mnt/arborea/bpa-rat/config.yaml`, relaunched all 8 ReHo designs.
+
+**Running in background:**
+
+| Analysis | PID | Output | Monitor |
+|----------|-----|--------|---------|
+| CovNet DTI (FA/MD/AD/RD, 21 comparisons, 5000 perms) | 541319 | `analysis/covnet_dti/` | `tail -f .../logs/covnet_dti_full.log` |
+| ReHo categorical (p30/p60/p90/pooled, 5000 perms) | 543627 | `analysis/voxelwise_fmri/randomise/` | `tail -f .../voxelwise_fmri/logs/orchestrator.log` |
+| ReHo dose-response (p30/p60/p90/pooled) | — | queued after categorical | same orchestrator log |
 
 ### Session Summary (2026-02-18)
 
@@ -333,44 +356,43 @@ Monitor with: `tail -f fc_batch_overnight.log`
 
 ## Next Session TODOs
 
-### High Priority — Review Background Analyses
+### High Priority — Review Running Analyses
 
-1. **Check DTI regression results** — `analysis/regression/`
-   - 4 metrics × 4 cohorts × 2 feature sets × 3 regressors (SVR, Ridge, PLS)
-   - Log: `analysis/regression_run.log`
+1. **Check CovNet DTI results** — `analysis/covnet_dti/`
+   - FA/MD/AD/RD × 21 comparisons (9 dose-vs-control + 12 cross-timepoint)
+   - NBS, territory Fisher z, graph metrics, whole-network (5000 perms each)
+   - Log: `analysis/logs/covnet_dti_full.log`
 
-2. **Check MSME classification results** — `analysis/classification_msme/`
-   - 4 metrics (MWF, T2, IWF, CSFF) × 4 cohorts × 2 feature sets
-   - PERMANOVA, PCA, LDA, SVM + logistic LOOCV with 1000 permutations
-   - Log: `analysis/logs/classification_msme.log`
+2. **Check ReHo voxelwise results** — `analysis/voxelwise_fmri/randomise/`
+   - 8 designs (4 categorical + 4 dose-response), 5000 perms, 3D TFCE
+   - Log: `analysis/voxelwise_fmri/logs/orchestrator.log`
 
-3. **Check MSME regression results** — `analysis/regression_msme/`
-   - SVR, Ridge, PLS with LOOCV + 1000 permutations
-   - Log: `analysis/logs/regression_msme.log`
-
-4. **Check MSME TBSS categorical results** — `analysis/tbss_msme/randomise/`
-   - per_pnd_p60, per_pnd_p90, pooled (per_pnd_p30 finishing now)
-   - 5000 permutations per analysis × 4 metrics
-   - Log: `analysis/logs/tbss_msme_categorical.log`
-   - Cross-reference with DTI P90 MD/RD findings (lower RD → check MWF)
-
-5. **Check DTI TBSS remaining** — pooled RD still running (DTI dose-response results)
+3. **Review DTI/MSME classification & regression results** — completed in earlier sessions, not yet reviewed
+   - DTI classification: `analysis/classification/` (complete)
+   - DTI regression: `analysis/regression/` (complete)
+   - MSME classification: `analysis/classification_msme/` (complete)
+   - MSME regression: `analysis/regression_msme/` (complete)
 
 ### Medium Priority
 
-6. **Consolidate all TBSS results into summary table**
-   - DTI categorical + dose-response (8 analyses)
-   - MSME categorical + dose-response (8 analyses)
-   - Identify significant voxel clusters across modalities
+4. **Consolidate all results into cross-modality summary**
+   - DTI TBSS + MSME TBSS + voxelwise fMRI + CovNet
+   - Key pattern: no effects at p30, emerging at p60, strongest at p90
+   - Effect size: fALFF >> MSME >> DTI
 
-7. **Run BOLD preprocessing batch** — Only 1/294 BOLD scans fully preprocessed with new pipeline
+5. **Run BOLD preprocessing batch** — Only 1/294 BOLD scans fully preprocessed with new pipeline
    - New pipeline includes nuisance regression + corrected FD
    - Consider running batch for p90 cohort first (matches MSME/DTI findings)
 
+6. **Fix MSME analysis_summary.json overwrite bug** — each summary only records last metric processed, not all 4
+
+7. **Re-run CovNet graph metrics with optimized comparisons** — Graph metric permutation testing (`compare_metrics`) currently does all C(12,2)=66 pairwise comparisons instead of the 21 meaningful ones (9 dose-vs-control + 12 cross-timepoint). Each pair takes ~2.75h (5000 perms × 4 densities × networkx ops on 93-node graphs). Need to either pass explicit comparison list or optimize the inner loop. Skipped for now (`--skip-graph`) to unblock whole-network tests.
+
 ### Low Priority
 
-8. **Fix 3 subjects with unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30)
-9. **Generate batch QC summary for 3D subjects**
+7. **Fix 3 subjects with unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30)
+8. **Generate batch QC summary for 3D subjects**
+9. **Refactor scripts into importable functions/classes** — Many `scripts/` are monolithic `main()` scripts with logic embedded in the argument parsing block. Audit all scripts and redesign into reusable functions (or classes where appropriate) that can be imported and composed, with thin CLI wrappers. CovNet scripts already follow this pattern after the prepare/test refactor.
 
 ---
 
@@ -470,9 +492,11 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 | Design Type | Analyses | Status | Significant Results |
 |-------------|----------|--------|---------------------|
 | Categorical (per-PND) | p30(45), p60(41), p90(61) | **Complete** | P90: MD C>H (1388 vox), RD C>H (3484 vox) |
-| Categorical (pooled) | pooled (147) | Running (RD) | FA: ns |
-| Dose-response (per-PND) | p30, p60, p90 | **Complete** | — |
-| Dose-response (pooled) | pooled (147) | **Complete** | — |
+| Categorical (pooled) | pooled (147) | **Complete** | MD/AD/RD: L×P60 interaction (28k-52k vox) |
+| Dose-response (per-PND) | p30, p60, p90 | **Complete** | P90 RD dose_neg (53 vox, marginal) |
+| Dose-response (pooled) | pooled (147) | **Complete** | FA dose_pos (3333 vox) |
+
+DTI effects are the weakest across modalities. Sparse findings concentrated at p90.
 
 ### MSME TBSS (`/analysis/tbss_msme/`)
 - **Subjects:** 181
@@ -481,10 +505,16 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 
 | Design Type | Analyses | Status | Significant Results |
 |-------------|----------|--------|---------------------|
-| Dose-response (per-PND) | p30(54), p60(49), p90(78) | **Complete** | P60: T2 dose_neg (2322 vox), IWF dose_neg (2316 vox), CSFF dose_neg (3235 vox) |
-| Dose-response (pooled) | pooled (181) | **Complete** | — |
-| Categorical (per-PND) | p30, p60, p90 | **Running** (p30 finishing, p60/p90 started) | — |
-| Categorical (pooled) | pooled (181) | **Running** | — |
+| Categorical (per-PND) | p30(54) | **Complete** | ns (all 4 metrics) |
+| Categorical (per-PND) | p60(49) | **Complete** | T2/IWF/CSFF: H>C, L>C, M>C; MWF: H>C, M>C |
+| Categorical (per-PND) | p90(78) | **Complete** | All 4 metrics: H>C; T2/IWF/CSFF: M>C |
+| Categorical (pooled) | pooled (181) | **Complete** | All 4 metrics: H>C; T2/IWF/CSFF: M>C; CSFF L×P60 interaction |
+| Dose-response (per-PND) | p30(54) | **Complete** | ns |
+| Dose-response (per-PND) | p60(49) | **Complete** | All 4 metrics: dose_pos |
+| Dose-response (per-PND) | p90(78) | **Complete** | All 4 metrics: dose_pos; MWF also dose_neg (non-monotonic) |
+| Dose-response (pooled) | pooled (181) | **Complete** | All 4 metrics: dose_pos |
+
+Strong dose-related effects at p60 and p90 across all MSME metrics. No effects at p30.
 
 ### Voxelwise fMRI (`/analysis/voxelwise_fmri/`)
 - **Subjects:** 131 (with complete fALFF + ReHo in SIGMA space)
@@ -492,28 +522,56 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 - **Analysis mask:** 751,262 whole-brain voxels (SIGMA brain mask)
 - **TFCE:** 3D (`-T`), not 2D skeleton (`--T2`)
 
-| Design Type | Analyses | Status | Significant Results |
-|-------------|----------|--------|---------------------|
-| Categorical (per-PND) | p30(37), p60(33), p90(61) | **Running** | — |
-| Categorical (pooled) | pooled (131) | **Running** | — |
-| Dose-response (per-PND) | p30(37), p60(33), p90(61) | Queued | — |
-| Dose-response (pooled) | pooled (131) | Queued | — |
+| Design Type | Metric | Status | Significant Results |
+|-------------|--------|--------|---------------------|
+| Categorical (per-PND) | fALFF | **Complete** | P60/P90/pooled: H>C, L>C, M>C (55k-321k vox). P30: ns |
+| Dose-response (per-PND) | fALFF | **Complete** | All PNDs: dose_pos (12k-315k vox, increasing with age) |
+| Dose-response (pooled) | fALFF | **Complete** | dose_pos (358k vox) |
+| Categorical (per-PND) | ReHo | **Running** | — |
+| Categorical (pooled) | ReHo | **Running** | — |
+| Dose-response (per-PND) | ReHo | Queued | — |
+| Dose-response (pooled) | ReHo | Queued | — |
+
+fALFF shows the most widespread effects of any modality. Positive dose-response at all ages.
+
+### CovNet (`/analysis/covnet_dti/`)
+- **Subjects:** 148
+- **Metrics:** FA, MD, AD, RD
+- **ROIs:** 93 bilateral + 11 territory
+- **Comparisons:** 9 dose-vs-control + 12 cross-timepoint = 21 per metric
+
+| Phase | Status |
+|-------|--------|
+| Matrices + heatmaps | **Running** (FA in progress) |
+| NBS (5000 perms) | **Running** (FA comparison 5/21) |
+| Territory Fisher z | Queued |
+| Graph metrics (5000 perms) | Queued |
+| Whole-network (5000 perms) | Queued |
 
 ### DTI Classification (`/analysis/classification/`)
 - **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets = 32 combos
 - 1000 permutations, PERMANOVA + PCA + LDA + SVM + logistic LOOCV
 
 ### DTI Regression (`/analysis/regression/`)
-- **Running:** FA, MD, AD, RD × 4 cohorts × 2 feature sets
+- **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets
 - SVR, Ridge, PLS with LOOCV + 1000 permutations
 
 ### MSME Classification (`/analysis/classification_msme/`)
-- **Running:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets = 32 combos
+- **Complete:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets = 32 combos
 - Same pipeline as DTI classification
 
 ### MSME Regression (`/analysis/regression_msme/`)
-- **Running:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets
+- **Complete:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets
 - Same pipeline as DTI regression
+
+### Cross-Modality Summary
+
+Consistent pattern across all modalities:
+- **P30:** No significant dose effects in any modality
+- **P60:** Strong effects in fALFF and MSME; absent in DTI
+- **P90:** Effects in all modalities (fALFF > MSME > DTI)
+- **Effect size hierarchy:** Voxelwise fMRI (fALFF) >> MSME TBSS >> DTI TBSS
+- **Direction:** All dose groups show elevated values vs controls (not just high dose)
 
 ---
 
@@ -633,6 +691,12 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/run_tbss_analysis.py` | Run FSL randomise with 2D TFCE for TBSS (DTI + MSME) |
 | `scripts/prepare_fmri_voxelwise.py` | Prepare fALFF/ReHo for whole-brain voxelwise analysis |
 | `scripts/run_voxelwise_fmri_analysis.py` | Run FSL randomise with 3D TFCE for whole-brain fMRI |
+| `scripts/covnet_prepare.py` | CovNet data preparation: load, bilateral average, matrices, heatmaps |
+| `scripts/covnet_nbs.py` | CovNet NBS: Network-Based Statistic with permutation testing |
+| `scripts/covnet_territory.py` | CovNet territory: Fisher z-tests with FDR on territory-level edges |
+| `scripts/covnet_graph_metrics.py` | CovNet graph metrics: efficiency, clustering, modularity + permutations |
+| `scripts/covnet_whole_network.py` | CovNet whole-network: Mantel, Frobenius, spectral divergence tests |
+| `scripts/run_covnet_analysis.py` | CovNet full pipeline wrapper (calls prepare + all test scripts) |
 | `scripts/run_classification_analysis.py` | ROI-level multivariate classification (PERMANOVA, PCA, LDA, SVM) |
 | `scripts/run_regression_analysis.py` | ROI-level dose-response regression (SVR, Ridge, PLS) |
 | `scripts/batch_falff_analysis.py` | Batch fALFF/ALFF computation + SIGMA warping |

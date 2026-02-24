@@ -15,6 +15,7 @@ null distributions.
 """
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional
 
 import numpy as np
@@ -190,6 +191,7 @@ def run_all_comparisons(
     comparisons: Optional[list[tuple[str, str]]] = None,
     n_perm: int = 5000,
     seed: int = 42,
+    n_workers: int = 1,
 ) -> tuple[pd.DataFrame, dict[str, dict]]:
     """Run whole_network_test for each pairwise comparison.
 
@@ -204,6 +206,8 @@ def run_all_comparisons(
         Number of permutations.
     seed : int
         Random seed.
+    n_workers : int
+        Number of parallel workers. 1 = sequential (default).
 
     Returns
     -------
@@ -217,9 +221,8 @@ def run_all_comparisons(
     if comparisons is None:
         comparisons = default_dose_comparisons(list(group_data.keys()))
 
-    rows = []
-    null_dists = {}
-
+    # Validate and build work list
+    valid_comparisons = []
     for label_a, label_b in comparisons:
         if label_a not in group_data:
             logger.warning(f"Group {label_a} not found, skipping comparison")
@@ -227,17 +230,12 @@ def run_all_comparisons(
         if label_b not in group_data:
             logger.warning(f"Group {label_b} not found, skipping comparison")
             continue
+        valid_comparisons.append((label_a, label_b))
 
-        comparison_label = f"{label_a}_vs_{label_b}"
-        logger.info(f"\n--- Whole-network test: {comparison_label} ---")
+    rows = []
+    null_dists = {}
 
-        result = whole_network_test(
-            data_a=group_data[label_a],
-            data_b=group_data[label_b],
-            n_perm=n_perm,
-            seed=seed,
-        )
-
+    def _collect_result(comparison_label, label_a, label_b, result):
         rows.append({
             "comparison": comparison_label,
             "group_a": label_a,
@@ -252,6 +250,39 @@ def run_all_comparisons(
             "spectral_p": result["spectral_p"],
         })
         null_dists[comparison_label] = result["null_distributions"]
+
+    if n_workers > 1 and len(valid_comparisons) > 1:
+        logger.info(f"Running {len(valid_comparisons)} whole-network comparisons with {n_workers} workers")
+        futures = {}
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            for label_a, label_b in valid_comparisons:
+                comp_label = f"{label_a}_vs_{label_b}"
+                future = executor.submit(
+                    whole_network_test,
+                    data_a=group_data[label_a],
+                    data_b=group_data[label_b],
+                    n_perm=n_perm,
+                    seed=seed,
+                )
+                futures[future] = (comp_label, label_a, label_b)
+
+            for future in as_completed(futures):
+                comp_label, label_a, label_b = futures[future]
+                result = future.result()
+                _collect_result(comp_label, label_a, label_b, result)
+                logger.info(f"  Completed: {comp_label}")
+    else:
+        for label_a, label_b in valid_comparisons:
+            comparison_label = f"{label_a}_vs_{label_b}"
+            logger.info(f"\n--- Whole-network test: {comparison_label} ---")
+
+            result = whole_network_test(
+                data_a=group_data[label_a],
+                data_b=group_data[label_b],
+                n_perm=n_perm,
+                seed=seed,
+            )
+            _collect_result(comparison_label, label_a, label_b, result)
 
     results_df = pd.DataFrame(rows)
     return results_df, null_dists

@@ -2,9 +2,9 @@
 """
 Covariance Network (CovNet) Analysis for ROI-level DTI metrics.
 
-Builds Spearman correlation matrices per experimental group, compares them
-using the Network-Based Statistic (NBS) and graph-theoretic metrics. Supports
-bilateral ROI averaging and territory-level analysis.
+All-in-one script: prepare data, then run NBS, territory, graph-metric, and
+whole-network tests for each metric. For running individual tests separately,
+use the thin wrappers (covnet_prepare.py, covnet_nbs.py, etc.).
 
 Usage:
     uv run python scripts/run_covnet_analysis.py \
@@ -23,38 +23,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.covnet.matrices import (
-    bilateral_average,
-    compute_spearman_matrices,
-    cross_dose_timepoint_comparisons,
-    cross_timepoint_comparisons,
-    define_groups,
-    fisher_z_transform,
-    load_and_prepare_data,
-)
-from neurofaune.analysis.covnet.nbs import (
-    fisher_z_edge_test,
-    run_all_comparisons,
-)
-from neurofaune.analysis.covnet.graph_metrics import (
-    compare_metrics,
-    compute_metrics,
-)
-from neurofaune.analysis.covnet.whole_network import (
-    run_all_comparisons as run_whole_network_comparisons,
-)
-from neurofaune.analysis.covnet.visualization import (
-    plot_all_group_heatmaps,
-    plot_correlation_heatmap,
-    plot_difference_matrix,
-    plot_graph_metrics_comparison,
-    plot_nbs_network,
-)
+from neurofaune.analysis.covnet.pipeline import CovNetAnalysis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,429 +34,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def save_correlation_matrices(
-    matrices: dict[str, dict], output_dir: Path, metric: str
-) -> None:
-    """Save per-group correlation matrices as CSV files."""
-    mat_dir = output_dir / "matrices" / metric
-    mat_dir.mkdir(parents=True, exist_ok=True)
-
-    for label, data in matrices.items():
-        corr_df = pd.DataFrame(
-            data["corr"], index=data["rois"], columns=data["rois"]
-        )
-        corr_df.to_csv(mat_dir / f"{label}_corr.csv")
-
-
-def save_nbs_results(
-    nbs_results: dict[str, dict], output_dir: Path, metric: str
-) -> None:
-    """Save NBS results (test statistics, components) to disk."""
-    for comp_label, result in nbs_results.items():
-        nbs_dir = output_dir / "nbs" / metric / comp_label
-        nbs_dir.mkdir(parents=True, exist_ok=True)
-
-        # Test statistic matrix
-        rois = result["roi_cols"]
-        stat_df = pd.DataFrame(result["test_stat"], index=rois, columns=rois)
-        stat_df.to_csv(nbs_dir / "test_statistics.csv")
-
-        # Components
-        components_json = {
-            "group_a": result["group_a"],
-            "group_b": result["group_b"],
-            "n_a": result["n_a"],
-            "n_b": result["n_b"],
-            "components": [],
-        }
-        for comp in result["significant_components"]:
-            comp_out = {
-                "nodes": comp["nodes"],
-                "node_names": [rois[n] for n in comp["nodes"]],
-                "edges": comp["edges"],
-                "edge_names": [(rois[u], rois[v]) for u, v in comp["edges"]],
-                "size": comp["size"],
-                "pvalue": comp["pvalue"],
-            }
-            components_json["components"].append(comp_out)
-
-        with open(nbs_dir / "components.json", "w") as f:
-            json.dump(components_json, f, indent=2)
-
-        # Null distribution
-        np.savetxt(nbs_dir / "null_distribution.txt", result["null_distribution"])
-
-
-def save_territory_results(
-    territory_results: dict[str, dict],
-    output_dir: Path,
-    metric: str,
-    territory_cols: list[str],
-) -> None:
-    """Save territory-level Fisher z-test results."""
-    terr_dir = output_dir / "territory" / metric
-    terr_dir.mkdir(parents=True, exist_ok=True)
-
-    rows = []
-    for comp_label, result in territory_results.items():
-        z_stats = result["z_stats"]
-        p_values = result["p_values"]
-        p_fdr = result["p_fdr"]
-        n = len(territory_cols)
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                rows.append({
-                    "comparison": comp_label,
-                    "roi_a": territory_cols[i],
-                    "roi_b": territory_cols[j],
-                    "z_stat": z_stats[i, j],
-                    "p_value": p_values[i, j],
-                    "p_fdr": p_fdr[i, j],
-                    "significant": p_fdr[i, j] < 0.05,
-                })
-
-    df = pd.DataFrame(rows)
-    df.to_csv(terr_dir / "fisher_z_results.csv", index=False)
-    n_sig = df["significant"].sum()
-    logger.info(f"Territory {metric}: {n_sig} FDR-significant edges")
-
-
-def fdr_correct_matrix(p_values: np.ndarray) -> np.ndarray:
-    """Apply Benjamini-Hochberg FDR correction to a symmetric p-value matrix."""
-    n = p_values.shape[0]
-    # Extract upper triangle p-values
-    idx = np.triu_indices(n, k=1)
-    pvals = p_values[idx]
-    n_tests = len(pvals)
-
-    # BH correction
-    sorted_idx = np.argsort(pvals)
-    sorted_p = pvals[sorted_idx]
-    ranks = np.arange(1, n_tests + 1)
-    adjusted = np.minimum(1.0, sorted_p * n_tests / ranks)
-
-    # Enforce monotonicity (from largest to smallest)
-    for i in range(n_tests - 2, -1, -1):
-        adjusted[i] = min(adjusted[i], adjusted[i + 1])
-
-    # Map back to original order
-    p_fdr_flat = np.empty(n_tests)
-    p_fdr_flat[sorted_idx] = adjusted
-
-    # Reconstruct matrix
-    p_fdr = np.ones((n, n))
-    p_fdr[idx] = p_fdr_flat
-    p_fdr.T[idx] = p_fdr_flat  # Symmetric
-    np.fill_diagonal(p_fdr, 1.0)
-    return p_fdr
-
-
-def run_single_metric(
-    metric: str,
-    roi_dir: Path,
-    exclusion_csv: Path,
-    output_dir: Path,
-    n_perm: int,
-    nbs_threshold: float,
-    seed: int,
-    skip_nbs: bool,
-    skip_graph: bool,
-    skip_whole_network: bool = False,
-    skip_cross_timepoint: bool = False,
-) -> dict:
-    """Run full CovNet pipeline for a single metric."""
-    logger.info(f"\n{'=' * 60}")
-    logger.info(f"Processing metric: {metric}")
-    logger.info(f"{'=' * 60}")
-
-    wide_csv = roi_dir / f"roi_{metric}_wide.csv"
-    if not wide_csv.exists():
-        logger.warning(f"Wide CSV not found: {wide_csv}, skipping {metric}")
-        return {}
-
-    # Phase 1: Load and prepare data
-    logger.info("\n[Phase 1] Loading and preparing data...")
-    df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
-
-    # Identify region vs territory columns
-    region_cols = [c for c in roi_cols if not c.startswith("territory_")]
-    territory_cols = [c for c in roi_cols if c.startswith("territory_")]
-
-    # Save ROI selection info
-    roi_info = {
-        "metric": metric,
-        "n_subjects": len(df),
-        "n_region_rois": len(region_cols),
-        "n_territory_rois": len(territory_cols),
-        "region_rois": region_cols,
-        "territory_rois": territory_cols,
-    }
-
-    # Phase 2: Bilateral averaging
-    logger.info("\n[Phase 2] Bilateral averaging...")
-    df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
-    bilateral_region_cols = [c for c in bilateral_cols if not c.startswith("territory_")]
-    roi_info["n_bilateral_rois"] = len(bilateral_region_cols)
-    roi_info["bilateral_rois"] = bilateral_region_cols
-
-    # Phase 3: Define groups and compute correlation matrices
-    logger.info("\n[Phase 3] Computing correlation matrices...")
-
-    # Primary: PND x dose (bilateral ROIs)
-    logger.info("  PND x dose grouping (bilateral):")
-    groups_pnd_dose = define_groups(df_bilateral, grouping="pnd_dose")
-    matrices_pnd_dose = compute_spearman_matrices(groups_pnd_dose, bilateral_region_cols)
-
-    # Full: sex x PND x dose (bilateral, descriptive)
-    logger.info("  Full grouping (bilateral, descriptive):")
-    groups_full = define_groups(df_bilateral, grouping="full")
-    matrices_full = compute_spearman_matrices(groups_full, bilateral_region_cols)
-
-    # Territory level
-    logger.info("  PND x dose grouping (territory):")
-    groups_territory = define_groups(df, grouping="pnd_dose")
-    matrices_territory = compute_spearman_matrices(groups_territory, territory_cols)
-
-    # Save matrices
-    save_correlation_matrices(matrices_pnd_dose, output_dir, metric)
-    save_correlation_matrices(matrices_full, output_dir, f"{metric}_full")
-    save_correlation_matrices(matrices_territory, output_dir, f"{metric}_territory")
-
-    # Phase 4: Visualizations — correlation heatmaps
-    logger.info("\n[Phase 4] Generating heatmaps...")
-    fig_dir = output_dir / "figures" / metric
-
-    plot_all_group_heatmaps(
-        matrices_pnd_dose, fig_dir / "pnd_dose_heatmaps.png",
-        title_prefix=f"{metric} ",
-    )
-    plot_all_group_heatmaps(
-        matrices_full, fig_dir / "full_heatmaps.png",
-        title_prefix=f"{metric} ",
-    )
-    plot_all_group_heatmaps(
-        matrices_territory, fig_dir / "territory_heatmaps.png",
-        title_prefix=f"{metric} Territory ",
-    )
-
-    # Individual heatmaps for pnd_dose
-    for label, data in matrices_pnd_dose.items():
-        plot_correlation_heatmap(
-            data["corr"], data["rois"],
-            title=f"{metric} — {label} (n={data['n']})",
-            out_path=output_dir / "matrices" / metric / f"{label}_corr_heatmap.png",
-        )
-
+def run_single_metric(analysis: CovNetAnalysis, args: argparse.Namespace) -> dict:
+    """Run the full CovNet pipeline for a prepared analysis."""
+    metric = analysis.metric
     summary = {
         "metric": metric,
-        "n_subjects": len(df),
-        "n_bilateral_rois": len(bilateral_region_cols),
-        "n_territory_rois": len(territory_cols),
-        "n_groups_pnd_dose": len(groups_pnd_dose),
-        "group_sizes": {k: len(v) for k, v in groups_pnd_dose.items()},
+        "n_subjects": analysis.n_subjects,
+        "n_bilateral_rois": len(analysis.bilateral_region_cols),
+        "n_territory_rois": len(analysis.territory_cols),
+        "n_groups_pnd_dose": len(analysis.group_labels),
+        "group_sizes": analysis.group_sizes,
     }
 
-    # Phase 5: NBS (bilateral ROIs)
-    if not skip_nbs:
-        logger.info(f"\n[Phase 5] Network-Based Statistic ({n_perm} permutations)...")
-        group_arrays = {
-            label: subset[bilateral_region_cols].values
-            for label, subset in groups_pnd_dose.items()
-        }
+    # Build comparisons
+    comp_types = ["dose"]
+    if not args.skip_cross_timepoint:
+        comp_types.extend(["cross-timepoint", "cross-dose-timepoint"])
+    comparisons = analysis.resolve_comparisons(comp_types)
 
-        nbs_results = run_all_comparisons(
-            group_data=group_arrays,
-            group_sizes={k: len(v) for k, v in groups_pnd_dose.items()},
-            roi_cols=bilateral_region_cols,
-            n_perm=n_perm,
-            threshold=nbs_threshold,
-            seed=seed,
+    # Phase 5: NBS
+    if not args.skip_nbs:
+        logger.info(f"\n[Phase 5] Network-Based Statistic ({args.n_permutations} permutations)...")
+        nbs_results = analysis.run_nbs(
+            comparisons, args.n_permutations, args.nbs_threshold,
+            args.seed, args.n_workers,
         )
-
-        # Cross-timepoint NBS comparisons
-        if not skip_cross_timepoint:
-            cross_comps = cross_timepoint_comparisons(list(group_arrays.keys()))
-            if cross_comps:
-                logger.info(f"  Running {len(cross_comps)} cross-timepoint NBS comparisons...")
-                cross_nbs = run_all_comparisons(
-                    group_data=group_arrays,
-                    group_sizes={k: len(v) for k, v in groups_pnd_dose.items()},
-                    roi_cols=bilateral_region_cols,
-                    comparisons=cross_comps,
-                    n_perm=n_perm,
-                    threshold=nbs_threshold,
-                    seed=seed,
-                )
-                nbs_results.update(cross_nbs)
-
-            # Cross-dose-cross-timepoint NBS comparisons
-            cross_dose_comps = cross_dose_timepoint_comparisons(list(group_arrays.keys()))
-            if cross_dose_comps:
-                logger.info(f"  Running {len(cross_dose_comps)} cross-dose-timepoint NBS comparisons...")
-                cross_dose_nbs = run_all_comparisons(
-                    group_data=group_arrays,
-                    group_sizes={k: len(v) for k, v in groups_pnd_dose.items()},
-                    roi_cols=bilateral_region_cols,
-                    comparisons=cross_dose_comps,
-                    n_perm=n_perm,
-                    threshold=nbs_threshold,
-                    seed=seed,
-                )
-                nbs_results.update(cross_dose_nbs)
-
-        save_nbs_results(nbs_results, output_dir, metric)
-
-        # NBS visualizations
-        for comp_label, result in nbs_results.items():
-            sig_comps = [c for c in result["significant_components"] if c["pvalue"] < 0.05]
-            sig_edges = []
-            for comp in sig_comps:
-                sig_edges.extend(comp["edges"])
-
-            plot_nbs_network(
-                result["significant_components"],
-                bilateral_region_cols,
-                title=f"NBS {metric}: {comp_label}",
-                out_path=output_dir / "nbs" / metric / comp_label / "nbs_network.png",
-            )
-
-            # Difference matrix with NBS highlights
-            ga, gb = result["group_a"], result["group_b"]
-            if ga in matrices_pnd_dose and gb in matrices_pnd_dose:
-                plot_difference_matrix(
-                    matrices_pnd_dose[ga]["corr"],
-                    matrices_pnd_dose[gb]["corr"],
-                    bilateral_region_cols,
-                    sig_edges=sig_edges,
-                    title=f"{metric} Δr: {ga} − {gb}",
-                    out_path=output_dir / "nbs" / metric / comp_label / "difference_matrix.png",
-                )
-
-        n_sig_comparisons = sum(
+        summary["nbs_significant_comparisons"] = sum(
             1 for r in nbs_results.values()
             if any(c["pvalue"] < 0.05 for c in r["significant_components"])
         )
-        summary["nbs_significant_comparisons"] = n_sig_comparisons
     else:
         logger.info("\n[Phase 5] Skipping NBS (--skip-nbs)")
 
-    # Phase 6: Territory-level Fisher z-tests with FDR
+    # Phase 6: Territory
     logger.info("\n[Phase 6] Territory-level edge comparisons (Fisher z + FDR)...")
-    territory_results = {}
-    pnds = ["p30", "p60", "p90"]
-
-    # Detect dose naming convention from actual group labels
-    territory_labels = list(matrices_territory.keys())
-    if any(k.endswith("_C") for k in territory_labels):
-        control_suffix, dose_suffixes = "C", ["L", "M", "H"]
-    else:
-        control_suffix, dose_suffixes = "control", ["low", "medium", "high"]
-
-    for pnd in pnds:
-        control_key = f"{pnd}_{control_suffix}"
-        if control_key not in matrices_territory:
-            continue
-        corr_ctrl = matrices_territory[control_key]["corr"]
-        n_ctrl = matrices_territory[control_key]["n"]
-
-        for dose in dose_suffixes:
-            treatment_key = f"{pnd}_{dose}"
-            if treatment_key not in matrices_territory:
-                continue
-            corr_treat = matrices_territory[treatment_key]["corr"]
-            n_treat = matrices_territory[treatment_key]["n"]
-
-            z_stats, p_values = fisher_z_edge_test(
-                corr_treat, n_treat, corr_ctrl, n_ctrl
-            )
-            p_fdr = fdr_correct_matrix(p_values)
-
-            comp_label = f"{treatment_key}_vs_{control_key}"
-            territory_results[comp_label] = {
-                "z_stats": z_stats,
-                "p_values": p_values,
-                "p_fdr": p_fdr,
-            }
-
-    # Cross-timepoint territory comparisons
-    if not skip_cross_timepoint:
-        cross_comps = cross_timepoint_comparisons(territory_labels)
-        for label_a, label_b in cross_comps:
-            if label_a not in matrices_territory or label_b not in matrices_territory:
-                continue
-            corr_a = matrices_territory[label_a]["corr"]
-            n_a = matrices_territory[label_a]["n"]
-            corr_b = matrices_territory[label_b]["corr"]
-            n_b = matrices_territory[label_b]["n"]
-
-            z_stats, p_values = fisher_z_edge_test(corr_a, n_a, corr_b, n_b)
-            p_fdr = fdr_correct_matrix(p_values)
-
-            comp_label = f"{label_a}_vs_{label_b}"
-            territory_results[comp_label] = {
-                "z_stats": z_stats,
-                "p_values": p_values,
-                "p_fdr": p_fdr,
-            }
-
-        # Cross-dose-cross-timepoint territory comparisons
-        cross_dose_comps = cross_dose_timepoint_comparisons(territory_labels)
-        for treatment_key, control_key in cross_dose_comps:
-            if treatment_key not in matrices_territory or control_key not in matrices_territory:
-                continue
-            corr_treat = matrices_territory[treatment_key]["corr"]
-            n_treat = matrices_territory[treatment_key]["n"]
-            corr_ctrl = matrices_territory[control_key]["corr"]
-            n_ctrl = matrices_territory[control_key]["n"]
-
-            z_stats, p_values = fisher_z_edge_test(corr_treat, n_treat, corr_ctrl, n_ctrl)
-            p_fdr = fdr_correct_matrix(p_values)
-
-            comp_label = f"{treatment_key}_vs_{control_key}"
-            territory_results[comp_label] = {
-                "z_stats": z_stats,
-                "p_values": p_values,
-                "p_fdr": p_fdr,
-            }
-
-    if territory_results:
-        save_territory_results(territory_results, output_dir, metric, territory_cols)
+    analysis.run_territory(comparisons)
 
     # Phase 7: Graph metrics
-    if not skip_graph:
+    if not args.skip_graph:
         logger.info("\n[Phase 7] Graph metrics and permutation comparison...")
-        graph_dir = output_dir / "graph_metrics" / metric
-        graph_dir.mkdir(parents=True, exist_ok=True)
-
-        # Compute per-group metrics at multiple densities
-        densities = [0.10, 0.15, 0.20, 0.25]
-        metrics_rows = []
-        for label, data in matrices_pnd_dose.items():
-            for d in densities:
-                m = compute_metrics(data["corr"], density=d)
-                m["group"] = label
-                m["density"] = d
-                metrics_rows.append(m)
-
-        metrics_df = pd.DataFrame(metrics_rows)
-        metrics_df.to_csv(graph_dir / "global_metrics.csv", index=False)
-        logger.info(f"Saved global metrics: {graph_dir / 'global_metrics.csv'}")
-
-        # Permutation comparison
-        group_arrays = {
-            label: subset[bilateral_region_cols].values
-            for label, subset in groups_pnd_dose.items()
-        }
-        comparison_df = compare_metrics(
-            group_arrays, bilateral_region_cols,
-            densities=densities, n_perm=n_perm, seed=seed,
-        )
-        comparison_df.to_csv(graph_dir / "comparison_pvalues.csv", index=False)
-
-        plot_graph_metrics_comparison(
-            comparison_df,
-            out_path=fig_dir / "graph_metrics_bars.png",
+        comparison_df = analysis.run_graph_metrics(
+            n_perm=args.n_permutations, seed=args.seed,
         )
         summary["graph_metrics_significant"] = int(
             (comparison_df["p_value"] < 0.05).sum()
@@ -493,63 +82,15 @@ def run_single_metric(
     else:
         logger.info("\n[Phase 7] Skipping graph metrics (--skip-graph)")
 
-    # Phase 8: Whole-network similarity tests
-    if not skip_whole_network:
-        logger.info(f"\n[Phase 8] Whole-network similarity tests ({n_perm} permutations)...")
-        wn_dir = output_dir / "whole_network" / metric
-        wn_dir.mkdir(parents=True, exist_ok=True)
-
-        group_arrays = {
-            label: subset[bilateral_region_cols].values
-            for label, subset in groups_pnd_dose.items()
-        }
-
-        wn_df, wn_nulls = run_whole_network_comparisons(
-            group_data=group_arrays,
-            n_perm=n_perm,
-            seed=seed,
+    # Phase 8: Whole-network
+    if not args.skip_whole_network:
+        logger.info(f"\n[Phase 8] Whole-network similarity tests ({args.n_permutations} permutations)...")
+        wn_df, _ = analysis.run_whole_network(
+            comparisons, args.n_permutations, args.seed, args.n_workers,
         )
-
-        # Cross-timepoint whole-network comparisons
-        if not skip_cross_timepoint:
-            cross_comps = cross_timepoint_comparisons(list(group_arrays.keys()))
-            if cross_comps:
-                logger.info(f"  Running {len(cross_comps)} cross-timepoint whole-network comparisons...")
-                cross_wn_df, cross_wn_nulls = run_whole_network_comparisons(
-                    group_data=group_arrays,
-                    comparisons=cross_comps,
-                    n_perm=n_perm,
-                    seed=seed,
-                )
-                wn_df = pd.concat([wn_df, cross_wn_df], ignore_index=True)
-                wn_nulls.update(cross_wn_nulls)
-
-            # Cross-dose-cross-timepoint whole-network comparisons
-            cross_dose_comps = cross_dose_timepoint_comparisons(list(group_arrays.keys()))
-            if cross_dose_comps:
-                logger.info(f"  Running {len(cross_dose_comps)} cross-dose-timepoint whole-network comparisons...")
-                cross_dose_wn_df, cross_dose_wn_nulls = run_whole_network_comparisons(
-                    group_data=group_arrays,
-                    comparisons=cross_dose_comps,
-                    n_perm=n_perm,
-                    seed=seed,
-                )
-                wn_df = pd.concat([wn_df, cross_dose_wn_df], ignore_index=True)
-                wn_nulls.update(cross_dose_wn_nulls)
-
-        wn_df.to_csv(wn_dir / "whole_network_results.csv", index=False)
-
-        # Save null distributions
-        null_arrays = {}
-        for comp_label, dists in wn_nulls.items():
-            for stat_name, arr in dists.items():
-                null_arrays[f"{comp_label}__{stat_name}"] = arr
-        np.savez(wn_dir / "null_distributions.npz", **null_arrays)
-
-        n_sig = int((wn_df[["mantel_p", "frobenius_p", "spectral_p"]] < 0.05).any(axis=1).sum())
-        logger.info(
-            f"Whole-network: {n_sig}/{len(wn_df)} comparisons with at least "
-            f"one significant statistic (p < 0.05)"
+        n_sig = int(
+            (wn_df[["mantel_p", "frobenius_p", "spectral_p"]] < 0.05)
+            .any(axis=1).sum()
         )
         summary["whole_network_significant"] = n_sig
     else:
@@ -716,6 +257,10 @@ def main():
         "--skip-cross-timepoint", action="store_true",
         help="Skip cross-timepoint (cross-PND) comparisons within each dose level",
     )
+    parser.add_argument(
+        "--n-workers", type=int, default=1,
+        help="Number of parallel workers for NBS/whole-network comparisons (default: 1 = sequential)",
+    )
 
     args = parser.parse_args()
 
@@ -739,6 +284,7 @@ def main():
         "skip_graph": args.skip_graph,
         "skip_whole_network": args.skip_whole_network,
         "skip_cross_timepoint": args.skip_cross_timepoint,
+        "n_workers": args.n_workers,
         "timestamp": datetime.now().isoformat(),
     }
     with open(args.output_dir / "analysis_config.json", "w") as f:
@@ -749,20 +295,20 @@ def main():
     # Run for each metric
     all_summaries = {}
     for metric in args.metrics:
-        summary = run_single_metric(
-            metric=metric,
-            roi_dir=args.roi_dir,
-            exclusion_csv=args.exclusion_csv,
-            output_dir=args.output_dir,
-            n_perm=args.n_permutations,
-            nbs_threshold=args.nbs_threshold,
-            seed=args.seed,
-            skip_nbs=args.skip_nbs,
-            skip_graph=args.skip_graph,
-            skip_whole_network=args.skip_whole_network,
-            skip_cross_timepoint=args.skip_cross_timepoint,
-        )
-        all_summaries[metric] = summary
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Processing metric: {metric}")
+        logger.info(f"{'=' * 60}")
+
+        try:
+            analysis = CovNetAnalysis.prepare(
+                args.roi_dir, args.exclusion_csv, args.output_dir, metric
+            )
+            analysis.save()
+            summary = run_single_metric(analysis, args)
+            all_summaries[metric] = summary
+        except FileNotFoundError as e:
+            logger.warning(str(e))
+            continue
 
     # Save overall summary
     summary_path = args.output_dir / "covnet_summary.json"

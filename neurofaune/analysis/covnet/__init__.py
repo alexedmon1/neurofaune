@@ -7,6 +7,7 @@ metrics, and whole-network similarity tests. Supports bilateral ROI averaging
 and territory-level analysis.
 
 Submodules:
+    pipeline: CovNetAnalysis class — prepare once, run any test independently
     matrices: Correlation matrix computation and grouping
     nbs: Network-Based Statistic for group comparison
     graph_metrics: Global efficiency, clustering, modularity
@@ -22,6 +23,7 @@ from neurofaune.analysis.covnet.matrices import (
     load_and_prepare_data,
     spearman_matrix,
 )
+from neurofaune.analysis.covnet.pipeline import CovNetAnalysis
 from neurofaune.analysis.covnet.whole_network import (
     frobenius_distance,
     mantel_test,
@@ -30,6 +32,7 @@ from neurofaune.analysis.covnet.whole_network import (
 )
 
 __all__ = [
+    "CovNetAnalysis",
     "load_and_prepare_data",
     "bilateral_average",
     "define_groups",
