@@ -309,6 +309,12 @@ functional:
     highpass: 0.01  # Hz
     lowpass: 0.1    # Hz
 
+  # TEDANA multi-echo ICA denoising (auto-enabled for multi-echo input)
+  tedana:
+    tedpca: 0.95           # PCA component selection: float=variance % (0.95=95%), int=exact count,
+                           # or 'kundu','aic','kic','mdl'. If too slow, use n_volumes/2 (IRC805 pattern)
+    tree: kundu            # Decision tree: 'kundu' or 'kundu_tedort'
+
   # Denoising strategy
   denoising:
     # Rodent-specific ICA denoising (replaces ICA-AROMA)

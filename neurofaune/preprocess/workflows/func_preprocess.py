@@ -44,6 +44,8 @@ from neurofaune.preprocess.utils.func.slice_timing import (
     detect_slice_order
 )
 
+from typing import Union
+
 
 def _find_z_offset_ncc(
     bold_img: nib.Nifti1Image,
@@ -871,37 +873,365 @@ def extract_confounds(
     return output_file
 
 
+def run_tedana(
+    echo_files: List[Path],
+    echo_times_ms: List[float],
+    output_dir: Path,
+    mask_file: Path,
+    tedpca = 0.95,
+    tree: str = 'kundu',
+) -> Dict[str, Path]:
+    """Run TEDANA multi-echo ICA denoising.
+
+    Parameters
+    ----------
+    echo_files : list of Path
+        Motion-corrected echo NIfTI paths (one per echo)
+    echo_times_ms : list of float
+        Echo times in milliseconds
+    output_dir : Path
+        Directory for tedana outputs
+    mask_file : Path
+        Brain mask
+    tedpca : str, int, or float
+        PCA component selection: 'kundu', 'aic', 'kic', 'mdl',
+        float 0-1 for variance % (default 0.95=95%), or int for exact count
+    tree : str
+        Decision tree method ('kundu' or 'kundu_tedort')
+
+    Returns
+    -------
+    dict
+        Paths to 'optcom', 'denoised', 'metrics', 'report'
+    """
+    from tedana import workflows as tedana_workflows
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # tedana expects TEs in milliseconds
+    print(f"  Running TEDANA multi-echo ICA denoising...")
+    print(f"  Echo files: {[f.name for f in echo_files]}")
+    print(f"  Echo times (ms): {echo_times_ms}")
+    print(f"  Mask: {mask_file.name}")
+    print(f"  PCA method: {tedpca}, Decision tree: {tree}")
+
+    # tedana accepts str ('kundu','aic','kic','mdl'), float (variance), or int (n_components)
+    tedana_workflows.tedana_workflow(
+        data=[str(f) for f in echo_files],
+        tes=[float(te) for te in echo_times_ms],
+        out_dir=str(output_dir),
+        mask=str(mask_file),
+        tedpca=tedpca,
+        tree=tree,
+        verbose=True,
+        prefix='tedana',
+        overwrite=True,
+    )
+
+    # Collect output paths — tedana 23.x uses 'optcomDenoised' naming
+    results = {}
+    optcom = output_dir / 'tedana_desc-optcom_bold.nii.gz'
+    # tedana 23.x: desc-optcomDenoised; older versions: desc-denoised
+    denoised = output_dir / 'tedana_desc-optcomDenoised_bold.nii.gz'
+    if not denoised.exists():
+        denoised = output_dir / 'tedana_desc-denoised_bold.nii.gz'
+    metrics = output_dir / 'tedana_desc-tedana_metrics.tsv'
+
+    if optcom.exists():
+        results['optcom'] = optcom
+        print(f"  Optimally combined: {optcom.name}")
+    if denoised.exists():
+        results['denoised'] = denoised
+        print(f"  Denoised output: {denoised.name}")
+    if metrics.exists():
+        results['metrics'] = metrics
+        print(f"  Component metrics: {metrics.name}")
+
+    # Count accepted/rejected components from metrics file
+    if metrics.exists():
+        import csv
+        with open(metrics) as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            rows = list(reader)
+        n_accepted = sum(1 for r in rows if r.get('classification') == 'accepted')
+        n_rejected = sum(1 for r in rows if r.get('classification') == 'rejected')
+        results['n_signal_components'] = n_accepted
+        results['n_noise_components'] = n_rejected
+        print(f"  Components: {n_accepted} accepted, {n_rejected} rejected (of {len(rows)} total)")
+
+    # Check for report (may be in figures subdir)
+    report = output_dir / 'tedana_report.html'
+    if not report.exists():
+        report = output_dir / 'figures' / 'tedana_report.html'
+    if report.exists():
+        results['report'] = report
+
+    return results
+
+
+def run_multiecho_motion_correction(
+    echo_files: List[Path],
+    work_dir: Path,
+    brain_mask_out: Path,
+    skull_strip_config: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Motion-correct multi-echo data using middle echo as reference.
+
+    Strategy:
+    1. MCFLIRT on middle echo -> per-volume .mat transforms
+    2. Apply those transforms to all other echoes
+    3. Skull strip on temporal mean of motion-corrected middle echo -> brain mask
+
+    Parameters
+    ----------
+    echo_files : list of Path
+        Per-echo 4D NIfTI files (trimmed, same number of volumes)
+    work_dir : Path
+        Working directory for intermediate files
+    brain_mask_out : Path
+        Where to save the output brain mask
+    skull_strip_config : dict, optional
+        Config for adaptive skull stripping (target_ratio, frac_range, etc.)
+
+    Returns
+    -------
+    dict with:
+        'corrected_echoes': list of Path (motion-corrected echo files)
+        'brain_mask': Path
+        'motion_params': Path (.par file from MCFLIRT)
+        'mean_bold': Path (mean of motion-corrected middle echo)
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    n_echoes = len(echo_files)
+    ref_echo_idx = n_echoes // 2  # middle echo
+
+    print(f"  Multi-echo motion correction ({n_echoes} echoes)")
+    print(f"  Reference echo: {ref_echo_idx} ({echo_files[ref_echo_idx].name})")
+
+    # Step 1: MCFLIRT on reference echo
+    ref_echo = echo_files[ref_echo_idx]
+    mcf_dir = work_dir / 'mcflirt'
+    mcf_dir.mkdir(exist_ok=True)
+
+    ref_mcf_base = mcf_dir / f'echo{ref_echo_idx}_mcf'
+    ref_mcf_out = Path(str(ref_mcf_base) + '.nii.gz')
+
+    ref_img = nib.load(ref_echo)
+    ref_vol = ref_img.shape[3] // 2
+
+    cmd = [
+        'mcflirt',
+        '-in', str(ref_echo),
+        '-out', str(ref_mcf_base),
+        '-plots',
+        '-mats',  # Save per-volume transform matrices
+        '-refvol', str(ref_vol),
+    ]
+    print(f"  Running MCFLIRT on echo {ref_echo_idx} (refvol={ref_vol})...")
+    subprocess.run(cmd, check=True)
+
+    motion_params = Path(str(ref_mcf_base) + '.par')
+    mat_dir = Path(str(ref_mcf_base) + '.mat')
+
+    # Collect per-volume .mat files
+    n_vols = ref_img.shape[3]
+    mat_files = [mat_dir / f'MAT_{i:04d}' for i in range(n_vols)]
+    has_mats = all(m.exists() for m in mat_files)
+
+    if not has_mats:
+        print(f"  WARNING: Per-volume .mat files not found in {mat_dir}")
+        print(f"  Falling back to MCFLIRT on each echo independently")
+
+    # Step 2: Apply transforms to all echoes
+    corrected_echoes = []
+    for echo_idx, echo_file in enumerate(echo_files):
+        echo_mcf_out = mcf_dir / f'echo{echo_idx}_mcf.nii.gz'
+
+        if echo_idx == ref_echo_idx:
+            # Reference echo already motion-corrected
+            corrected_echoes.append(ref_mcf_out)
+            continue
+
+        if has_mats:
+            # Use applyxfm4D to apply reference echo transforms
+            print(f"  Applying transforms to echo {echo_idx}...")
+            try:
+                cmd = [
+                    'applyxfm4D',
+                    str(echo_file),
+                    str(ref_echo),  # reference image
+                    str(echo_mcf_out),
+                    str(mat_dir),
+                    '-fourdigit',
+                ]
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                corrected_echoes.append(echo_mcf_out)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # Fallback: split, transform each volume, merge
+                print(f"  applyxfm4D failed, using split/flirt/merge fallback...")
+                corrected_echoes.append(
+                    _apply_transforms_fallback(
+                        echo_file, ref_echo, mat_files, echo_mcf_out,
+                        mcf_dir / f'echo{echo_idx}_split', ref_vol
+                    )
+                )
+        else:
+            # Fallback: run MCFLIRT independently on this echo
+            print(f"  Running MCFLIRT independently on echo {echo_idx}...")
+            echo_mcf_base = mcf_dir / f'echo{echo_idx}_mcf'
+            cmd = [
+                'mcflirt',
+                '-in', str(echo_file),
+                '-out', str(echo_mcf_base),
+                '-refvol', str(ref_vol),
+            ]
+            subprocess.run(cmd, check=True)
+            corrected_echoes.append(Path(str(echo_mcf_base) + '.nii.gz'))
+
+    # Step 3: Skull strip on temporal mean of motion-corrected middle echo
+    print(f"\n  Computing temporal mean of motion-corrected middle echo...")
+    mcf_ref_img = nib.load(corrected_echoes[ref_echo_idx])
+    mcf_ref_data = mcf_ref_img.get_fdata()
+    mean_data = np.mean(mcf_ref_data, axis=3)
+    mean_bold = work_dir / 'mean_bold_ref.nii.gz'
+    nib.save(
+        nib.Nifti1Image(mean_data.astype(np.float32), mcf_ref_img.affine, mcf_ref_img.header),
+        mean_bold
+    )
+
+    # N4 + normalization + skull strip (same as SE pipeline)
+    ss_work = work_dir / 'skull_strip'
+    ss_work.mkdir(exist_ok=True)
+
+    print("  Running N4 bias correction on mean BOLD...")
+    mean_n4 = ss_work / 'mean_bold_n4.nii.gz'
+    subprocess.run([
+        'N4BiasFieldCorrection', '-i', str(mean_bold), '-o', str(mean_n4)
+    ], check=True, capture_output=True)
+
+    print("  Running intensity normalization...")
+    img_n4 = nib.load(mean_n4)
+    data_n4 = img_n4.get_fdata()
+    p2, p98 = np.percentile(data_n4[data_n4 > 0], [2, 98])
+    data_norm = np.clip(data_n4, p2, p98)
+    data_norm = (data_norm - p2) / (p98 - p2) * 1000
+    mean_norm = ss_work / 'mean_bold_norm.nii.gz'
+    nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), mean_norm)
+
+    print("  Running skull stripping...")
+    brain_ref = work_dir / 'mean_bold_brain.nii.gz'
+
+    # Use the same adaptive skull strip as SE pipeline
+    ss_params = skull_strip_config or {}
+    brain_ref, brain_mask_out, ss_info = skull_strip(
+        input_file=mean_norm,
+        output_file=brain_ref,
+        mask_file=brain_mask_out,
+        work_dir=ss_work,
+        method='auto',
+        target_ratio=ss_params.get('target_ratio', 0.15),
+        frac_range=tuple(ss_params.get('frac_range', [0.30, 0.90])),
+        frac_step=ss_params.get('frac_step', 0.05),
+        invert_intensity=ss_params.get('invert_intensity', False),
+    )
+
+    print(f"  Skull strip: {ss_info.get('method', 'unknown')}, "
+          f"{ss_info.get('total_voxels', 0):,} voxels, "
+          f"ratio={ss_info.get('extraction_ratio', 0):.3f}")
+
+    return {
+        'corrected_echoes': corrected_echoes,
+        'brain_mask': brain_mask_out,
+        'brain_ref': brain_ref,
+        'motion_params': motion_params,
+        'mean_bold': mean_bold,
+        'skull_strip_info': ss_info,
+    }
+
+
+def _apply_transforms_fallback(
+    echo_file: Path,
+    ref_file: Path,
+    mat_files: List[Path],
+    output_file: Path,
+    split_dir: Path,
+    ref_vol: int,
+) -> Path:
+    """Apply per-volume transforms using fslsplit/flirt/fslmerge fallback."""
+    split_dir.mkdir(exist_ok=True)
+
+    # Split echo into individual volumes
+    subprocess.run([
+        'fslsplit', str(echo_file), str(split_dir / 'vol'), '-t'
+    ], check=True)
+
+    # Extract reference volume from ref_file for -ref
+    ref_vol_file = split_dir / 'ref_vol.nii.gz'
+    subprocess.run([
+        'fslroi', str(ref_file), str(ref_vol_file), str(ref_vol), '1'
+    ], check=True)
+
+    # Apply transform to each volume
+    transformed = []
+    for i, mat_file in enumerate(mat_files):
+        vol_in = split_dir / f'vol{i:04d}.nii.gz'
+        vol_out = split_dir / f'vol{i:04d}_xfm.nii.gz'
+        if not vol_in.exists():
+            break
+        subprocess.run([
+            'flirt',
+            '-in', str(vol_in),
+            '-ref', str(ref_vol_file),
+            '-applyxfm',
+            '-init', str(mat_file),
+            '-out', str(vol_out),
+        ], check=True)
+        transformed.append(vol_out)
+
+    # Merge back
+    subprocess.run(
+        ['fslmerge', '-t', str(output_file)] + [str(f) for f in transformed],
+        check=True
+    )
+
+    return output_file
+
+
 def run_functional_preprocessing(
     config: Dict[str, Any],
     subject: str,
     session: str,
-    bold_file: Path,
+    bold_file: Union[Path, List[Path]],
     output_dir: Path,
     transform_registry: TransformRegistry,
     template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
     work_dir: Optional[Path] = None,
     n_discard: int = 0,
-    run_registration: bool = True
+    run_registration: bool = True,
+    echo_times: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """
     Run complete functional fMRI preprocessing workflow.
 
-    This workflow performs:
+    Supports both single-echo (SE) and multi-echo (ME) fMRI data.
+    Multi-echo is auto-detected when bold_file is a list of paths.
+
+    **Single-echo path:**
     1. Image validation
-    2. Discard initial volumes (if requested)
-    2.5. Slice timing correction (optional, BEFORE motion correction)
+    2. Discard initial volumes
+    2.5. Slice timing correction (optional)
     3. Brain extraction from mean BOLD
     4. Motion correction (MCFLIRT)
-    5. ICA denoising (optional, removes noise components)
-    6. Spatial smoothing (rodent-optimized FWHM)
-    7. Extract 24 motion confound regressors
-    8. aCompCor extraction (optional, CSF/WM physiological noise)
-    9. Nuisance regression (motion + aCompCor in single OLS pass)
-    10. Temporal filtering (highpass/lowpass bandpass, AFTER regression)
-    11. Save outputs and metadata
-    12. QC reports (motion, confounds, skull strip, ICA, aCompCor)
-    13. BOLD to template registration (optional)
+    5. ICA denoising (optional)
+    6-13. Smoothing, confounds, regression, filtering, QC, registration
+
+    **Multi-echo path:**
+    1. Image validation (all echoes)
+    2. Discard initial volumes (all echoes)
+    3-4. Multi-echo motion correction (MCFLIRT on middle echo, apply to others) + BET
+    5. TEDANA multi-echo ICA denoising (replaces MELODIC)
+    6-13. Smoothing, confounds, regression, filtering, QC, registration
 
     Parameters
     ----------
@@ -911,8 +1241,9 @@ def run_functional_preprocessing(
         Subject identifier (e.g., 'sub-Rat207')
     session : str
         Session identifier (e.g., 'ses-p60')
-    bold_file : Path
-        Input BOLD NIfTI file (4D timeseries)
+    bold_file : Path or list of Path
+        Single-echo: single 4D NIfTI path.
+        Multi-echo: list of 4D NIfTI paths, one per echo.
     output_dir : Path
         Study root directory (will create derivatives/{subject}/{session}/func/)
     transform_registry : TransformRegistry
@@ -927,18 +1258,49 @@ def run_functional_preprocessing(
         Number of initial volumes to discard (default: 0)
     run_registration : bool
         Whether to register BOLD to template (default: True, requires template_file or t2w_file)
+    echo_times : list of float, optional
+        Echo times in milliseconds. Required for multi-echo data.
 
     Returns
     -------
     dict
         Dictionary with output file paths and processing info
     """
+    # =====================================================================
+    # Detect multi-echo mode
+    # =====================================================================
+    is_multiecho = isinstance(bold_file, list) and len(bold_file) > 1
+    if is_multiecho:
+        assert echo_times is not None and len(echo_times) == len(bold_file), (
+            f"echo_times must match bold_file length: "
+            f"got {len(echo_times) if echo_times else 0} TEs for {len(bold_file)} echoes"
+        )
+        echo_files = [Path(f) for f in bold_file]
+        n_echoes = len(echo_files)
+        # Use first echo file as representative for JSON sidecar / validation
+        primary_bold = echo_files[0]
+    else:
+        if isinstance(bold_file, list):
+            bold_file = bold_file[0]  # single-element list
+        bold_file = Path(bold_file)
+        primary_bold = bold_file
+        echo_files = None
+        n_echoes = 1
+
     print("="*80)
     print("FUNCTIONAL fMRI PREPROCESSING WORKFLOW")
+    if is_multiecho:
+        print(f"  MODE: MULTI-ECHO ({n_echoes} echoes, TEs={echo_times} ms)")
+    else:
+        print(f"  MODE: SINGLE-ECHO")
     print("="*80)
     print(f"Subject: {subject}")
     print(f"Session: {session}")
-    print(f"Input BOLD: {bold_file}")
+    if is_multiecho:
+        for i, ef in enumerate(echo_files):
+            print(f"  Echo {i+1}: {ef} (TE={echo_times[i]} ms)")
+    else:
+        print(f"Input BOLD: {bold_file}")
     print(f"Output directory: {output_dir}")
     print("="*80)
 
@@ -985,12 +1347,15 @@ def run_functional_preprocessing(
     highpass_freq = func_config.get('filtering', {}).get('highpass', 0.01)
     lowpass_freq = func_config.get('filtering', {}).get('lowpass', None)
 
+    # TEDANA config (for multi-echo)
+    tedana_config = func_config.get('tedana', {})
+
     # Try to read TR from JSON sidecar
-    json_file = bold_file.with_suffix('').with_suffix('.json')
+    json_file = primary_bold.with_suffix('').with_suffix('.json')
     if json_file.exists():
         with open(json_file, 'r') as f:
-            metadata = json.load(f)
-            tr = metadata.get('RepetitionTime', tr)
+            sidecar_meta = json.load(f)
+            tr = sidecar_meta.get('RepetitionTime', tr)
             print(f"Read TR from JSON sidecar: {tr}s")
 
     results = {}
@@ -1002,11 +1367,18 @@ def run_functional_preprocessing(
     print("STEP 1: Image Validation")
     print("="*60)
 
-    validation_results = validate_image(bold_file)
-    print_validation_results(validation_results)
-
-    if not validation_results['valid']:
-        raise ValueError(f"Input BOLD image failed validation: {validation_results['errors']}")
+    if is_multiecho:
+        for i, ef in enumerate(echo_files):
+            print(f"\n  Validating echo {i+1} ({ef.name})...")
+            vr = validate_image(ef)
+            print_validation_results(vr)
+            if not vr['valid']:
+                raise ValueError(f"Echo {i+1} failed validation: {vr['errors']}")
+    else:
+        validation_results = validate_image(bold_file)
+        print_validation_results(validation_results)
+        if not validation_results['valid']:
+            raise ValueError(f"Input BOLD image failed validation: {validation_results['errors']}")
 
     # =========================================================================
     # STEP 2: Discard Initial Volumes
@@ -1015,260 +1387,339 @@ def run_functional_preprocessing(
     print("STEP 2: Discard Initial Volumes")
     print("="*60)
 
-    if n_discard > 0:
-        trimmed_bold = work_dir / f"{subject}_{session}_bold_trimmed.nii.gz"
-        bold_for_processing, n_discarded = discard_initial_volumes(
-            bold_file, trimmed_bold, n_discard
-        )
-        results['n_volumes_discarded'] = n_discarded
-
-        # Verify enough volumes remain after trimming
-        remaining = nib.load(bold_for_processing).shape[3]
-        if remaining < 2:
-            raise ValueError(
-                f"Only {remaining} volume(s) remain after discarding {n_discarded} — "
-                f"need at least 2 for timeseries processing"
-            )
+    if is_multiecho:
+        if n_discard > 0:
+            trimmed_echoes = []
+            for i, ef in enumerate(echo_files):
+                trimmed = work_dir / f"{subject}_{session}_echo-{i+1}_bold_trimmed.nii.gz"
+                trimmed_path, n_discarded = discard_initial_volumes(ef, trimmed, n_discard)
+                trimmed_echoes.append(trimmed_path)
+            echo_files_for_processing = trimmed_echoes
+            results['n_volumes_discarded'] = n_discarded
+            remaining = nib.load(echo_files_for_processing[0]).shape[3]
+            if remaining < 2:
+                raise ValueError(
+                    f"Only {remaining} volume(s) remain after discarding {n_discarded}"
+                )
+        else:
+            print("No volumes to discard")
+            echo_files_for_processing = echo_files
+            results['n_volumes_discarded'] = 0
     else:
-        print("No volumes to discard")
-        bold_for_processing = bold_file
-        results['n_volumes_discarded'] = 0
-
-    # =========================================================================
-    # STEP 2.5: Slice Timing Correction (Optional, BEFORE motion correction)
-    # =========================================================================
-    slice_timing_config = func_config.get('slice_timing', {})
-    stc_enabled = slice_timing_config.get('enabled', False)
-
-    if stc_enabled:
-        print("\n" + "="*60)
-        print("STEP 2.5: Slice Timing Correction")
-        print("="*60)
-        print("  IMPORTANT: Correcting for slice acquisition time differences")
-        print("  This is done BEFORE motion correction to avoid interpolation artifacts")
-
-        # Detect slice order from JSON or use config
-        json_file = bold_file.with_suffix('.json')
-        slice_order = slice_timing_config.get('order', 'interleaved')
-        custom_order = slice_timing_config.get('custom_order', None)
-
-        if json_file.exists():
-            print(f"  Checking for slice timing in: {json_file.name}")
-            detected_order, detected_custom = detect_slice_order(
-                json_file=json_file,
-                method=slice_order
+        if n_discard > 0:
+            trimmed_bold = work_dir / f"{subject}_{session}_bold_trimmed.nii.gz"
+            bold_for_processing, n_discarded = discard_initial_volumes(
+                bold_file, trimmed_bold, n_discard
             )
-            slice_order = detected_order
-            if detected_custom is not None:
-                custom_order = detected_custom
-                print(f"  Detected custom slice order: {custom_order}")
+            results['n_volumes_discarded'] = n_discarded
 
-        bold_stc = work_dir / f"{subject}_{session}_bold_stc.nii.gz"
-        run_slice_timing_correction(
-            input_file=bold_for_processing,
-            output_file=bold_stc,
-            tr=tr,
-            slice_order=slice_order,
-            custom_order=custom_order,
-            reference_slice=slice_timing_config.get('reference_slice', 'middle')
-        )
-
-        # Use slice-time corrected data for motion correction
-        bold_for_processing = bold_stc
-        results['slice_timing_corrected'] = True
-        results['slice_order'] = slice_order if custom_order is None else 'custom'
-        print(f"  ✓ Using slice-time corrected data for motion correction")
-
-    else:
-        print("\n" + "="*60)
-        print("STEP 2.5: Slice Timing Correction (Skipped)")
-        print("="*60)
-        print("  Slice timing correction disabled in config")
-        results['slice_timing_corrected'] = False
+            # Verify enough volumes remain after trimming
+            remaining = nib.load(bold_for_processing).shape[3]
+            if remaining < 2:
+                raise ValueError(
+                    f"Only {remaining} volume(s) remain after discarding {n_discarded} — "
+                    f"need at least 2 for timeseries processing"
+                )
+        else:
+            print("No volumes to discard")
+            bold_for_processing = bold_file
+            results['n_volumes_discarded'] = 0
 
     # =========================================================================
-    # STEP 3: Brain Extraction (BEFORE motion correction)
+    # STEPS 2.5-5: Pathway fork — Multi-Echo vs Single-Echo
     # =========================================================================
-    print("\n" + "="*60)
-    print("STEP 3: Brain Extraction")
-    print("="*60)
 
-    # Extract middle volume for mask creation (more efficient than mean)
-    print("\nExtracting reference volume for skull stripping...")
-    img = nib.load(bold_for_processing)
-    data = img.get_fdata()
-    mid_vol = data.shape[3] // 2
-    ref_data = data[..., mid_vol]
-    ref_volume = work_dir / f"{subject}_{session}_bold_ref.nii.gz"
-    nib.save(nib.Nifti1Image(ref_data, img.affine, img.header), ref_volume)
-    print(f"  Extracted volume {mid_vol} of {data.shape[3]}")
-
-    # Skull strip reference volume with optimized adaptive approach
-    print("\nRunning optimized skull stripping...")
-    print("  Strategy: N4 bias correction + intensity normalization + adaptive per-slice BET with -R flag")
-
-    brain_ref = work_dir / f"{subject}_{session}_bold_brain_ref.nii.gz"
     brain_mask = derivatives_dir / f"{subject}_{session}_desc-brain_mask.nii.gz"
+    skull_strip_info = {}
+    ref_norm = None  # Used for QC in SE path
 
-    # Get adaptive skull stripping parameters from config (with validated defaults)
-    skull_strip_params = config.get('functional', {}).get('skull_strip_adaptive', {})
-    target_ratio = skull_strip_params.get('target_ratio', 0.15)
-    frac_range = tuple(skull_strip_params.get('frac_range', [0.30, 0.90]))
-    frac_step = skull_strip_params.get('frac_step', 0.05)
-    use_R_flag = skull_strip_params.get('use_R_flag', True)
-    invert_intensity = skull_strip_params.get('invert_intensity', False)
-
-    skull_strip_work_dir = work_dir / 'skull_strip'
-    skull_strip_work_dir.mkdir(exist_ok=True)
-
-    # Run preprocessing steps (N4 + normalization) before adaptive BET
-    print("  Running N4 bias correction...")
-    ref_n4 = skull_strip_work_dir / f"{subject}_{session}_bold_ref_n4.nii.gz"
-    subprocess.run([
-        'N4BiasFieldCorrection',
-        '-i', str(ref_volume),
-        '-o', str(ref_n4)
-    ], check=True, capture_output=True)
-
-    print("  Running intensity normalization...")
-    img_n4 = nib.load(ref_n4)
-    data_n4 = img_n4.get_fdata()
-    p2, p98 = np.percentile(data_n4[data_n4 > 0], [2, 98])
-    data_norm = np.clip(data_n4, p2, p98)
-    data_norm = (data_norm - p2) / (p98 - p2) * 1000
-    ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
-    nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
-
-    print("  Running skull stripping (auto-selects method based on slice count)...")
-    brain_ref, brain_mask, skull_strip_info = skull_strip(
-        input_file=ref_norm,
-        output_file=brain_ref,
-        mask_file=brain_mask,
-        work_dir=skull_strip_work_dir,
-        method='auto',  # Will select 'adaptive' for <10 slices
-        target_ratio=target_ratio,
-        frac_range=frac_range,
-        frac_step=frac_step,
-        invert_intensity=invert_intensity,
-    )
-
-    print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
-    print(f"  Mask created: {skull_strip_info.get('total_voxels', 0):,} voxels")
-    print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
-    if 'mean_frac' in skull_strip_info:
-        print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
-
-    # Apply mask to full 4D timeseries (each TR separately)
-    print("\nApplying mask to 4D timeseries...")
-    bold_masked = work_dir / f"{subject}_{session}_bold_brain.nii.gz"
-    apply_mask_to_timeseries(bold_for_processing, brain_mask, bold_masked)
-    print(f"  Masked timeseries: {bold_masked}")
-
-    # =========================================================================
-    # STEP 4: Motion Correction (on skull-stripped data)
-    # =========================================================================
-    print("\n" + "="*60)
-    print("STEP 4: Motion Correction")
-    print("="*60)
-
-    motion_dir = work_dir / 'motion_correction'
-    motion_results = run_motion_correction(
-        bold_masked,  # Run on skull-stripped data
-        motion_dir,
-        reference=motion_ref,
-        method=motion_method
-    )
-
-    bold_mcf = motion_results['motion_corrected']
-    motion_params = motion_results['motion_params']
-
-    # =========================================================================
-    # STEP 5: ICA Denoising (BEFORE smoothing - matches old pipeline)
-    # =========================================================================
-    ica_config = func_config.get('denoising', {}).get('ica', {})
-    ica_enabled = ica_config.get('enabled', False)
-
-    if ica_enabled:
+    if is_multiecho:
+        # =================================================================
+        # MULTI-ECHO PATH: Steps 3-5
+        # =================================================================
         print("\n" + "="*60)
-        print("STEP 5: ICA Denoising")
+        print("STEPS 3-4: Multi-Echo Motion Correction + Brain Extraction")
         print("="*60)
 
-        # Run MELODIC ICA on motion-corrected data (before smoothing)
-        melodic_dir = work_dir / 'melodic'
-        melodic_outputs = run_melodic_ica(
-            input_file=bold_mcf,
-            output_dir=melodic_dir,
-            brain_mask=brain_mask,
-            tr=tr,
-            n_components=ica_config.get('n_components', 30)
+        skull_strip_params = config.get('functional', {}).get('skull_strip_adaptive', {})
+        me_work_dir = work_dir / 'multiecho'
+
+        me_results = run_multiecho_motion_correction(
+            echo_files=echo_files_for_processing,
+            work_dir=me_work_dir,
+            brain_mask_out=brain_mask,
+            skull_strip_config=skull_strip_params,
         )
 
-        # Classify components
-        # CSF mask from anat preprocessing is in T2w space — resample to BOLD space
-        csf_mask = None
-        csf_mask_path = output_dir / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_label-CSF_probseg.nii.gz'
-        if csf_mask_path.exists():
-            from nibabel.processing import resample_from_to
-            bold_ref_img = nib.load(brain_mask)
-            csf_img = nib.load(csf_mask_path)
-            if csf_img.shape[:3] != bold_ref_img.shape[:3]:
-                print(f"  Resampling CSF mask from {csf_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
-                csf_resampled = resample_from_to(csf_img, bold_ref_img, order=1)
-                csf_mask_bold = work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz'
-                nib.save(csf_resampled, csf_mask_bold)
-                csf_mask = csf_mask_bold
-            else:
-                csf_mask = csf_mask_path
+        me_corrected_echoes = me_results['corrected_echoes']
+        motion_params = me_results['motion_params']
+        brain_ref = me_results['brain_ref']
+        skull_strip_info = me_results['skull_strip_info']
 
-        classification = classify_ica_components(
-            melodic_dir=melodic_dir,
-            motion_params_file=motion_params,
-            brain_mask_file=brain_mask,
-            tr=tr,
-            csf_mask_file=csf_mask,
-            motion_threshold=ica_config.get('motion_threshold', 0.40),
-            edge_threshold=ica_config.get('edge_threshold', 0.80),
-            csf_threshold=ica_config.get('csf_threshold', 0.70),
-            freq_threshold=ica_config.get('freq_threshold', 0.60),
-            classification_mode=ica_config.get('classification_mode', 'score')
+        # Apply brain mask to all corrected echoes
+        print("\nApplying brain mask to motion-corrected echoes...")
+        me_masked_echoes = []
+        for i, echo_mcf in enumerate(me_corrected_echoes):
+            masked_out = me_work_dir / f'echo{i}_mcf_masked.nii.gz'
+            apply_mask_to_timeseries(echo_mcf, brain_mask, masked_out)
+            me_masked_echoes.append(masked_out)
+
+        # Step 5: TEDANA multi-echo ICA denoising
+        print("\n" + "="*60)
+        print("STEP 5: TEDANA Multi-Echo ICA Denoising")
+        print("="*60)
+
+        tedana_dir = work_dir / 'tedana'
+        tedana_results = run_tedana(
+            echo_files=me_masked_echoes,
+            echo_times_ms=echo_times,
+            output_dir=tedana_dir,
+            mask_file=brain_mask,
+            tedpca=tedana_config.get('tedpca', 0.95),
+            tree=tedana_config.get('tree', 'kundu'),
         )
 
-        # Remove noise components from motion-corrected data
-        bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
-        remove_noise_components(
-            input_file=bold_mcf,  # Use motion-corrected data (before smoothing)
-            output_file=bold_denoised,
-            melodic_dir=melodic_dir,
-            noise_components=classification['summary']['noise_components']
-        )
-
-        # Generate ICA QC
-        ica_qc_report = generate_ica_denoising_qc(
-            subject=subject,
-            session=session,
-            classification_results=classification,
-            melodic_dir=melodic_dir,
-            output_dir=qc_dir
-        )
-
-        results['ica_denoising'] = {
-            'denoised_bold': bold_denoised,
-            'melodic_dir': melodic_dir,
-            'classification': classification,
-            'qc_report': ica_qc_report
+        results['tedana'] = tedana_results
+        results['multiecho'] = {
+            'n_echoes': n_echoes,
+            'echo_times_ms': echo_times,
+            'corrected_echoes': me_corrected_echoes,
         }
 
-        # Use denoised data for smoothing
-        bold_for_smoothing = bold_denoised
+        # Use TEDANA denoised output for downstream steps
+        if 'denoised' in tedana_results:
+            bold_for_smoothing = tedana_results['denoised']
+            print(f"\n  Using TEDANA denoised output for smoothing")
+        elif 'optcom' in tedana_results:
+            bold_for_smoothing = tedana_results['optcom']
+            print(f"\n  TEDANA denoised not found, using optimally combined")
+        else:
+            raise RuntimeError("TEDANA produced no output files")
+
+        # For motion-corrected reference (used in registration later)
+        bold_mcf = bold_for_smoothing
+
+        # ICA/classification not used in ME path
+        ica_enabled = False
+        classification = None
 
     else:
-        print("\n" + "="*60)
-        print("STEP 5: ICA Denoising (Skipped)")
-        print("="*60)
-        print("ICA denoising disabled in config")
+        # =================================================================
+        # SINGLE-ECHO PATH: Steps 2.5-5 (unchanged)
+        # =================================================================
 
-        # Use motion-corrected data for smoothing
-        bold_for_smoothing = bold_mcf
+        # Step 2.5: Slice Timing Correction
+        slice_timing_config = func_config.get('slice_timing', {})
+        stc_enabled = slice_timing_config.get('enabled', False)
+
+        if stc_enabled:
+            print("\n" + "="*60)
+            print("STEP 2.5: Slice Timing Correction")
+            print("="*60)
+            print("  IMPORTANT: Correcting for slice acquisition time differences")
+            print("  This is done BEFORE motion correction to avoid interpolation artifacts")
+
+            json_file_stc = primary_bold.with_suffix('.json')
+            slice_order = slice_timing_config.get('order', 'interleaved')
+            custom_order = slice_timing_config.get('custom_order', None)
+
+            if json_file_stc.exists():
+                print(f"  Checking for slice timing in: {json_file_stc.name}")
+                detected_order, detected_custom = detect_slice_order(
+                    json_file=json_file_stc,
+                    method=slice_order
+                )
+                slice_order = detected_order
+                if detected_custom is not None:
+                    custom_order = detected_custom
+                    print(f"  Detected custom slice order: {custom_order}")
+
+            bold_stc = work_dir / f"{subject}_{session}_bold_stc.nii.gz"
+            run_slice_timing_correction(
+                input_file=bold_for_processing,
+                output_file=bold_stc,
+                tr=tr,
+                slice_order=slice_order,
+                custom_order=custom_order,
+                reference_slice=slice_timing_config.get('reference_slice', 'middle')
+            )
+
+            bold_for_processing = bold_stc
+            results['slice_timing_corrected'] = True
+            results['slice_order'] = slice_order if custom_order is None else 'custom'
+
+        else:
+            print("\n" + "="*60)
+            print("STEP 2.5: Slice Timing Correction (Skipped)")
+            print("="*60)
+            print("  Slice timing correction disabled in config")
+            results['slice_timing_corrected'] = False
+
+        # Step 3: Brain Extraction
+        print("\n" + "="*60)
+        print("STEP 3: Brain Extraction")
+        print("="*60)
+
+        print("\nExtracting reference volume for skull stripping...")
+        img = nib.load(bold_for_processing)
+        data = img.get_fdata()
+        mid_vol = data.shape[3] // 2
+        ref_data = data[..., mid_vol]
+        ref_volume = work_dir / f"{subject}_{session}_bold_ref.nii.gz"
+        nib.save(nib.Nifti1Image(ref_data, img.affine, img.header), ref_volume)
+        print(f"  Extracted volume {mid_vol} of {data.shape[3]}")
+
+        print("\nRunning optimized skull stripping...")
+        print("  Strategy: N4 bias correction + intensity normalization + adaptive per-slice BET with -R flag")
+
+        brain_ref = work_dir / f"{subject}_{session}_bold_brain_ref.nii.gz"
+
+        skull_strip_params = config.get('functional', {}).get('skull_strip_adaptive', {})
+        target_ratio = skull_strip_params.get('target_ratio', 0.15)
+        frac_range = tuple(skull_strip_params.get('frac_range', [0.30, 0.90]))
+        frac_step = skull_strip_params.get('frac_step', 0.05)
+        use_R_flag = skull_strip_params.get('use_R_flag', True)
+        invert_intensity = skull_strip_params.get('invert_intensity', False)
+
+        skull_strip_work_dir = work_dir / 'skull_strip'
+        skull_strip_work_dir.mkdir(exist_ok=True)
+
+        print("  Running N4 bias correction...")
+        ref_n4 = skull_strip_work_dir / f"{subject}_{session}_bold_ref_n4.nii.gz"
+        subprocess.run([
+            'N4BiasFieldCorrection',
+            '-i', str(ref_volume),
+            '-o', str(ref_n4)
+        ], check=True, capture_output=True)
+
+        print("  Running intensity normalization...")
+        img_n4 = nib.load(ref_n4)
+        data_n4 = img_n4.get_fdata()
+        p2, p98 = np.percentile(data_n4[data_n4 > 0], [2, 98])
+        data_norm = np.clip(data_n4, p2, p98)
+        data_norm = (data_norm - p2) / (p98 - p2) * 1000
+        ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
+        nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
+
+        print("  Running skull stripping (auto-selects method based on slice count)...")
+        brain_ref, brain_mask, skull_strip_info = skull_strip(
+            input_file=ref_norm,
+            output_file=brain_ref,
+            mask_file=brain_mask,
+            work_dir=skull_strip_work_dir,
+            method='auto',
+            target_ratio=target_ratio,
+            frac_range=frac_range,
+            frac_step=frac_step,
+            invert_intensity=invert_intensity,
+        )
+
+        print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
+        print(f"  Mask created: {skull_strip_info.get('total_voxels', 0):,} voxels")
+        print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
+        if 'mean_frac' in skull_strip_info:
+            print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
+
+        print("\nApplying mask to 4D timeseries...")
+        bold_masked = work_dir / f"{subject}_{session}_bold_brain.nii.gz"
+        apply_mask_to_timeseries(bold_for_processing, brain_mask, bold_masked)
+        print(f"  Masked timeseries: {bold_masked}")
+
+        # Step 4: Motion Correction
+        print("\n" + "="*60)
+        print("STEP 4: Motion Correction")
+        print("="*60)
+
+        motion_dir = work_dir / 'motion_correction'
+        motion_results = run_motion_correction(
+            bold_masked,
+            motion_dir,
+            reference=motion_ref,
+            method=motion_method
+        )
+
+        bold_mcf = motion_results['motion_corrected']
+        motion_params = motion_results['motion_params']
+
+        # Step 5: ICA Denoising
+        ica_config = func_config.get('denoising', {}).get('ica', {})
+        ica_enabled = ica_config.get('enabled', False)
+
+        if ica_enabled:
+            print("\n" + "="*60)
+            print("STEP 5: ICA Denoising")
+            print("="*60)
+
+            melodic_dir = work_dir / 'melodic'
+            melodic_outputs = run_melodic_ica(
+                input_file=bold_mcf,
+                output_dir=melodic_dir,
+                brain_mask=brain_mask,
+                tr=tr,
+                n_components=ica_config.get('n_components', 30)
+            )
+
+            csf_mask = None
+            csf_mask_path = output_dir / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_label-CSF_probseg.nii.gz'
+            if csf_mask_path.exists():
+                from nibabel.processing import resample_from_to
+                bold_ref_img = nib.load(brain_mask)
+                csf_img = nib.load(csf_mask_path)
+                if csf_img.shape[:3] != bold_ref_img.shape[:3]:
+                    print(f"  Resampling CSF mask from {csf_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
+                    csf_resampled = resample_from_to(csf_img, bold_ref_img, order=1)
+                    csf_mask_bold = work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz'
+                    nib.save(csf_resampled, csf_mask_bold)
+                    csf_mask = csf_mask_bold
+                else:
+                    csf_mask = csf_mask_path
+
+            classification = classify_ica_components(
+                melodic_dir=melodic_dir,
+                motion_params_file=motion_params,
+                brain_mask_file=brain_mask,
+                tr=tr,
+                csf_mask_file=csf_mask,
+                motion_threshold=ica_config.get('motion_threshold', 0.40),
+                edge_threshold=ica_config.get('edge_threshold', 0.80),
+                csf_threshold=ica_config.get('csf_threshold', 0.70),
+                freq_threshold=ica_config.get('freq_threshold', 0.60),
+                classification_mode=ica_config.get('classification_mode', 'score')
+            )
+
+            bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
+            remove_noise_components(
+                input_file=bold_mcf,
+                output_file=bold_denoised,
+                melodic_dir=melodic_dir,
+                noise_components=classification['summary']['noise_components']
+            )
+
+            ica_qc_report = generate_ica_denoising_qc(
+                subject=subject,
+                session=session,
+                classification_results=classification,
+                melodic_dir=melodic_dir,
+                output_dir=qc_dir
+            )
+
+            results['ica_denoising'] = {
+                'denoised_bold': bold_denoised,
+                'melodic_dir': melodic_dir,
+                'classification': classification,
+                'qc_report': ica_qc_report
+            }
+
+            bold_for_smoothing = bold_denoised
+
+        else:
+            print("\n" + "="*60)
+            print("STEP 5: ICA Denoising (Skipped)")
+            print("="*60)
+            print("ICA denoising disabled in config")
+            classification = None
+
+            bold_for_smoothing = bold_mcf
 
     # =========================================================================
     # STEP 6: Spatial Smoothing (AFTER ICA - matches old pipeline)
@@ -1456,19 +1907,28 @@ def run_functional_preprocessing(
     })
 
     # Save processing metadata
+    if is_multiecho:
+        input_files_str = [str(f) for f in (echo_files or bold_file)]
+    else:
+        input_files_str = str(bold_file)
+
+    ica_config_local = func_config.get('denoising', {}).get('ica', {}) if not is_multiecho else {}
+
     metadata = {
         'subject': subject,
         'session': session,
-        'input_file': str(bold_file),
+        'input_file': input_files_str,
+        'multi_echo': is_multiecho,
+        'n_echoes': n_echoes,
+        'echo_times_ms': echo_times if is_multiecho else None,
         'tr': tr,
         'n_volumes_discarded': results['n_volumes_discarded'],
         'motion_correction': {
-            'method': motion_method,
+            'method': 'mcflirt_multiecho' if is_multiecho else motion_method,
             'reference': motion_ref
         },
         'brain_extraction': {
-            'method': 'bet',
-            'frac': bet_frac
+            'method': skull_strip_info.get('method', 'auto'),
         },
         'smoothing': {
             'fwhm_mm': smoothing_fwhm
@@ -1477,12 +1937,19 @@ def run_functional_preprocessing(
             'highpass_hz': highpass_freq,
             'lowpass_hz': lowpass_freq
         },
-        'ica_denoising': {
-            'enabled': ica_enabled,
-            'n_components': ica_config.get('n_components', 30) if ica_enabled else None,
-            'classification_mode': ica_config.get('classification_mode', 'score') if ica_enabled else None,
-            'n_signal_components': classification['summary']['n_signal'] if ica_enabled else None,
-            'n_noise_components': classification['summary']['n_noise'] if ica_enabled else None
+        'denoising': {
+            'method': 'tedana' if is_multiecho else ('ica' if ica_enabled else 'none'),
+            'tedana': {
+                'tedpca': str(tedana_config.get('tedpca', 'aic')),
+                'tree': tedana_config.get('tree', 'kundu'),
+            } if is_multiecho else None,
+            'ica': {
+                'enabled': ica_enabled,
+                'n_components': ica_config_local.get('n_components', 30) if ica_enabled else None,
+                'classification_mode': ica_config_local.get('classification_mode', 'score') if ica_enabled else None,
+                'n_signal_components': classification['summary']['n_signal'] if (ica_enabled and classification) else None,
+                'n_noise_components': classification['summary']['n_noise'] if (ica_enabled and classification) else None
+            } if not is_multiecho else None,
         },
         'acompcor': {
             'enabled': acompcor_enabled,
@@ -1511,6 +1978,8 @@ def run_functional_preprocessing(
 
     # Motion QC
     motion_qc_threshold = func_config.get('motion_qc', {}).get('fd_threshold', 0.05)
+    # For ME path, ref_norm may be None — use brain_ref as fallback for original_file
+    qc_original_file = ref_norm if ref_norm is not None else brain_ref
     motion_qc_report = generate_motion_qc_report(
         subject=subject,
         session=session,
@@ -1519,7 +1988,7 @@ def run_functional_preprocessing(
         mask_file=brain_mask,
         output_dir=qc_dir,
         threshold_fd=motion_qc_threshold,
-        original_file=ref_norm,
+        original_file=qc_original_file,
         brain_file=brain_ref,
         skull_strip_mask_file=brain_mask,
         skull_strip_info=skull_strip_info,
@@ -1660,6 +2129,10 @@ def run_functional_preprocessing(
 
     print("\n" + "="*80)
     print("FUNCTIONAL PREPROCESSING COMPLETE")
+    if is_multiecho:
+        print(f"  Mode: MULTI-ECHO ({n_echoes} echoes, TEDANA denoising)")
+    else:
+        print(f"  Mode: SINGLE-ECHO")
     print("="*80)
     print(f"Preprocessed BOLD: {final_bold}")
     print(f"Brain mask: {brain_mask}")
@@ -1673,11 +2146,21 @@ def run_functional_preprocessing(
     print(f"\nQC Reports:")
     print(f"  Motion QC: {motion_qc_report}")
     print(f"  Confounds QC: {confounds_qc_report}")
-    if ica_enabled:
+
+    if is_multiecho and 'tedana' in results:
+        print(f"\nTEDANA Multi-Echo Denoising:")
+        if 'denoised' in results['tedana']:
+            print(f"  Denoised: {results['tedana']['denoised']}")
+        if 'optcom' in results['tedana']:
+            print(f"  Optimally combined: {results['tedana']['optcom']}")
+        if 'report' in results['tedana']:
+            print(f"  Report: {results['tedana']['report']}")
+    elif ica_enabled and 'ica_denoising' in results:
         print(f"  ICA Denoising QC: {results['ica_denoising']['qc_report']}")
         print(f"\nICA Denoising:")
         print(f"  Signal components: {classification['summary']['n_signal']}")
         print(f"  Noise components: {classification['summary']['n_noise']}")
+
     if acompcor_enabled and 'acompcor' in results:
         print(f"  aCompCor QC: {results['acompcor']['qc_report']}")
         print(f"\naCompCor:")

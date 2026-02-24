@@ -25,30 +25,26 @@ dependencies = [
     "nipype>=1.10.0",
     "nibabel>=5.3.2",
     "pydicom>=3.0.1",
-
     # Diffusion imaging
     "dipy>=1.11.0",
-
     # Functional imaging
     "nilearn>=0.10.0,<0.11",  # For compatibility
-
     # Scientific computing
     "numpy>=1.24,<3.0",
     "scipy>=1.14",
     "pandas>=2.0",
     "scikit-learn>=1.0",
-
     # Visualization
     "matplotlib>=3.5.0",
     "seaborn>=0.12.0",
-
     # Configuration and CLI
     "pyyaml>=6.0",
     "click>=8.1.0",
-
     # Utilities
     "tqdm>=4.65.0",
     "natsort>=8.0.0",
+    "tedana>=23.0.2",
+    "bokeh>=3.3,<3.4",
 ]
 
 [project.optional-dependencies]
