@@ -623,12 +623,13 @@ def run_dwi_preprocessing(
     eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy'
 
     try:
-        subprocess.run([eddy_cmd, '--version'],
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE,
-                      check=True)
-        print(f"Using {eddy_cmd} for eddy correction")
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        # eddy_cuda doesn't support --version, so just check the binary exists
+        import shutil
+        if shutil.which(eddy_cmd) is not None:
+            print(f"Using {eddy_cmd} for eddy correction")
+        else:
+            raise FileNotFoundError(f"{eddy_cmd} not found in PATH")
+    except (FileNotFoundError,):
         print(f"Warning: {eddy_cmd} not available, falling back to eddy")
         eddy_cmd = 'eddy'
 

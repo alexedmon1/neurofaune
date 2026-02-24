@@ -76,7 +76,8 @@ def generate_msme_qc_report(
         )
         figures.append(nnls_fig)
 
-    # Slice montages
+    # Slice montages — stored separately for labeled HTML sections
+    montage_figures = {}
     for name, data, cmap, vmin, vmax in [
         ('MWF', mwf, 'hot', 0, 0.3),
         ('IWF', iwf, 'viridis', 0, 1),
@@ -84,6 +85,7 @@ def generate_msme_qc_report(
         ('T2', t2, 'plasma', 0, 100)
     ]:
         montage = _plot_montage(data, name, subject, session, figures_dir, cmap, vmin, vmax)
+        montage_figures[name] = montage
         figures.append(montage)
 
     # Generate skull strip QC section if original file provided
@@ -117,7 +119,11 @@ def generate_msme_qc_report(
         figures.extend(ss_figures)
 
     # Create HTML report
-    html_report = _create_html_report(subject, session, metrics, figures, output_dir, skull_strip_html=skull_strip_html)
+    html_report = _create_html_report(
+        subject, session, metrics, figures, output_dir,
+        skull_strip_html=skull_strip_html,
+        montage_figures=montage_figures,
+    )
 
     # Save metrics
     metrics_file = output_dir / f'{subject}_{session}_msme_qc_metrics.json'
@@ -173,9 +179,9 @@ def _plot_nnls_spectra(sample_data, subject, session, output_dir):
     n_samples = len(sample_data['spectra'])
     t2_dist = sample_data['t2_dist']
 
-    # Define compartment boundaries
+    # Define compartment boundaries (matching calculate_mwf_nnls defaults)
     mw_cutoff = np.where(t2_dist < 25)[0][-1] + 1
-    iw_cutoff = np.where(t2_dist < 40)[0][-1] + 1
+    iw_cutoff = np.where(t2_dist < 200)[0][-1] + 1
 
     fig, axes = plt.subplots(2, 5, figsize=(20, 8))
     axes = axes.flatten()
@@ -250,21 +256,32 @@ def _plot_histograms(mwf, iwf, csf, t2, mask, subject, session, output_dir):
 
 
 def _plot_montage(data, name, subject, session, output_dir, cmap, vmin, vmax):
-    """Create slice montage."""
+    """Create slice montage showing all slices."""
     z_dim = data.shape[2]
-    slice_indices = np.linspace(0, z_dim - 1, 9, dtype=int)
 
-    fig, axes = plt.subplots(3, 3, figsize=(12, 12))
-    axes = axes.flatten()
+    # Dynamic grid: show all slices
+    ncols = min(z_dim, 6)
+    nrows = int(np.ceil(z_dim / ncols))
 
-    for idx, slice_idx in enumerate(slice_indices):
-        im = axes[idx].imshow(np.rot90(data[:, :, slice_idx]), cmap=cmap, vmin=vmin, vmax=vmax)
-        axes[idx].set_title(f'Slice {slice_idx}')
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows))
+    if nrows == 1 and ncols == 1:
+        axes = np.array([axes])
+    axes = np.atleast_2d(axes).flatten()
+
+    im = None
+    for idx in range(z_dim):
+        im = axes[idx].imshow(np.rot90(data[:, :, idx]), cmap=cmap, vmin=vmin, vmax=vmax)
+        axes[idx].set_title(f'Slice {idx}', fontsize=10)
         axes[idx].axis('off')
 
-    fig.suptitle(f'{name}: {subject} {session}', fontsize=14)
+    # Hide unused subplots
+    for idx in range(z_dim, len(axes)):
+        axes[idx].axis('off')
+
+    fig.suptitle(f'{name}: {subject} {session}', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.colorbar(im, ax=axes, fraction=0.046, pad=0.04)
+    if im is not None:
+        plt.colorbar(im, ax=list(axes), fraction=0.046, pad=0.04)
 
     output_file = output_dir / f'{subject}_{session}_{name}_montage.png'
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
@@ -273,56 +290,88 @@ def _plot_montage(data, name, subject, session, output_dir, cmap, vmin, vmax):
     return output_file
 
 
-def _create_html_report(subject, session, metrics, figures, output_dir, skull_strip_html=''):
-    """Create HTML QC report."""
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>MSME QC: {subject} {session}</title>
-        <style>
-            body {{ font-family: Arial; margin: 20px; background: #f5f5f5; }}
-            .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 5px; }}
-            .section {{ background: white; margin: 20px 0; padding: 20px; border-radius: 5px; }}
-            .metric {{ display: inline-block; margin: 10px 20px 10px 0; }}
-            .metric-label {{ font-weight: bold; color: #34495e; }}
-            .metric-value {{ color: #2c3e50; font-size: 1.1em; }}
-            .warning {{ color: #e74c3c; font-weight: bold; }}
-            .good {{ color: #27ae60; font-weight: bold; }}
-            table {{ width: 100%; border-collapse: collapse; }}
-            th, td {{ padding: 12px; border-bottom: 1px solid #ddd; }}
-            th {{ background: #34495e; color: white; }}
-            img {{ max-width: 100%; margin: 10px 0; border: 1px solid #ddd; }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h1>MSME T2 Mapping QC Report</h1>
-            <p>Subject: {subject} | Session: {session}</p>
-        </div>
+def _create_html_report(subject, session, metrics, figures, output_dir,
+                        skull_strip_html='', montage_figures=None):
+    """Create HTML QC report with labeled mosaic sections."""
+    if montage_figures is None:
+        montage_figures = {}
 
-        {skull_strip_html}
+    def _img_tag(fig_path):
+        """Return an <img> tag with path relative to output_dir."""
+        if fig_path and Path(fig_path).exists():
+            try:
+                rel = Path(fig_path).relative_to(output_dir)
+                return f'<img src="{rel}">\n'
+            except ValueError:
+                return f'<img src="{fig_path}">\n'
+        return ''
 
-        <div class="section">
-            <h2>Summary Metrics</h2>
-            <table>
-                <tr><th>Metric</th><th>Mean</th><th>Std</th><th>Range</th></tr>
-                <tr><td>MWF</td><td>{metrics['mwf_mean']:.3f}</td><td>{metrics['mwf_std']:.3f}</td><td>[{metrics['mwf_min']:.3f}, {metrics['mwf_max']:.3f}]</td></tr>
-                <tr><td>IWF</td><td>{metrics['iwf_mean']:.3f}</td><td>{metrics['iwf_std']:.3f}</td><td>[{metrics['iwf_min']:.3f}, {metrics['iwf_max']:.3f}]</td></tr>
-                <tr><td>CSF</td><td>{metrics['csf_mean']:.3f}</td><td>{metrics['csf_std']:.3f}</td><td>[{metrics['csf_min']:.3f}, {metrics['csf_max']:.3f}]</td></tr>
-                <tr><td>T2 (ms)</td><td>{metrics['t2_mean']:.1f}</td><td>{metrics['t2_std']:.1f}</td><td>[{metrics['t2_min']:.1f}, {metrics['t2_max']:.1f}]</td></tr>
-            </table>
-        </div>
-        <div class="section">
-            <h2>Quality Control Figures</h2>
-    """
+    # Collect non-montage figures (histograms, curves, spectra)
+    montage_paths = set(str(p) for p in montage_figures.values())
+    other_figures = [f for f in figures if str(f) not in montage_paths]
 
-    for fig in figures:
-        if fig.exists():
-            rel_path = fig.relative_to(output_dir.parent)
-            html_content += f'<img src="../{rel_path.parent.name}/{rel_path.name}">\n'
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>MSME QC: {subject} {session}</title>
+    <style>
+        body {{ font-family: Arial; margin: 20px; background: #f5f5f5; }}
+        .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 5px; }}
+        .section {{ background: white; margin: 20px 0; padding: 20px; border-radius: 5px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th, td {{ padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }}
+        th {{ background: #34495e; color: white; }}
+        img {{ max-width: 100%; margin: 10px 0; border: 1px solid #ddd; }}
+        h2 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 8px; }}
+        h3 {{ color: #34495e; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MSME T2 Mapping QC Report</h1>
+        <p>Subject: {subject} | Session: {session}</p>
+    </div>
 
-    html_content += "</div></body></html>"
+    {skull_strip_html}
+
+    <div class="section">
+        <h2>Summary Metrics</h2>
+        <table>
+            <tr><th>Metric</th><th>Mean</th><th>Std</th><th>Median</th><th>Range</th></tr>
+            <tr><td>MWF</td><td>{metrics['mwf_mean']:.3f}</td><td>{metrics['mwf_std']:.3f}</td><td>{metrics['mwf_median']:.3f}</td><td>[{metrics['mwf_min']:.3f}, {metrics['mwf_max']:.3f}]</td></tr>
+            <tr><td>IWF</td><td>{metrics['iwf_mean']:.3f}</td><td>{metrics['iwf_std']:.3f}</td><td>{metrics['iwf_median']:.3f}</td><td>[{metrics['iwf_min']:.3f}, {metrics['iwf_max']:.3f}]</td></tr>
+            <tr><td>CSF</td><td>{metrics['csf_mean']:.3f}</td><td>{metrics['csf_std']:.3f}</td><td>{metrics['csf_median']:.3f}</td><td>[{metrics['csf_min']:.3f}, {metrics['csf_max']:.3f}]</td></tr>
+            <tr><td>T2 (ms)</td><td>{metrics['t2_mean']:.1f}</td><td>{metrics['t2_std']:.1f}</td><td>{metrics['t2_median']:.1f}</td><td>[{metrics['t2_min']:.1f}, {metrics['t2_max']:.1f}]</td></tr>
+        </table>
+    </div>
+"""
+
+    # Derived map mosaics — each in its own labeled section
+    map_labels = {
+        'MWF': 'Myelin Water Fraction (MWF)',
+        'IWF': 'Intra/Extra-cellular Water Fraction (IWF)',
+        'CSF': 'CSF Fraction',
+        'T2': 'T2 Relaxation Time (ms)',
+    }
+    for key in ['MWF', 'IWF', 'CSF', 'T2']:
+        fig_path = montage_figures.get(key)
+        if fig_path:
+            html_content += f"""
+    <div class="section">
+        <h2>{map_labels[key]}</h2>
+        {_img_tag(fig_path)}
+    </div>
+"""
+
+    # Other figures (histograms, T2 curves, NNLS spectra)
+    if other_figures:
+        html_content += '    <div class="section">\n        <h2>Distributions and Spectra</h2>\n'
+        for fig in other_figures:
+            html_content += f'        {_img_tag(fig)}'
+        html_content += '    </div>\n'
+
+    html_content += "</body>\n</html>\n"
 
     report_path = output_dir / f'{subject}_{session}_msme_qc.html'
     with open(report_path, 'w') as f:

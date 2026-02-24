@@ -413,9 +413,9 @@ msme:
   t2_fitting:
     n_components: 120              # Number of T2 components in NNLS spectrum
     t2_range: [10, 2000]           # T2 distribution range (ms) [min, max]
-    lambda_reg: 0.5                # Tikhonov regularization parameter
+    lambda_reg: null               # null = auto via chi-square criterion; or fixed float
     myelin_water_cutoff: 25        # T2 cutoff for myelin water (ms)
-    intra_extra_cutoff: 40         # T2 cutoff for intra/extra-cellular water (ms)
+    intra_extra_cutoff: 200        # T2 cutoff for IEW/CSF boundary (ms)
 
   # Geometry (from Bruker method file, set during study initialization)
   geometry:

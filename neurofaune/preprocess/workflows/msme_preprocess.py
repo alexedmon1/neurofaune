@@ -456,9 +456,9 @@ def run_msme_preprocessing(
 
     t2_n_components = get_config_value(config, 'msme.t2_fitting.n_components', default=120)
     t2_range = get_config_value(config, 'msme.t2_fitting.t2_range', default=[10, 2000])
-    t2_lambda_reg = get_config_value(config, 'msme.t2_fitting.lambda_reg', default=0.5)
+    t2_lambda_reg = get_config_value(config, 'msme.t2_fitting.lambda_reg', default=None)
     t2_mw_cutoff = get_config_value(config, 'msme.t2_fitting.myelin_water_cutoff', default=25.0)
-    t2_ie_cutoff = get_config_value(config, 'msme.t2_fitting.intra_extra_cutoff', default=40.0)
+    t2_ie_cutoff = get_config_value(config, 'msme.t2_fitting.intra_extra_cutoff', default=200.0)
 
     mwf_map, iwf_map, csf_map, t2_map, sample_data = calculate_mwf_nnls(
         data_reordered,
@@ -837,18 +837,70 @@ def _skull_strip_msme_atropos(
     nib.save(nib.Nifti1Image(brain_data, affine), output_file)
 
 
+def _estimate_nnls_lambda(A, H, signals, n_echoes, chi2_factor=1.02,
+                          n_bisect=30, lam_range=(1e-6, 1e6)):
+    """Estimate optimal regularization lambda via chi-square criterion.
+
+    Uses noise-based chi-square target following Whittall & MacKay (1989):
+    noise is estimated from the last few echoes (where T2 signal has decayed),
+    and lambda is chosen so chi-square ≈ n_echoes * sigma² * chi2_factor.
+    This prevents overfitting to noise while preserving real spectral features.
+
+    Returns median optimal lambda across the subset.
+    """
+    n_t2 = A.shape[1]
+    b_zeros = np.zeros(n_t2 - 2)
+
+    # Estimate noise from last 4 echoes across all subset voxels
+    noise_samples = []
+    for sig in signals:
+        noise_samples.extend(sig[-4:].tolist())
+    sigma2 = float(np.var(noise_samples))
+    chi2_target = n_echoes * sigma2 * chi2_factor
+
+    optimal_lambdas = []
+    for sig in signals:
+        lo, hi = lam_range
+        best_lam = lo
+        for _ in range(n_bisect):
+            mid = np.sqrt(lo * hi)
+            A_reg = np.concatenate([A, np.sqrt(mid) * H])
+            b_reg = np.concatenate([sig, b_zeros])
+            amp, _ = nnls(A_reg, b_reg)
+            chi2 = np.sum((A @ amp - sig) ** 2)
+            if chi2 < chi2_target:
+                lo = mid
+                best_lam = mid
+            else:
+                hi = mid
+        optimal_lambdas.append(best_lam)
+
+    median_lam = float(np.median(optimal_lambdas))
+    print(f"    Noise sigma²={sigma2:.2f}, chi² target={chi2_target:.2f}")
+    print(f"    Lambda range across subset: [{min(optimal_lambdas):.4f}, {max(optimal_lambdas):.4f}]")
+    print(f"    Median lambda: {median_lam:.4f}")
+    return median_lam
+
+
 def calculate_mwf_nnls(
     data: np.ndarray,
     mask: np.ndarray,
     te_values: np.ndarray,
-    lambda_reg: float = 0.5,
+    lambda_reg: float = None,
     n_components: int = 120,
     t2_range: list = None,
     myelin_water_cutoff: float = 25.0,
-    intra_extra_cutoff: float = 40.0,
+    intra_extra_cutoff: float = 200.0,
+    chi2_factor: float = 1.02,
 ) -> tuple:
     """
-    Calculate MWF using Non-Negative Least Squares (NNLS).
+    Calculate MWF using regularized Non-Negative Least Squares (NNLS).
+
+    Uses minimum curvature (2nd-order Tikhonov) regularization following
+    Whittall & MacKay (1989) and Prasloski et al. (2012). Regularization
+    strength is determined via chi-square criterion: lambda is chosen so
+    that the fit residual increases by chi2_factor over the unregularized
+    solution, producing smooth T2 spectra with distinct peaks.
 
     Parameters
     ----------
@@ -858,8 +910,20 @@ def calculate_mwf_nnls(
         3D brain mask
     te_values : np.ndarray
         Echo times in ms
-    lambda_reg : float
-        Regularization parameter
+    lambda_reg : float or None
+        Fixed regularization weight. If None (default), lambda is estimated
+        automatically from the data using the chi-square criterion.
+    n_components : int
+        Number of T2 components in log-spaced basis (default 120)
+    t2_range : list
+        [min, max] T2 values in ms (default [10, 2000])
+    myelin_water_cutoff : float
+        T2 boundary (ms) between myelin water and IEW (default 25ms)
+    intra_extra_cutoff : float
+        T2 boundary (ms) between IEW and CSF (default 200ms)
+    chi2_factor : float
+        Chi-square inflation factor for lambda estimation (default 1.02).
+        Higher = stronger regularization = smoother spectra.
 
     Returns
     -------
@@ -867,8 +931,7 @@ def calculate_mwf_nnls(
         (mwf_map, iwf_map, csf_map, t2_map, sample_data)
         sample_data contains representative T2 curves and NNLS spectra for QC
     """
-    print("\nCalculating MWF using NNLS...")
-    print(f"  Lambda regularization: {lambda_reg}")
+    print("\nCalculating MWF using regularized NNLS (minimum curvature)...")
 
     shape_3d = data.shape[:3]
     n_echoes = data.shape[3]
@@ -897,6 +960,9 @@ def calculate_mwf_nnls(
     # Define water compartments using configurable cutoffs
     mw_cutoff = np.where(t2_dist < myelin_water_cutoff)[0][-1] + 1
     iw_cutoff = np.where(t2_dist < intra_extra_cutoff)[0][-1] + 1
+    print(f"  Compartment cutoffs: MW < {myelin_water_cutoff}ms, "
+          f"IEW {myelin_water_cutoff}-{intra_extra_cutoff}ms, "
+          f"CSF > {intra_extra_cutoff}ms")
 
     # Create design matrix A for NNLS
     # A[i, j] = exp(-TE[i] / T2[j])
@@ -904,13 +970,39 @@ def calculate_mwf_nnls(
     for i, te in enumerate(te_values):
         A[i, :] = np.exp(-te / t2_dist)
 
-    # Regularization matrix
+    # Minimum curvature regularization matrix (2nd-order Tikhonov)
+    # Penalizes: Σ (x[j+2] - 2*x[j+1] + x[j])²
+    # Whittall & MacKay (1989), Prasloski et al. (2012)
     n_t2 = len(t2_dist)
-    A_reg = np.concatenate([A, np.sqrt(lambda_reg) * np.eye(n_t2)])
+    H = np.zeros((n_t2 - 2, n_t2))
+    for j in range(n_t2 - 2):
+        H[j, j] = 1.0
+        H[j, j + 1] = -2.0
+        H[j, j + 2] = 1.0
 
-    # Get voxel indices within mask
+    # Estimate lambda via chi-square criterion if not provided
     voxel_indices = np.argwhere(mask)
     n_voxels = len(voxel_indices)
+
+    if lambda_reg is None:
+        print(f"  Estimating lambda via chi-square criterion (factor={chi2_factor})...")
+        rng = np.random.default_rng(42)
+        n_subset = min(200, n_voxels)
+        subset_idx = rng.choice(n_voxels, size=n_subset, replace=False)
+        subset_signals = []
+        for i in subset_idx:
+            x, y, z = voxel_indices[i]
+            sig = data[x, y, z, :]
+            if sig[0] > 0:
+                subset_signals.append(sig)
+        lambda_reg = _estimate_nnls_lambda(A, H, subset_signals, n_echoes,
+                                           chi2_factor=chi2_factor)
+        print(f"  Estimated lambda: {lambda_reg:.4f}")
+    else:
+        print(f"  Using fixed lambda: {lambda_reg}")
+
+    A_reg = np.concatenate([A, np.sqrt(lambda_reg) * H])
+    b_zeros = np.zeros(n_t2 - 2)
 
     print(f"  Processing {n_voxels} voxels...")
 
@@ -930,7 +1022,7 @@ def calculate_mwf_nnls(
             continue
 
         # Regularized observation vector
-        b_reg = np.concatenate([signal, np.zeros(n_t2)])
+        b_reg = np.concatenate([signal, b_zeros])
 
         # Solve NNLS
         try:
