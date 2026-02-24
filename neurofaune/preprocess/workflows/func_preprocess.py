@@ -873,6 +873,76 @@ def extract_confounds(
     return output_file
 
 
+def run_optimal_combination(
+    echo_files: List[Path],
+    echo_times_ms: List[float],
+    output_dir: Path,
+    mask_file: Path,
+    fittype: str = 'loglin',
+    combmode: str = 't2s',
+) -> Dict[str, Path]:
+    """Optimally combine multi-echo data (T2*-weighted) without ICA denoising.
+
+    Uses tedana's t2smap_workflow to estimate T2*/S0 and produce an optimally
+    combined timeseries. No component analysis or denoising is performed.
+
+    Parameters
+    ----------
+    echo_files : list of Path
+        Motion-corrected echo NIfTI paths (one per echo)
+    echo_times_ms : list of float
+        Echo times in milliseconds
+    output_dir : Path
+        Directory for outputs
+    mask_file : Path
+        Brain mask
+    fittype : str
+        Fitting method: 'loglin' (fast, default) or 'curvefit' (slower, more accurate)
+    combmode : str
+        Combination mode: 't2s' (Posse 1999, default) or 'paid' (Poser)
+
+    Returns
+    -------
+    dict
+        Paths to 'optcom', 't2star_map', 's0_map'
+    """
+    from tedana import workflows as tedana_workflows
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"  Running optimal combination (no ICA)...")
+    print(f"  Echo files: {[f.name for f in echo_files]}")
+    print(f"  Echo times (ms): {echo_times_ms}")
+    print(f"  Mask: {mask_file.name}")
+    print(f"  Fit type: {fittype}, Combination mode: {combmode}")
+
+    tedana_workflows.t2smap_workflow(
+        data=[str(f) for f in echo_files],
+        tes=[float(te) for te in echo_times_ms],
+        out_dir=str(output_dir),
+        mask=str(mask_file),
+        fittype=fittype,
+        combmode=combmode,
+    )
+
+    results = {}
+    optcom = output_dir / 'desc-optcom_bold.nii.gz'
+    t2star = output_dir / 'T2starmap.nii.gz'
+    s0map = output_dir / 'S0map.nii.gz'
+
+    if optcom.exists():
+        results['optcom'] = optcom
+        print(f"  Optimally combined: {optcom.name}")
+    if t2star.exists():
+        results['t2star_map'] = t2star
+        print(f"  T2* map: {t2star.name}")
+    if s0map.exists():
+        results['s0_map'] = s0map
+        print(f"  S0 map: {s0map.name}")
+
+    return results
+
+
 def run_tedana(
     echo_files: List[Path],
     echo_times_ms: List[float],
@@ -1477,44 +1547,131 @@ def run_functional_preprocessing(
             apply_mask_to_timeseries(echo_mcf, brain_mask, masked_out)
             me_masked_echoes.append(masked_out)
 
-        # Step 5: TEDANA multi-echo ICA denoising
+        # Step 5: Multi-echo denoising
+        # Options:
+        #   'tedana'         - Full TEDANA ICA (T2*/S0 model-based classification)
+        #   'optcom_melodic' - Optimal combination + MELODIC ICA (uses SE ICA pipeline on optcom)
+        #   'optcom_only'    - Optimal combination only (no ICA denoising)
+        me_denoise_method = tedana_config.get('method', 'tedana')
         print("\n" + "="*60)
-        print("STEP 5: TEDANA Multi-Echo ICA Denoising")
+        print(f"STEP 5: Multi-Echo Denoising (method: {me_denoise_method})")
         print("="*60)
 
-        tedana_dir = work_dir / 'tedana'
-        tedana_results = run_tedana(
-            echo_files=me_masked_echoes,
-            echo_times_ms=echo_times,
-            output_dir=tedana_dir,
-            mask_file=brain_mask,
-            tedpca=tedana_config.get('tedpca', 0.95),
-            tree=tedana_config.get('tree', 'kundu'),
-        )
-
-        results['tedana'] = tedana_results
         results['multiecho'] = {
             'n_echoes': n_echoes,
             'echo_times_ms': echo_times,
             'corrected_echoes': me_corrected_echoes,
+            'denoise_method': me_denoise_method,
         }
 
-        # Use TEDANA denoised output for downstream steps
-        if 'denoised' in tedana_results:
-            bold_for_smoothing = tedana_results['denoised']
-            print(f"\n  Using TEDANA denoised output for smoothing")
-        elif 'optcom' in tedana_results:
-            bold_for_smoothing = tedana_results['optcom']
-            print(f"\n  TEDANA denoised not found, using optimally combined")
+        if me_denoise_method == 'tedana':
+            # Full TEDANA: optimal combination + T2*/S0 ICA classification
+            tedana_dir = work_dir / 'tedana'
+            tedana_results = run_tedana(
+                echo_files=me_masked_echoes,
+                echo_times_ms=echo_times,
+                output_dir=tedana_dir,
+                mask_file=brain_mask,
+                tedpca=tedana_config.get('tedpca', 0.95),
+                tree=tedana_config.get('tree', 'kundu'),
+            )
+
+            results['tedana'] = tedana_results
+
+            if 'denoised' in tedana_results:
+                bold_for_smoothing = tedana_results['denoised']
+                print(f"\n  Using TEDANA denoised output for smoothing")
+            elif 'optcom' in tedana_results:
+                bold_for_smoothing = tedana_results['optcom']
+                print(f"\n  TEDANA denoised not found, using optimally combined")
+            else:
+                raise RuntimeError("TEDANA produced no output files")
+
+            ica_enabled = False
+            classification = None
+
+        elif me_denoise_method in ('optcom_melodic', 'optcom_only'):
+            # Optimal combination (without ICA) via tedana's t2smap
+            optcom_dir = work_dir / 'optcom'
+            optcom_results = run_optimal_combination(
+                echo_files=me_masked_echoes,
+                echo_times_ms=echo_times,
+                output_dir=optcom_dir,
+                mask_file=brain_mask,
+            )
+
+            results['optcom'] = optcom_results
+
+            if 'optcom' not in optcom_results:
+                raise RuntimeError("Optimal combination produced no output")
+
+            bold_optcom = optcom_results['optcom']
+
+            if me_denoise_method == 'optcom_melodic':
+                # Run MELODIC ICA on the optimally combined data
+                # (same pipeline as single-echo ICA denoising)
+                print(f"\n  Running MELODIC ICA on optimally combined data...")
+                ica_config = func_config.get('denoising', {}).get('ica', {})
+
+                melodic_dir = work_dir / 'melodic'
+                melodic_outputs = run_melodic_ica(
+                    input_file=bold_optcom,
+                    output_dir=melodic_dir,
+                    brain_mask=brain_mask,
+                    tr=tr,
+                    n_components=ica_config.get('n_components', 30)
+                )
+
+                classification = classify_ica_components(
+                    melodic_dir=melodic_dir,
+                    motion_params_file=motion_params,
+                    brain_mask_file=brain_mask,
+                    tr=tr,
+                    motion_threshold=ica_config.get('motion_threshold', 0.40),
+                    edge_threshold=ica_config.get('edge_threshold', 0.80),
+                    csf_threshold=ica_config.get('csf_threshold', 0.70),
+                    freq_threshold=ica_config.get('freq_threshold', 0.60),
+                    classification_mode=ica_config.get('classification_mode', 'score')
+                )
+
+                bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
+                remove_noise_components(
+                    input_file=bold_optcom,
+                    output_file=bold_denoised,
+                    melodic_dir=melodic_dir,
+                    noise_components=classification['summary']['noise_components']
+                )
+
+                ica_qc_report = generate_ica_denoising_qc(
+                    subject=subject,
+                    session=session,
+                    classification_results=classification,
+                    melodic_dir=melodic_dir,
+                    output_dir=qc_dir
+                )
+
+                results['ica_denoising'] = {
+                    'denoised_bold': bold_denoised,
+                    'melodic_dir': melodic_dir,
+                    'classification': classification,
+                    'qc_report': ica_qc_report,
+                }
+
+                bold_for_smoothing = bold_denoised
+                ica_enabled = True
+
+            else:
+                # optcom_only: no ICA, just the optimally combined data
+                print(f"\n  Using optimally combined output (no ICA)")
+                bold_for_smoothing = bold_optcom
+                ica_enabled = False
+                classification = None
+
         else:
-            raise RuntimeError("TEDANA produced no output files")
+            raise ValueError(f"Unknown ME denoise method: {me_denoise_method}. "
+                             f"Use 'tedana', 'optcom_melodic', or 'optcom_only'.")
 
-        # For motion-corrected reference (used in registration later)
         bold_mcf = bold_for_smoothing
-
-        # ICA/classification not used in ME path
-        ica_enabled = False
-        classification = None
 
     else:
         # =================================================================
@@ -1925,7 +2082,19 @@ def run_functional_preprocessing(
     else:
         input_files_str = str(bold_file)
 
-    ica_config_local = func_config.get('denoising', {}).get('ica', {}) if not is_multiecho else {}
+    ica_config_local = func_config.get('denoising', {}).get('ica', {})
+
+    # Determine denoising method label for metadata
+    if is_multiecho:
+        me_method = tedana_config.get('method', 'tedana')
+        if me_method == 'optcom_melodic':
+            denoise_method_label = 'optcom_melodic'
+        elif me_method == 'optcom_only':
+            denoise_method_label = 'optcom_only'
+        else:
+            denoise_method_label = 'tedana'
+    else:
+        denoise_method_label = 'ica' if ica_enabled else 'none'
 
     metadata = {
         'subject': subject,
@@ -1951,18 +2120,18 @@ def run_functional_preprocessing(
             'lowpass_hz': lowpass_freq
         },
         'denoising': {
-            'method': 'tedana' if is_multiecho else ('ica' if ica_enabled else 'none'),
+            'method': denoise_method_label,
             'tedana': {
                 'tedpca': str(tedana_config.get('tedpca', 'aic')),
                 'tree': tedana_config.get('tree', 'kundu'),
-            } if is_multiecho else None,
+            } if denoise_method_label == 'tedana' else None,
             'ica': {
                 'enabled': ica_enabled,
                 'n_components': ica_config_local.get('n_components', 30) if ica_enabled else None,
                 'classification_mode': ica_config_local.get('classification_mode', 'score') if ica_enabled else None,
                 'n_signal_components': classification['summary']['n_signal'] if (ica_enabled and classification) else None,
                 'n_noise_components': classification['summary']['n_noise'] if (ica_enabled and classification) else None
-            } if not is_multiecho else None,
+            } if (ica_enabled and classification) else None,
         },
         'acompcor': {
             'enabled': acompcor_enabled,
@@ -2143,7 +2312,7 @@ def run_functional_preprocessing(
     print("\n" + "="*80)
     print("FUNCTIONAL PREPROCESSING COMPLETE")
     if is_multiecho:
-        print(f"  Mode: MULTI-ECHO ({n_echoes} echoes, TEDANA denoising)")
+        print(f"  Mode: MULTI-ECHO ({n_echoes} echoes, denoising: {denoise_method_label})")
     else:
         print(f"  Mode: SINGLE-ECHO")
     print("="*80)
@@ -2168,7 +2337,8 @@ def run_functional_preprocessing(
             print(f"  Optimally combined: {results['tedana']['optcom']}")
         if 'report' in results['tedana']:
             print(f"  Report: {results['tedana']['report']}")
-    elif ica_enabled and 'ica_denoising' in results:
+
+    if ica_enabled and 'ica_denoising' in results:
         print(f"  ICA Denoising QC: {results['ica_denoising']['qc_report']}")
         print(f"\nICA Denoising:")
         print(f"  Signal components: {classification['summary']['n_signal']}")
