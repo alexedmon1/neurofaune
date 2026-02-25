@@ -437,6 +437,29 @@ def run_msme_preprocessing(
     # Broadcasting with data → (160, 160, 32, 5)
     mask_4d = mask_3d[:, :, np.newaxis, :]  # Add axis for echoes
 
+    # Estimate noise sigma² from the air/noise region of the first echo.
+    # The background outside the brain mask contains both noise (air) and
+    # bright tissue (skull, muscle, fat). We isolate the noise-only voxels
+    # by taking the lowest-intensity quartile of the background, which
+    # should be pure Rayleigh-distributed noise from air.
+    first_echo_all = data[:, :, 0, :]
+    first_echo_bg = first_echo_all[~mask_3d]
+    first_echo_bg = first_echo_bg[first_echo_bg > 0]  # exclude exact zeros
+
+    # Keep only the lowest quartile — these are the air/noise voxels
+    q25 = np.percentile(first_echo_bg, 25)
+    noise_voxels = first_echo_bg[first_echo_bg <= q25]
+
+    # For Rayleigh-distributed magnitude noise:
+    #   mean = sigma * sqrt(pi/2)  →  sigma = mean / sqrt(pi/2)
+    #   sigma² = mean² * 2/pi
+    noise_mean = float(np.mean(noise_voxels))
+    noise_sigma2 = noise_mean ** 2 * (2.0 / np.pi)
+    print(f"Background noise estimation (first echo):")
+    print(f"  Background voxels: {len(first_echo_bg)}, noise-floor voxels (≤Q25={q25:.0f}): {len(noise_voxels)}")
+    print(f"  Noise mean={noise_mean:.1f}, Gaussian sigma²={noise_sigma2:.1f} "
+          f"(sigma={np.sqrt(noise_sigma2):.1f})")
+
     data_masked = data * mask_4d  # Broadcasting applies mask to all echoes
 
     nib.save(nib.Nifti1Image(data_masked, img.affine, img.header), msme_masked_file)
@@ -465,6 +488,7 @@ def run_msme_preprocessing(
         mask_3d,
         te_values,
         lambda_reg=t2_lambda_reg,
+        noise_sigma2=noise_sigma2,
         n_components=t2_n_components,
         t2_range=t2_range,
         myelin_water_cutoff=t2_mw_cutoff,
@@ -837,49 +861,24 @@ def _skull_strip_msme_atropos(
     nib.save(nib.Nifti1Image(brain_data, affine), output_file)
 
 
-def _estimate_nnls_lambda(A, H, signals, n_echoes, chi2_factor=1.02,
-                          n_bisect=30, lam_range=(1e-6, 1e6)):
-    """Estimate optimal regularization lambda via chi-square criterion.
+def _estimate_noise_sigma2(signals, n_tail=6):
+    """Estimate noise variance from echo-to-echo differences in the decay tail.
 
-    Uses noise-based chi-square target following Whittall & MacKay (1989):
-    noise is estimated from the last few echoes (where T2 signal has decayed),
-    and lambda is chosen so chi-square ≈ n_echoes * sigma² * chi2_factor.
-    This prevents overfitting to noise while preserving real spectral features.
+    For each voxel, takes the last n_tail echoes, computes successive
+    differences, and estimates sigma² from their variance (divided by 2,
+    since var(diff of two measurements) = 2*sigma²).  Returns the median
+    across voxels, which is robust to outliers from long-T2 voxels (CSF)
+    where the tail still carries signal.
 
-    Returns median optimal lambda across the subset.
+    Returns (sigma2, per_voxel_sigma2_list).
     """
-    n_t2 = A.shape[1]
-    b_zeros = np.zeros(n_t2 - 2)
-
-    # Estimate noise from last 4 echoes across all subset voxels
-    noise_samples = []
+    per_voxel_sigma2 = []
     for sig in signals:
-        noise_samples.extend(sig[-4:].tolist())
-    sigma2 = float(np.var(noise_samples))
-    chi2_target = n_echoes * sigma2 * chi2_factor
-
-    optimal_lambdas = []
-    for sig in signals:
-        lo, hi = lam_range
-        best_lam = lo
-        for _ in range(n_bisect):
-            mid = np.sqrt(lo * hi)
-            A_reg = np.concatenate([A, np.sqrt(mid) * H])
-            b_reg = np.concatenate([sig, b_zeros])
-            amp, _ = nnls(A_reg, b_reg)
-            chi2 = np.sum((A @ amp - sig) ** 2)
-            if chi2 < chi2_target:
-                lo = mid
-                best_lam = mid
-            else:
-                hi = mid
-        optimal_lambdas.append(best_lam)
-
-    median_lam = float(np.median(optimal_lambdas))
-    print(f"    Noise sigma²={sigma2:.2f}, chi² target={chi2_target:.2f}")
-    print(f"    Lambda range across subset: [{min(optimal_lambdas):.4f}, {max(optimal_lambdas):.4f}]")
-    print(f"    Median lambda: {median_lam:.4f}")
-    return median_lam
+        tail = sig[-n_tail:]
+        diffs = np.diff(tail)
+        per_voxel_sigma2.append(float(np.var(diffs) / 2.0))
+    sigma2 = float(np.median(per_voxel_sigma2))
+    return sigma2, per_voxel_sigma2
 
 
 def calculate_mwf_nnls(
@@ -887,6 +886,7 @@ def calculate_mwf_nnls(
     mask: np.ndarray,
     te_values: np.ndarray,
     lambda_reg: float = None,
+    noise_sigma2: float = None,
     n_components: int = 120,
     t2_range: list = None,
     myelin_water_cutoff: float = 25.0,
@@ -897,10 +897,13 @@ def calculate_mwf_nnls(
     Calculate MWF using regularized Non-Negative Least Squares (NNLS).
 
     Uses minimum curvature (2nd-order Tikhonov) regularization following
-    Whittall & MacKay (1989) and Prasloski et al. (2012). Regularization
-    strength is determined via chi-square criterion: lambda is chosen so
-    that the fit residual increases by chi2_factor over the unregularized
-    solution, producing smooth T2 spectra with distinct peaks.
+    Whittall & MacKay (1989) and Prasloski et al. (2012).
+
+    When lambda_reg is None, uses per-voxel lambda estimation via the
+    chi-square discrepancy principle: for each voxel, lambda is chosen
+    so that the fit residual chi² ≈ n_echoes * sigma² * chi2_factor.
+    This is the proper Whittall & MacKay approach — each voxel gets
+    exactly the regularization it needs based on its SNR.
 
     Parameters
     ----------
@@ -911,8 +914,13 @@ def calculate_mwf_nnls(
     te_values : np.ndarray
         Echo times in ms
     lambda_reg : float or None
-        Fixed regularization weight. If None (default), lambda is estimated
-        automatically from the data using the chi-square criterion.
+        Fixed regularization weight. If None (default), per-voxel lambda
+        is estimated automatically using the chi-square criterion.
+    noise_sigma2 : float or None
+        Noise variance (Gaussian sigma²) for chi-square target. If None,
+        estimated from echo-to-echo differences in the signal tail
+        (less accurate for magnitude data due to Rician bias).
+        Preferably estimated from the image background before masking.
     n_components : int
         Number of T2 components in log-spaced basis (default 120)
     t2_range : list
@@ -980,34 +988,59 @@ def calculate_mwf_nnls(
         H[j, j + 1] = -2.0
         H[j, j + 2] = 1.0
 
-    # Estimate lambda via chi-square criterion if not provided
     voxel_indices = np.argwhere(mask)
     n_voxels = len(voxel_indices)
 
-    if lambda_reg is None:
-        print(f"  Estimating lambda via chi-square criterion (factor={chi2_factor})...")
-        rng = np.random.default_rng(42)
-        n_subset = min(200, n_voxels)
-        subset_idx = rng.choice(n_voxels, size=n_subset, replace=False)
-        subset_signals = []
-        for i in subset_idx:
-            x, y, z = voxel_indices[i]
-            sig = data[x, y, z, :]
-            if sig[0] > 0:
-                subset_signals.append(sig)
-        lambda_reg = _estimate_nnls_lambda(A, H, subset_signals, n_echoes,
-                                           chi2_factor=chi2_factor)
-        print(f"  Estimated lambda: {lambda_reg:.4f}")
+    # --- Noise estimation and lambda mode ---
+    use_per_voxel_lambda = (lambda_reg is None)
+
+    if use_per_voxel_lambda:
+        if noise_sigma2 is not None:
+            # Use provided noise estimate (from image background)
+            sigma2 = noise_sigma2
+            print(f"  Per-voxel lambda via chi-square discrepancy principle")
+            print(f"    Noise sigma²={sigma2:.2f} (provided from background)")
+        else:
+            # Fallback: estimate from echo-to-echo differences in signal tail.
+            # NOTE: underestimates sigma² for magnitude data due to Rician bias.
+            rng = np.random.default_rng(42)
+            n_noise_subset = min(1000, n_voxels)
+            noise_idx = rng.choice(n_voxels, size=n_noise_subset, replace=False)
+            noise_signals = []
+            for i in noise_idx:
+                x, y, z = voxel_indices[i]
+                sig = data[x, y, z, :]
+                if sig[0] > 0:
+                    noise_signals.append(sig)
+            sigma2, pv_sigma2 = _estimate_noise_sigma2(noise_signals)
+            # Apply Rician correction: measured var ≈ sigma² * (2 - pi/2)
+            sigma2 = sigma2 / (2 - np.pi / 2)
+            print(f"  Per-voxel lambda via chi-square discrepancy principle")
+            print(f"    Noise sigma²={sigma2:.2f} (from signal tail, Rician-corrected)")
+
+        chi2_target = n_echoes * sigma2 * chi2_factor
+        print(f"    Chi² target={chi2_target:.2f} "
+              f"(n_echoes={n_echoes} × sigma²={sigma2:.1f} × factor={chi2_factor})")
+        print(f"    Bisection: 15 iterations per voxel, range [1e-6, 1e6]")
+
+        # Pre-allocate augmented system to avoid repeated concatenation
+        n_rows_reg = n_echoes + n_t2 - 2
+        A_reg = np.empty((n_rows_reg, n_t2))
+        A_reg[:n_echoes, :] = A
+        b_reg = np.empty(n_rows_reg)
+        b_reg[n_echoes:] = 0.0
     else:
         print(f"  Using fixed lambda: {lambda_reg}")
-
-    A_reg = np.concatenate([A, np.sqrt(lambda_reg) * H])
-    b_zeros = np.zeros(n_t2 - 2)
+        A_reg_fixed = np.concatenate([A, np.sqrt(lambda_reg) * H])
+        b_zeros = np.zeros(n_t2 - 2)
 
     print(f"  Processing {n_voxels} voxels...")
 
-    # Progress reporting
+    # Progress and lambda tracking
     report_every = max(n_voxels // 10, 1)
+    n_regularized = 0
+    n_unreg = 0
+    lambda_values = []  # track for diagnostics
 
     for idx, (x, y, z) in enumerate(voxel_indices):
         if idx % report_every == 0:
@@ -1021,12 +1054,44 @@ def calculate_mwf_nnls(
         if np.sum(signal) == 0:
             continue
 
-        # Regularized observation vector
-        b_reg = np.concatenate([signal, b_zeros])
-
-        # Solve NNLS
+        # Solve NNLS with appropriate lambda
         try:
-            amplitudes, residual = nnls(A_reg, b_reg)
+            if use_per_voxel_lambda:
+                # --- Per-voxel lambda via chi-square bisection ---
+                # Step 1: unregularized solve
+                amp_unreg, _ = nnls(A, signal)
+                chi2_unreg = np.sum((A @ amp_unreg - signal) ** 2)
+
+                if chi2_unreg >= chi2_target:
+                    # Already at/above noise floor — no regularization needed.
+                    # Use minimal lambda for numerical stability.
+                    amplitudes = amp_unreg
+                    n_unreg += 1
+                    lambda_values.append(0.0)
+                else:
+                    # Bisect: find lambda where chi² rises to target
+                    lo, hi = 1e-6, 1e6
+                    for _ in range(15):
+                        mid = np.sqrt(lo * hi)
+                        A_reg[n_echoes:, :] = np.sqrt(mid) * H
+                        b_reg[:n_echoes] = signal
+                        amp, _ = nnls(A_reg, b_reg)
+                        chi2 = np.sum((A @ amp - signal) ** 2)
+                        if chi2 < chi2_target:
+                            lo = mid
+                        else:
+                            hi = mid
+                    # Final solve at converged lambda
+                    final_lam = np.sqrt(lo * hi)
+                    A_reg[n_echoes:, :] = np.sqrt(final_lam) * H
+                    b_reg[:n_echoes] = signal
+                    amplitudes, _ = nnls(A_reg, b_reg)
+                    n_regularized += 1
+                    lambda_values.append(final_lam)
+            else:
+                # Fixed global lambda
+                b_reg_fixed = np.concatenate([signal, b_zeros])
+                amplitudes, _ = nnls(A_reg_fixed, b_reg_fixed)
 
             # Calculate fractions
             total_amp = np.sum(amplitudes)
@@ -1064,6 +1129,16 @@ def calculate_mwf_nnls(
             continue
 
     print("  100% complete!")
+
+    if use_per_voxel_lambda and lambda_values:
+        reg_lambdas = [l for l in lambda_values if l > 0]
+        print(f"\n  Lambda statistics:")
+        print(f"    Voxels regularized: {n_regularized}/{n_voxels} "
+              f"({100*n_regularized/max(n_voxels,1):.1f}%)")
+        print(f"    Voxels unregularized (chi²≥target): {n_unreg}/{n_voxels}")
+        if reg_lambdas:
+            print(f"    Regularized lambda: median={np.median(reg_lambdas):.4f}, "
+                  f"range=[{min(reg_lambdas):.4f}, {max(reg_lambdas):.4f}]")
 
     # Calculate summary statistics
     mwf_masked = mwf_map[mask]
