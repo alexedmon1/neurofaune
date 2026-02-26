@@ -446,9 +446,18 @@ def run_msme_preprocessing(
     first_echo_bg = first_echo_all[~mask_3d]
     first_echo_bg = first_echo_bg[first_echo_bg > 0]  # exclude exact zeros
 
-    # Keep only the lowest quartile — these are the air/noise voxels
-    q25 = np.percentile(first_echo_bg, 25)
-    noise_voxels = first_echo_bg[first_echo_bg <= q25]
+    if len(first_echo_bg) < 100:
+        # Mask covers nearly entire image — fall back to using the lowest 10%
+        # of ALL voxels (including brain) as a noise proxy.
+        print(f"  WARNING: Only {len(first_echo_bg)} background voxels — mask may cover "
+              f"entire image. Falling back to lowest 10% of all voxels for noise estimate.")
+        all_nonzero = first_echo_all[first_echo_all > 0]
+        q10 = np.percentile(all_nonzero, 10)
+        noise_voxels = all_nonzero[all_nonzero <= q10]
+    else:
+        # Keep only the lowest quartile — these are the air/noise voxels
+        q25 = np.percentile(first_echo_bg, 25)
+        noise_voxels = first_echo_bg[first_echo_bg <= q25]
 
     # For Rayleigh-distributed magnitude noise:
     #   mean = sigma * sqrt(pi/2)  →  sigma = mean / sqrt(pi/2)
@@ -456,7 +465,7 @@ def run_msme_preprocessing(
     noise_mean = float(np.mean(noise_voxels))
     noise_sigma2 = noise_mean ** 2 * (2.0 / np.pi)
     print(f"Background noise estimation (first echo):")
-    print(f"  Background voxels: {len(first_echo_bg)}, noise-floor voxels (≤Q25={q25:.0f}): {len(noise_voxels)}")
+    print(f"  Background voxels: {len(first_echo_bg)}, noise-floor voxels: {len(noise_voxels)}")
     print(f"  Noise mean={noise_mean:.1f}, Gaussian sigma²={noise_sigma2:.1f} "
           f"(sigma={np.sqrt(noise_sigma2):.1f})")
 
@@ -472,10 +481,26 @@ def run_msme_preprocessing(
     print("Step 2: T2 Fitting and MWF Calculation (NNLS)")
     print("="*80)
 
+    # Normalize data to unit noise variance before NNLS fitting.
+    # Different scanners / ParaVision versions produce wildly different intensity
+    # scales (e.g. PV 6 sigma²≈1 vs PV-360 sigma²≈35,000). Dividing by
+    # sigma_noise makes the chi-square discrepancy principle scale-invariant,
+    # ensuring consistent regularization behavior across scanners.
+    noise_sigma = np.sqrt(noise_sigma2)
+    if noise_sigma > 0:
+        data_normalized = data_masked / noise_sigma
+        noise_sigma2_normalized = 1.0
+        print(f"  Unit-noise normalization: dividing by sigma={noise_sigma:.4f}")
+        print(f"  Original sigma²={noise_sigma2:.4f} → normalized sigma²=1.0")
+    else:
+        data_normalized = data_masked
+        noise_sigma2_normalized = noise_sigma2
+        print(f"  WARNING: noise_sigma=0, skipping normalization")
+
     # Reorder data from (x, y, echoes, slices) to (x, y, slices, echoes)
     # calculate_mwf_nnls expects (x, y, z, echoes) format
-    data_reordered = np.transpose(data_masked, (0, 1, 3, 2))
-    print(f"  Data reordered: {data_masked.shape} → {data_reordered.shape}")
+    data_reordered = np.transpose(data_normalized, (0, 1, 3, 2))
+    print(f"  Data reordered: {data_normalized.shape} → {data_reordered.shape}")
 
     t2_n_components = get_config_value(config, 'msme.t2_fitting.n_components', default=120)
     t2_range = get_config_value(config, 'msme.t2_fitting.t2_range', default=[10, 2000])
@@ -488,7 +513,7 @@ def run_msme_preprocessing(
         mask_3d,
         te_values,
         lambda_reg=t2_lambda_reg,
-        noise_sigma2=noise_sigma2,
+        noise_sigma2=noise_sigma2_normalized,
         n_components=t2_n_components,
         t2_range=t2_range,
         myelin_water_cutoff=t2_mw_cutoff,
