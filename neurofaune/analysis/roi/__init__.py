@@ -1,12 +1,6 @@
-"""
-ROI-level metric extraction using SIGMA atlas parcellation.
+"""Deprecated: use neurofaune.connectome.roi_extraction instead."""
 
-Provides functions to extract mean metric values within atlas-defined
-regions of interest, aggregate by anatomical territory, and produce
-tidy DataFrames for statistical analysis.
-"""
-
-from neurofaune.analysis.roi.extraction import (
+from neurofaune.connectome.roi_extraction import (  # noqa: F401
     compute_territory_means,
     discover_sigma_metrics,
     extract_all_subjects,
