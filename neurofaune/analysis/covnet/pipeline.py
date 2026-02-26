@@ -179,6 +179,128 @@ def _save_territory_results(
     return df
 
 
+def build_territory_mapping(
+    bilateral_region_cols: list[str],
+    labels_csv: Path,
+) -> dict[str, str]:
+    """Map each bilateral ROI to a hybrid territory group.
+
+    Cortex ROIs use the "System" column (e.g. Somatosensory System,
+    Hippocampus Fomation). Non-Cortex ROIs use the "Territories" column
+    (e.g. Diencephalon, Brainstem).
+
+    Parameters
+    ----------
+    bilateral_region_cols : list[str]
+        Bilateral ROI column names (no _L/_R suffix).
+    labels_csv : Path
+        Path to SIGMA atlas labels CSV with columns:
+        Territories, System, Region of interest.
+
+    Returns
+    -------
+    dict mapping ROI column name -> territory group name.
+    """
+    labels_df = pd.read_csv(labels_csv)
+
+    # Build lookup: underscore-normalised ROI base name -> (territory, system)
+    # Atlas uses dots in names (e.g. "Agranular.Dysgranular.Insular.Cortex.L")
+    # CSV columns use underscores (e.g. "Agranular_Dysgranular_Insular_Cortex")
+    roi_info: dict[str, tuple[str, str]] = {}
+    for _, row in labels_df.iterrows():
+        roi_name = str(row["Region of interest"])
+        territory = str(row["Territories"])
+        system = str(row["System"])
+
+        # Normalise: dots -> underscores, strip hemisphere suffix
+        normalised = roi_name.replace(".", "_")
+        if normalised.endswith("_L") or normalised.endswith("_R"):
+            base = normalised[:-2]
+        else:
+            base = normalised
+
+        # Store first occurrence (L and R have the same territory/system)
+        if base not in roi_info:
+            roi_info[base] = (territory, system)
+
+    # Map each bilateral ROI to its hybrid group
+    # Bilateral-averaged columns have no suffix (e.g. "Cornu_Ammonis_1"),
+    # but unpaired columns keep their _L/_R suffix.
+    mapping: dict[str, str] = {}
+    for col in bilateral_region_cols:
+        info = roi_info.get(col)
+        if info is None and (col.endswith("_L") or col.endswith("_R")):
+            info = roi_info.get(col[:-2])
+        if info is None:
+            logger.warning(f"ROI {col!r} not found in atlas labels, skipping")
+            continue
+        territory, system = info
+        if territory == "Cortex":
+            mapping[col] = system
+        else:
+            mapping[col] = territory
+
+    n_groups = len(set(mapping.values()))
+    n_mapped = len(mapping)
+    logger.info(
+        f"Territory mapping: {n_mapped}/{len(bilateral_region_cols)} ROIs "
+        f"-> {n_groups} hybrid groups"
+    )
+    return mapping
+
+
+def compute_territory_means(
+    df: pd.DataFrame,
+    bilateral_region_cols: list[str],
+    roi_to_territory: dict[str, str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """Compute per-subject mean across ROIs within each territory group.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must contain all columns in *bilateral_region_cols*.
+    bilateral_region_cols : list[str]
+        Bilateral ROI column names.
+    roi_to_territory : dict[str, str]
+        Mapping from ROI name to territory group (from
+        ``build_territory_mapping``).
+
+    Returns
+    -------
+    df_augmented : DataFrame
+        Input DataFrame with new ``territory_<group>`` columns appended.
+    territory_col_names : list[str]
+        Sorted list of new territory column names.
+    """
+    # Group ROIs by territory
+    groups: dict[str, list[str]] = {}
+    for col in bilateral_region_cols:
+        grp = roi_to_territory.get(col)
+        if grp is not None:
+            groups.setdefault(grp, []).append(col)
+
+    # Compute row-wise means and add as new columns
+    territory_cols = []
+    parts = [df]
+    for grp_name in sorted(groups.keys()):
+        col_name = "territory_" + grp_name.replace(" ", "_")
+        territory_cols.append(col_name)
+        roi_subset = groups[grp_name]
+        parts.append(
+            df[roi_subset].mean(axis=1, skipna=True).rename(col_name)
+        )
+
+    df_augmented = pd.concat(parts, axis=1)
+
+    for grp_name in sorted(groups.keys()):
+        col_name = "territory_" + grp_name.replace(" ", "_")
+        rois = groups[grp_name]
+        logger.info(f"  {col_name}: {len(rois)} ROIs")
+
+    return df_augmented, sorted(territory_cols)
+
+
 # ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
@@ -206,6 +328,8 @@ class CovNetAnalysis:
         self.matrices_pnd_dose: dict[str, dict] = {}
         self.matrices_full: dict[str, dict] = {}
         self.matrices_territory: dict[str, dict] = {}
+        self.roi_to_territory: dict[str, str] = {}
+        self.labels_csv: str = ""
 
     @property
     def metric_dir(self) -> Path:
@@ -223,13 +347,35 @@ class CovNetAnalysis:
         exclusion_csv: Path | None,
         output_dir: Path,
         metric: str,
+        labels_csv: Path | None = None,
     ) -> "CovNetAnalysis":
         """Load ROI data, bilateral average, compute correlation matrices.
+
+        Parameters
+        ----------
+        roi_dir : Path
+            Directory containing ``roi_<metric>_wide.csv`` files.
+        exclusion_csv : Path or None
+            CSV of sessions to exclude.
+        output_dir : Path
+            Base output directory for CovNet results.
+        metric : str
+            DTI metric name (e.g. ``"FA"``).
+        labels_csv : Path or None
+            SIGMA atlas labels CSV for hybrid territory mapping.  If None,
+            falls back to the default path on arborea.
 
         Returns a populated instance ready for save() and run_*() methods.
         """
         roi_dir = Path(roi_dir)
         output_dir = Path(output_dir)
+
+        if labels_csv is None:
+            labels_csv = Path(
+                "/mnt/arborea/atlases/SIGMA/"
+                "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
+            )
+        labels_csv = Path(labels_csv)
 
         wide_csv = roi_dir / f"roi_{metric}_wide.csv"
         if not wide_csv.exists():
@@ -241,7 +387,6 @@ class CovNetAnalysis:
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
         df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
         inst.n_subjects = len(df)
-        inst.territory_cols = [c for c in roi_cols if c.startswith("territory_")]
 
         # Phase 2: Bilateral averaging
         logger.info("[Phase 2] Bilateral averaging...")
@@ -249,6 +394,22 @@ class CovNetAnalysis:
         inst.bilateral_region_cols = [
             c for c in bilateral_cols if not c.startswith("territory_")
         ]
+
+        # Phase 2b: Hybrid territory mapping from atlas labels
+        logger.info("[Phase 2b] Building hybrid territory mapping...")
+        inst.roi_to_territory = build_territory_mapping(
+            inst.bilateral_region_cols, labels_csv
+        )
+        inst.labels_csv = str(labels_csv)
+        # Drop old pre-aggregated territory columns before adding new ones
+        old_territory_cols = [
+            c for c in df_bilateral.columns if c.startswith("territory_")
+        ]
+        if old_territory_cols:
+            df_bilateral = df_bilateral.drop(columns=old_territory_cols)
+        df_bilateral, inst.territory_cols = compute_territory_means(
+            df_bilateral, inst.bilateral_region_cols, inst.roi_to_territory
+        )
 
         # Phase 3: Compute correlation matrices
         logger.info("[Phase 3] Computing correlation matrices...")
@@ -266,9 +427,8 @@ class CovNetAnalysis:
         )
 
         logger.info("  PND x dose grouping (territory):")
-        groups_territory = define_groups(df, grouping="pnd_dose")
         inst.matrices_territory = compute_spearman_matrices(
-            groups_territory, inst.territory_cols
+            groups_pnd_dose, inst.territory_cols
         )
 
         # Extract group arrays and metadata
@@ -280,7 +440,7 @@ class CovNetAnalysis:
         }
         inst.territory_arrays = {
             label: subset[inst.territory_cols].values
-            for label, subset in groups_territory.items()
+            for label, subset in groups_pnd_dose.items()
         }
 
         logger.info(f"Preparation complete for {metric}")
@@ -305,6 +465,8 @@ class CovNetAnalysis:
             "group_sizes": self.group_sizes,
             "n_bilateral_rois": len(self.bilateral_region_cols),
             "n_territory_rois": len(self.territory_cols),
+            "roi_to_territory": self.roi_to_territory,
+            "labels_csv": self.labels_csv,
         }
         with open(prep_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -386,6 +548,8 @@ class CovNetAnalysis:
         inst.territory_cols = metadata["territory_cols"]
         inst.group_labels = metadata["group_labels"]
         inst.group_sizes = metadata["group_sizes"]
+        inst.roi_to_territory = metadata.get("roi_to_territory", {})
+        inst.labels_csv = metadata.get("labels_csv", "")
 
         # Group arrays
         arr_dir = inst.metric_dir / "prep" / "group_arrays"

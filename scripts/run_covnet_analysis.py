@@ -136,6 +136,10 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
     lines.append("- Bilateral averaging of L/R ROI pairs")
     lines.append("- ROIs with >20% zero values excluded")
     lines.append("- ROIs with all-NaN values excluded")
+    lines.append("- Hybrid territory mapping from SIGMA atlas labels:")
+    lines.append("    Cortex ROIs -> System column (e.g. Somatosensory, Hippocampus)")
+    lines.append("    Non-Cortex ROIs -> Territories column (e.g. Diencephalon, Brainstem)")
+    lines.append("- Territory values: per-subject mean of constituent bilateral ROIs")
     lines.append("")
 
     lines.append("STATISTICAL METHODS")
@@ -163,8 +167,10 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         lines.append("2. Network-Based Statistic (NBS): SKIPPED")
         lines.append("")
 
-    lines.append("3. Territory-level edge comparisons")
-    lines.append("   - Fisher z-test per edge")
+    lines.append("3. Territory-level edge comparisons (hybrid grouping)")
+    lines.append("   - Territories derived from SIGMA atlas labels (System for Cortex, "
+                  "Territories for non-Cortex)")
+    lines.append("   - Fisher z-test per territory-territory edge")
     lines.append("   - Benjamini-Hochberg FDR correction")
     lines.append("   - Comparisons: each dose vs control within each PND (9)")
     if not args.skip_cross_timepoint:
@@ -261,6 +267,10 @@ def main():
         "--n-workers", type=int, default=1,
         help="Number of parallel workers for NBS/whole-network comparisons (default: 1 = sequential)",
     )
+    parser.add_argument(
+        "--labels-csv", type=Path, default=None,
+        help="SIGMA atlas labels CSV for hybrid territory mapping (default: arborea path)",
+    )
 
     args = parser.parse_args()
 
@@ -301,7 +311,8 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir, metric
+                args.roi_dir, args.exclusion_csv, args.output_dir, metric,
+                labels_csv=args.labels_csv,
             )
             analysis.save()
             summary = run_single_metric(analysis, args)

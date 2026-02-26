@@ -53,6 +53,10 @@ def main():
         "--metrics", nargs="+", default=["FA", "MD", "AD", "RD"],
         help="DTI metrics to prepare (default: FA MD AD RD)",
     )
+    parser.add_argument(
+        "--labels-csv", type=Path, default=None,
+        help="SIGMA atlas labels CSV for hybrid territory mapping (default: arborea path)",
+    )
     args = parser.parse_args()
 
     if not args.roi_dir.exists():
@@ -64,7 +68,8 @@ def main():
     for metric in args.metrics:
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir, metric
+                args.roi_dir, args.exclusion_csv, args.output_dir, metric,
+                labels_csv=args.labels_csv,
             )
             analysis.save()
         except FileNotFoundError as e:

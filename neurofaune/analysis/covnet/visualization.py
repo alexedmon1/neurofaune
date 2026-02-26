@@ -21,19 +21,35 @@ matplotlib.use("Agg")
 logger = logging.getLogger(__name__)
 
 
-# Territory display order and colors
+# Territory display order and colors (hybrid grouping)
+# Cortex subsystems (from atlas "System" column)
+# Non-cortex territories (from atlas "Territories" column)
 TERRITORY_COLORS = {
-    "Basal_ganglia": "#e41a1c",
-    "Brainstem": "#377eb8",
-    "CSF": "#999999",
-    "Cerebellum": "#4daf4a",
-    "Cortex": "#ff7f00",
-    "Diencephalon": "#984ea3",
-    "Fiber_tract": "#a65628",
-    "Forebrain": "#f781bf",
-    "Mesencephalon": "#66c2a5",
-    "Olfactory_Bulb": "#ffff33",
-    "Spinal_Cord": "#8dd3c7",
+    # Cortex subsystems
+    "Somatosensory_System": "#e41a1c",
+    "Hippocampus_Fomation": "#377eb8",
+    "Olfactory_System": "#4daf4a",
+    "Visual_System": "#984ea3",
+    "Parietal_System": "#ff7f00",
+    "Insular_System": "#a65628",
+    "Auditory_System": "#f781bf",
+    "Retrosplenial_System": "#66c2a5",
+    "Temporal_System": "#8dd3c7",
+    "Cingular_System": "#fb9a99",
+    "Amygdala": "#cab2d6",
+    "Motor_System": "#b2df8a",
+    "Limbic_System": "#fdbf6f",
+    # Non-cortex territories
+    "Diencephalon": "#6a3d9a",
+    "Mesencephalon": "#b15928",
+    "Basal_ganglia": "#ffff99",
+    "Brainstem": "#1f78b4",
+    "Fiber_tract": "#33a02c",
+    "Forebrain": "#e31a1c",
+    "Olfactive_Bulb": "#ff7f00",
+    "Cerebellum": "#999999",
+    "Spinal_Cord": "#666666",
+    "CSF": "#cccccc",
 }
 
 
@@ -46,7 +62,7 @@ def _roi_territory_map(roi_names: list[str]) -> dict[str, str]:
     mapping = {}
     for roi in roi_names:
         if roi.startswith("territory_"):
-            mapping[roi] = roi.replace("territory_", "")
+            mapping[roi] = roi.replace("territory_", "").replace(" ", "_")
         else:
             mapping[roi] = "region"
     return mapping
@@ -433,7 +449,8 @@ def _shorten_labels(names: list[str], max_len: int = 25) -> list[str]:
     """Shorten ROI labels for plot axes."""
     short = []
     for name in names:
-        name = name.replace("territory_", "T:")
+        name = name.replace("territory_", "")
+        name = name.replace("_", " ")
         if len(name) > max_len:
             name = name[:max_len - 2] + ".."
         short.append(name)
