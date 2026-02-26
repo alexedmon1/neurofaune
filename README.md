@@ -24,7 +24,9 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 2. Bruker → BIDS           → convert raw scanner data to standard format
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
 4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
-5. Group Analysis          → TBSS, ROI extraction, classification, connectivity
+5. Connectome              → ROI extraction, FC matrices, covariance networks
+6. Analysis                → TBSS, classification, regression, MVPA
+7. Reporting               → Unified dashboard across all analysis types
 ```
 
 ### Normalization Strategy
@@ -70,25 +72,61 @@ uv run python scripts/convert_bruker_to_bids.py \
     --output-root /path/to/study/raw/bids
 ```
 
-### 3. Build Templates and Preprocess
+---
+
+## Preprocess
+
+All preprocessing scripts live in `scripts/` and use library code from `neurofaune/preprocess/`. Each modality has a batch script that discovers BIDS data and processes all subjects.
+
+### Template Building
+
+Age-specific templates are built from a subset of subjects and used for group-level normalization:
 
 ```bash
-# Build age-specific templates (subset of best subjects)
+# Select and preprocess template subjects
 uv run python scripts/batch_preprocess_for_templates.py \
     --bids-root /path/to/bids --output-root /path/to/study --cohorts p30 p60 p90
 
+# Build ANTs templates
 uv run python scripts/build_templates.py --config config.yaml --cohorts p30 p60 p90
+```
 
-# Preprocess all subjects
+### Anatomical (T2w)
+
+N4 bias correction, two-pass Atropos+BET skull stripping, tissue segmentation (GM/WM/CSF), optional 3D-to-2D resampling, registration to age-matched template (ANTs SyN). 3D isotropic acquisitions are automatically detected and resampled to standard 2D geometry.
+
+```bash
 uv run python scripts/batch_preprocess_anat.py --config config.yaml
-uv run python scripts/batch_preprocess_dwi.py --config config.yaml --bids-root /path/to/bids --output-root /path/to/study
+```
+
+### Diffusion (DTI)
+
+5D-to-4D conversion, intensity normalization, skull stripping, GPU-accelerated eddy correction with slice padding, DTI tensor fitting (FA, MD, AD, RD), FA-to-T2w registration (ANTs affine).
+
+```bash
+uv run python scripts/batch_preprocess_dwi.py --config config.yaml \
+    --bids-root /path/to/bids --output-root /path/to/study
+```
+
+### Functional (fMRI)
+
+Volume discarding, adaptive skull stripping, motion correction (MCFLIRT), ICA denoising (MELODIC), spatial smoothing, temporal bandpass filtering, confound extraction (24 motion + aCompCor), BOLD-to-T2w registration.
+
+```bash
 uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/study
+```
+
+### MSME T2 Mapping
+
+Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartment analysis, MSME-to-T2w registration.
+
+```bash
 uv run python scripts/batch_preprocess_msme.py /path/to/bids /path/to/study
 ```
 
-### 4. Resting-State Analysis
+### Resting-State Metrics
 
-Individual focused scripts for each resting-state metric (run after functional preprocessing):
+Individual scripts for each resting-state metric (run after functional preprocessing):
 
 ```bash
 # fALFF (fractional ALFF) — from unfiltered regressed BOLD
@@ -96,40 +134,261 @@ uv run python scripts/batch_falff_analysis.py --config config.yaml --n-workers 6
 
 # ReHo (Regional Homogeneity) — from bandpass-filtered BOLD
 uv run python scripts/batch_reho_analysis.py --config config.yaml --n-workers 6
+```
 
-# Functional Connectivity — ROI-to-ROI in SIGMA space
+All support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and `--skip-sigma`.
+
+### Cross-Modal Registration
+
+Standalone registration scripts for individual modality-to-template steps:
+
+```bash
+uv run python scripts/batch_register_fa_to_t2w.py --config config.yaml
+uv run python scripts/batch_register_fa_to_template.py --config config.yaml
+uv run python scripts/batch_register_bold_to_t2w.py --config config.yaml
+uv run python scripts/batch_register_bold_to_template.py --config config.yaml
+uv run python scripts/batch_register_msme.py --config config.yaml
+uv run python scripts/batch_warp_bold_to_sigma.py --config config.yaml
+```
+
+### Quality Control
+
+```bash
+# Batch QC summary with outlier detection
+uv run python scripts/generate_batch_qc.py --study-root /path/to/study --modalities anat dwi func
+
+# Skull stripping QC montages
+uv run python scripts/batch_skull_strip_qc.py --config config.yaml
+```
+
+---
+
+## Connectome
+
+The `neurofaune/connectome/` module provides ROI extraction, connectivity matrices, and network analysis tools. All operate in SIGMA atlas space.
+
+### ROI Extraction
+
+Extract mean metric values (FA, MD, T2, etc.) per SIGMA atlas region across all subjects:
+
+```bash
+uv run python scripts/extract_roi_means.py \
+    --derivatives-dir /path/to/study/derivatives \
+    --parcellation /path/to/study/atlas/SIGMA_study_space/SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz \
+    --labels-csv /path/to/atlases/SIGMA/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv \
+    --study-tracker /path/to/tracker.csv \
+    --modality dwi --metrics FA MD AD RD \
+    --output-dir /path/to/study/analysis/roi
+```
+
+Produces wide and long CSVs with per-region and per-territory means (234 regions, 11 territories).
+
+```python
+from neurofaune.connectome.roi_extraction import load_parcellation, extract_all_subjects
+
+parcellation, labels = load_parcellation(parcellation_path, labels_csv_path)
+wide_df, long_df = extract_all_subjects(derivatives_dir, parcellation, labels, modality="dwi")
+```
+
+### Functional Connectivity
+
+ROI-to-ROI Pearson correlation from SIGMA-space BOLD timeseries with Fisher z-transform:
+
+```bash
 uv run python scripts/batch_fc_analysis.py --config config.yaml --n-workers 6
 ```
 
-All three support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and `--skip-sigma` (fALFF/ReHo only). Each script handles BOLD-to-template registration on-the-fly if the transform is missing.
+```python
+from neurofaune.connectome.functional import extract_roi_timeseries, compute_fc_matrix
 
-### 5. Group Analysis
-
-```bash
-# TBSS voxel-wise analysis (WM skeleton, 2D TFCE)
-uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml --output-dir /study/analysis/tbss/
-uv run python scripts/run_tbss_analysis.py --tbss-dir /study/analysis/tbss --config config.yaml
-
-# Whole-brain voxelwise fMRI analysis (fALFF/ReHo, 3D TFCE)
-uv run python scripts/prepare_fmri_voxelwise.py \
-    --study-root /path/to/study \
-    --output-dir /path/to/study/analysis/voxelwise_fmri
-uv run python scripts/prepare_tbss_designs.py \
-    --study-tracker /path/to/tracker.csv \
-    --tbss-dir /path/to/study/analysis/voxelwise_fmri \
-    --output-dir /path/to/study/analysis/voxelwise_fmri/designs
-uv run python scripts/prepare_tbss_dose_response_designs.py \
-    --study-tracker /path/to/tracker.csv \
-    --tbss-dir /path/to/study/analysis/voxelwise_fmri \
-    --output-dir /path/to/study/analysis/voxelwise_fmri/designs
-uv run python scripts/run_voxelwise_fmri_analysis.py \
-    --analysis-dir /path/to/study/analysis/voxelwise_fmri \
-    --config config.yaml
-
-# ROI extraction, classification, connectivity — see scripts/ directory
+timeseries, labels = extract_roi_timeseries(bold_4d, atlas, mask=brain_mask)
+fc_matrix = compute_fc_matrix(timeseries)  # Pearson r → Fisher z
 ```
 
-Both design scripts (`prepare_tbss_designs.py` and `prepare_tbss_dose_response_designs.py`) automatically pre-create per-analysis 4D subset volumes after generating designs. This avoids large memory spikes at randomise runtime by loading each master 4D volume once and subsetting sequentially (~2.6 GB peak instead of ~25 GB when parallelizing). Use `--skip-subset` to skip this step if subsets already exist.
+### Covariance Network Analysis (CovNet)
+
+Builds Spearman correlation matrices per experimental group and compares them using NBS, graph metrics, and whole-network tests. Supports bilateral ROI averaging and territory-level analysis.
+
+**All-in-one** (prepare + all tests):
+
+```bash
+uv run python scripts/run_covnet_analysis.py \
+    --roi-dir /path/to/analysis/roi \
+    --exclusion-csv /path/to/exclusions.csv \
+    --output-dir /path/to/analysis/covnet \
+    --metrics FA MD AD RD \
+    --n-permutations 5000 --seed 42
+```
+
+**Step-by-step** (prepare once, run tests independently):
+
+```bash
+# Step 1: Prepare data and correlation matrices
+uv run python scripts/covnet_prepare.py \
+    --roi-dir /path/to/analysis/roi \
+    --output-dir /path/to/analysis/covnet \
+    --metrics FA MD AD RD
+
+# Step 2: Network-Based Statistic (edge-level permutation testing)
+uv run python scripts/covnet_nbs.py \
+    --prep-dir /path/to/analysis/covnet \
+    --metrics FA MD --comparisons dose cross-timepoint \
+    --n-permutations 5000 --nbs-threshold 3.0 --n-workers 8
+
+# Step 3: Territory-level Fisher z-tests with FDR correction
+uv run python scripts/covnet_territory.py \
+    --prep-dir /path/to/analysis/covnet \
+    --metrics FA MD --comparisons dose cross-timepoint
+
+# Step 4: Graph metrics (efficiency, clustering, modularity, small-worldness)
+uv run python scripts/covnet_graph_metrics.py \
+    --prep-dir /path/to/analysis/covnet \
+    --metrics FA MD --densities 0.10 0.15 0.20 0.25 --n-permutations 5000
+
+# Step 5: Whole-network similarity (Mantel, Frobenius, spectral divergence)
+uv run python scripts/covnet_whole_network.py \
+    --prep-dir /path/to/analysis/covnet \
+    --metrics FA MD --comparisons dose cross-timepoint --n-workers 8
+```
+
+```python
+from neurofaune.connectome import CovNetAnalysis
+
+analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, output_dir, "FA")
+analysis.save()
+
+analysis = CovNetAnalysis.load(output_dir, "FA")
+analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
+analysis.run_territory()
+analysis.run_graph_metrics()
+analysis.run_whole_network()
+```
+
+---
+
+## Analysis
+
+Group-level statistical analysis tools in `neurofaune/analysis/`. All operate on data already extracted/warped to SIGMA atlas space.
+
+### TBSS (Tract-Based Spatial Statistics)
+
+WM-skeleton voxel-wise analysis for DTI and MSME metrics using FSL randomise with 2D TFCE:
+
+```bash
+# Prepare TBSS skeleton
+uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml \
+    --output-dir /path/to/analysis/tbss
+
+# Prepare designs (group contrasts + dose-response)
+uv run python scripts/prepare_tbss_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --tbss-dir /path/to/analysis/tbss \
+    --output-dir /path/to/analysis/tbss/designs
+uv run python scripts/prepare_tbss_dose_response_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --tbss-dir /path/to/analysis/tbss \
+    --output-dir /path/to/analysis/tbss/designs
+
+# Run randomise (permutation testing)
+uv run python scripts/run_tbss_analysis.py \
+    --tbss-dir /path/to/analysis/tbss --config config.yaml
+```
+
+### Voxelwise fMRI Analysis
+
+Whole-brain voxel-wise analysis for fALFF and ReHo using FSL randomise with 3D TFCE:
+
+```bash
+uv run python scripts/prepare_fmri_voxelwise.py \
+    --study-root /path/to/study \
+    --output-dir /path/to/analysis/voxelwise_fmri
+
+uv run python scripts/run_voxelwise_fmri_analysis.py \
+    --analysis-dir /path/to/analysis/voxelwise_fmri --config config.yaml
+```
+
+### Classification
+
+PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
+
+```bash
+uv run python scripts/run_classification_analysis.py \
+    --roi-dir /path/to/analysis/roi \
+    --output-dir /path/to/analysis/classification \
+    --metrics FA MD AD RD --n-permutations 5000
+```
+
+### Regression
+
+Dose-response regression with SVR, Ridge, and PLS:
+
+```bash
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /path/to/analysis/roi \
+    --output-dir /path/to/analysis/regression \
+    --metrics FA MD AD RD --n-permutations 5000
+```
+
+### MVPA (Multi-Voxel Pattern Analysis)
+
+Whole-brain decoding and searchlight mapping:
+
+```bash
+uv run python scripts/run_mvpa_analysis.py \
+    --study-root /path/to/study \
+    --output-dir /path/to/analysis/mvpa \
+    --metrics FA --n-permutations 1000
+```
+
+---
+
+## Reporting
+
+The `neurofaune/reporting/` module provides a unified analysis dashboard. Every analysis script automatically registers its results; the index generator builds a self-contained HTML dashboard.
+
+### Generating the Dashboard
+
+```bash
+# Backfill existing results and generate dashboard
+uv run python scripts/generate_analysis_index.py \
+    --analysis-root /path/to/analysis \
+    --study-name "BPA Rat Study" \
+    --backfill
+
+# Regenerate from existing registry
+uv run python scripts/generate_analysis_index.py \
+    --analysis-root /path/to/analysis
+
+# List registered entries
+uv run python scripts/generate_analysis_index.py \
+    --analysis-root /path/to/analysis --list
+```
+
+### Programmatic Usage
+
+```python
+from neurofaune.reporting import register, backfill_registry, generate_index_html
+
+# Register an analysis result
+register(
+    analysis_root=Path("/study/analysis"),
+    entry_id="tbss_per_pnd_p60",
+    analysis_type="tbss",
+    display_name="TBSS: PND60 Dose Response",
+    output_dir="tbss/randomise/per_pnd_p60",
+    summary_stats={"n_subjects": 49, "metrics": ["FA", "MD", "AD", "RD"]},
+)
+
+# Discover and register all existing results
+n_added = backfill_registry(Path("/study/analysis"), study_name="BPA Rat Study")
+
+# Regenerate the HTML dashboard
+generate_index_html(Path("/study/analysis"))
+```
+
+Supported analysis types: `tbss`, `roi_extraction`, `covnet`, `connectome`, `classification`, `regression`, `mvpa`, `batch_qc`.
+
+---
 
 ## Configuration System
 
@@ -283,38 +542,6 @@ brain, mask, info = skull_strip(
 
 All skull stripping parameters are configurable per modality in `config.yaml`.
 
-## Preprocessing Pipelines
-
-### Anatomical (T2w)
-
-N4 bias correction, two-pass Atropos+BET skull stripping, tissue segmentation (GM/WM/CSF), optional 3D-to-2D resampling, registration to age-matched template (ANTs SyN). 3D isotropic acquisitions are automatically detected and resampled to standard 2D geometry.
-
-### DTI
-
-5D-to-4D conversion, intensity normalization, skull stripping, GPU-accelerated eddy correction with slice padding, DTI tensor fitting (FA, MD, AD, RD), FA-to-T2w registration (ANTs affine).
-
-### Functional (fMRI)
-
-Volume discarding, adaptive skull stripping, motion correction (MCFLIRT), ICA denoising (MELODIC), spatial smoothing, temporal bandpass filtering, confound extraction (24 motion + aCompCor), BOLD-to-T2w registration (NCC Z-init + rigid).
-
-### MSME T2 Mapping
-
-Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartment analysis, MSME-to-T2w registration.
-
-## Group Analysis
-
-Neurofaune includes several group-level analysis tools, all operating in SIGMA atlas space:
-
-- **TBSS** — WM-skeleton voxel-wise analysis for DTI and MSME metrics (FSL randomise + 2D TFCE)
-- **Voxelwise fMRI** — Whole-brain voxel-wise analysis for fALFF and ReHo (FSL randomise + 3D TFCE)
-- **ROI Extraction** — Mean metrics per SIGMA atlas region (234 regions, 11 territories)
-- **CovNet** — Covariance network analysis (correlation matrices, NBS, graph metrics, whole-network tests) with dose-vs-control and cross-timepoint comparisons
-- **Classification** — PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV
-- **Regression** — Dose-response with SVR, Ridge, PLS
-- **MVPA** — Whole-brain decoding and searchlight mapping
-
-See `scripts/` for runner scripts and `neurofaune/analysis/` for library code.
-
 ## Architecture
 
 ```
@@ -333,8 +560,28 @@ neurofaune/
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
 │       └── skull_strip.py           # Unified skull stripping dispatcher
+├── connectome/                      # ROI extraction, connectivity, network analysis
+│   ├── roi_extraction.py            # Atlas-based ROI means and territory aggregation
+│   ├── functional.py                # BOLD FC matrices (Pearson, Fisher z)
+│   ├── matrices.py                  # Spearman correlation matrices per group
+│   ├── nbs.py                       # Network-Based Statistic (permutation testing)
+│   ├── graph_metrics.py             # Efficiency, clustering, modularity
+│   ├── whole_network.py             # Mantel, Frobenius, spectral divergence
+│   ├── visualization.py             # Heatmaps, network plots, comparison charts
+│   └── pipeline.py                  # CovNetAnalysis orchestrator class
+├── reporting/                       # Unified analysis dashboard
+│   ├── registry.py                  # JSON registry (file-locked, NFS-safe)
+│   ├── discover.py                  # Backfill existing results into registry
+│   ├── section_renderers.py         # Per-type HTML section builders
+│   └── index_generator.py           # Self-contained HTML dashboard generator
+├── analysis/                        # Group-level statistical analysis
+│   ├── func/                        # ReHo, fALFF (voxel-level resting-state)
+│   ├── tbss/                        # Tract-Based Spatial Statistics
+│   ├── stats/                       # FSL randomise wrapper, cluster reporting
+│   ├── classification/              # PERMANOVA, PCA, LDA, SVM
+│   ├── regression/                  # Dose-response regression
+│   └── mvpa/                        # Multi-voxel pattern analysis
 ├── templates/                       # Template building and registration
-├── analysis/                        # Group-level analysis (TBSS, ROI, CovNet, etc.)
 ├── registration/                    # Cross-modal registration utilities
 └── utils/                           # Transforms, exclusions, orientation
 ```
