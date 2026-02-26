@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from neurofaune.analysis.covnet.matrices import spearman_matrix
+from .matrices import spearman_matrix
 
 logger = logging.getLogger(__name__)
 

@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.covnet.pipeline import CovNetAnalysis
+from neurofaune.connectome import CovNetAnalysis
 
 logging.basicConfig(
     level=logging.INFO,

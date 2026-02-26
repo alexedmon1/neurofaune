@@ -29,9 +29,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from neurofaune.analysis.func import (
     compute_falff_map,
     compute_falff_zscore,
-    compute_fc_matrix,
     compute_reho_map,
     compute_reho_zscore,
+)
+from neurofaune.connectome.functional import (
+    compute_fc_matrix,
     extract_roi_timeseries,
     save_fc_matrix,
 )

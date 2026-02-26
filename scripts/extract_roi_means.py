@@ -26,7 +26,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.roi.extraction import (
+from neurofaune.connectome.roi_extraction import (
     extract_all_subjects,
     load_parcellation,
     merge_phenotype,

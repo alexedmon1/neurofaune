@@ -24,7 +24,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from neurofaune.analysis.func import (
+from neurofaune.connectome.functional import (
     compute_fc_matrix,
     extract_roi_timeseries,
     save_fc_matrix,

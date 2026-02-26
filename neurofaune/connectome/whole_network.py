@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from neurofaune.analysis.covnet.matrices import default_dose_comparisons, spearman_matrix
+from .matrices import default_dose_comparisons, spearman_matrix
 
 logger = logging.getLogger(__name__)
 

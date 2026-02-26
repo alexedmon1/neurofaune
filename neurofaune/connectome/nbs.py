@@ -19,7 +19,7 @@ import networkx as nx
 import numpy as np
 from scipy import stats
 
-from neurofaune.analysis.covnet.matrices import (
+from .matrices import (
     compute_spearman_matrices,
     default_dose_comparisons,
     fisher_z_transform,

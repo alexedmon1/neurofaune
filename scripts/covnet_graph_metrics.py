@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.covnet.pipeline import CovNetAnalysis
+from neurofaune.connectome import CovNetAnalysis
 from scripts.covnet_common import add_common_args
 
 logging.basicConfig(

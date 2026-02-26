@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from neurofaune.analysis.covnet.graph_metrics import compare_metrics, compute_metrics
-from neurofaune.analysis.covnet.matrices import (
+from .graph_metrics import compare_metrics, compute_metrics
+from .matrices import (
     bilateral_average,
     compute_spearman_matrices,
     cross_dose_timepoint_comparisons,
@@ -35,16 +35,16 @@ from neurofaune.analysis.covnet.matrices import (
     define_groups,
     load_and_prepare_data,
 )
-from neurofaune.analysis.covnet.nbs import fisher_z_edge_test
-from neurofaune.analysis.covnet.nbs import run_all_comparisons as _run_nbs_comparisons
-from neurofaune.analysis.covnet.visualization import (
+from .nbs import fisher_z_edge_test
+from .nbs import run_all_comparisons as _run_nbs_comparisons
+from .visualization import (
     plot_all_group_heatmaps,
     plot_correlation_heatmap,
     plot_difference_matrix,
     plot_graph_metrics_comparison,
     plot_nbs_network,
 )
-from neurofaune.analysis.covnet.whole_network import (
+from .whole_network import (
     run_all_comparisons as _run_whole_network_comparisons,
 )
 
