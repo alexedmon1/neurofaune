@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.reporting import (
+from neurofaune.reporting import (
     backfill_registry,
     generate_index_html,
     list_entries,
@@ -112,7 +112,7 @@ def main():
 
     # Update study name if provided
     if args.study_name:
-        from neurofaune.analysis.reporting.registry import save_registry
+        from neurofaune.reporting.registry import save_registry
 
         reg = load_registry(analysis_root)
         reg["study_name"] = args.study_name

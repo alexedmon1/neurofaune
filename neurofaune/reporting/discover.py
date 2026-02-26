@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from neurofaune.analysis.reporting.registry import load_registry, register
+from .registry import load_registry, register
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +317,51 @@ def _discover_mvpa(analysis_root: Path) -> List[Dict[str, Any]]:
     return entries
 
 
+def _discover_connectome(analysis_root: Path) -> List[Dict[str, Any]]:
+    """Discover functional connectome analysis summaries."""
+    entries = []
+    # Check both 'connectome' and 'fc' directory names
+    for dirname in ("connectome", "fc"):
+        fc_dir = analysis_root / dirname
+        if not fc_dir.is_dir():
+            continue
+
+        summary_path = fc_dir / "connectome_summary.json"
+        if not summary_path.exists():
+            summary_path = fc_dir / "fc_summary.json"
+        if not summary_path.exists():
+            continue
+
+        data = _read_json(summary_path)
+        if data is None:
+            continue
+
+        n_subjects = data.get("n_subjects", 0)
+        n_rois = data.get("n_rois", 0)
+        method = data.get("method", "Pearson")
+
+        # Collect figures
+        figures = []
+        for fig in sorted(fc_dir.rglob("*.png")):
+            figures.append(_rel(fig, analysis_root))
+
+        entries.append({
+            "entry_id": f"connectome_{dirname}",
+            "analysis_type": "connectome",
+            "display_name": f"Functional Connectome ({method})",
+            "output_dir": _rel(fc_dir, analysis_root),
+            "summary_stats": {
+                "n_subjects": n_subjects,
+                "n_rois": n_rois,
+                "method": method,
+            },
+            "figures": figures[:20],
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
+
+    return entries
+
+
 def _discover_batch_qc(analysis_root: Path) -> List[Dict[str, Any]]:
     """
     Discover batch QC summaries.
@@ -406,6 +451,7 @@ def backfill_registry(
     discoveries.extend(_discover_roi(analysis_root))
     discoveries.extend(_discover_tbss(analysis_root))
     discoveries.extend(_discover_covnet(analysis_root))
+    discoveries.extend(_discover_connectome(analysis_root))
     discoveries.extend(_discover_classification(analysis_root))
     discoveries.extend(_discover_regression(analysis_root))
     discoveries.extend(_discover_mvpa(analysis_root))
@@ -430,7 +476,7 @@ def backfill_registry(
 
     if n_added > 0 and auto_generate_index:
         try:
-            from neurofaune.analysis.reporting.index_generator import (
+            from .index_generator import (
                 generate_index_html,
             )
             generate_index_html(analysis_root)

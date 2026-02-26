@@ -544,7 +544,7 @@ Output structure:
 
     # Register each successful analysis with unified reporting
     try:
-        from neurofaune.analysis.reporting import register as report_register
+        from neurofaune.reporting import register as report_register
 
         analysis_root = tbss_dir.parent  # tbss_dir is .../analysis/tbss
         for analysis, result in results.items():

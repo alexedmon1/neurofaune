@@ -548,7 +548,7 @@ Output structure:
 
     # Register with unified reporting
     try:
-        from neurofaune.analysis.reporting import register as report_register
+        from neurofaune.reporting import register as report_register
 
         analysis_root = analysis_dir.parent
         for analysis, result in results.items():

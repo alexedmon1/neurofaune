@@ -171,7 +171,7 @@ def register(
 
     if auto_generate_index:
         try:
-            from neurofaune.analysis.reporting.index_generator import (
+            from .index_generator import (
                 generate_index_html,
             )
             generate_index_html(analysis_root, registry=registry)

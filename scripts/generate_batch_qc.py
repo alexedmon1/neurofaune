@@ -208,7 +208,7 @@ Output Structure:
 
     # Register with unified reporting system
     try:
-        from neurofaune.analysis.reporting import register as report_register
+        from neurofaune.reporting import register as report_register
 
         # analysis_root is typically {study_root}/analysis
         analysis_root = study_root / "analysis"

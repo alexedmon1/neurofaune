@@ -152,7 +152,7 @@ def main():
 
     # Register with unified reporting system
     try:
-        from neurofaune.analysis.reporting import register as report_register
+        from neurofaune.reporting import register as report_register
 
         # Determine analysis root (parent of roi dir)
         analysis_root = args.output_dir.parent

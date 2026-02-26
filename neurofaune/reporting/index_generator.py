@@ -11,18 +11,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from neurofaune.analysis.reporting.registry import load_registry
-from neurofaune.analysis.reporting.section_renderers import render_entry
+from .registry import load_registry
+from .section_renderers import render_entry
 
 logger = logging.getLogger(__name__)
 
 # Display order for analysis type groups
-_TYPE_ORDER = ["tbss", "roi_extraction", "covnet", "classification", "regression", "mvpa", "batch_qc"]
+_TYPE_ORDER = ["tbss", "roi_extraction", "covnet", "connectome", "classification", "regression", "mvpa", "batch_qc"]
 
 _TYPE_LABELS = {
     "tbss": "TBSS (Tract-Based Spatial Statistics)",
     "roi_extraction": "ROI Extraction",
     "covnet": "Covariance Network",
+    "connectome": "Functional Connectome",
     "classification": "Multivariate Classification",
     "regression": "Dose-Response Regression",
     "mvpa": "MVPA (Voxel-Level Decoding)",

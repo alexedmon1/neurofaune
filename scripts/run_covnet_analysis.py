@@ -328,7 +328,7 @@ def main():
 
     # Register with unified reporting system
     try:
-        from neurofaune.analysis.reporting import register as report_register
+        from neurofaune.reporting import register as report_register
 
         analysis_root = args.output_dir.parent
         n_subjects = max(

@@ -286,6 +286,27 @@ def render_mvpa(entry: Dict[str, Any], analysis_root: Path) -> str:
     )
 
 
+def render_connectome(entry: Dict[str, Any], analysis_root: Path) -> str:
+    """Render a Functional Connectome entry section."""
+    stats = entry.get("summary_stats", {})
+    cards = [
+        _stat_card(stats.get("n_subjects", "?"), "Subjects"),
+        _stat_card(stats.get("n_rois", "?"), "ROIs"),
+    ]
+    method = stats.get("method", "")
+    if method:
+        cards.append(_stat_card(method, "Method"))
+
+    gallery = _figures_gallery(entry.get("figures", []), analysis_root)
+    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+
+    return (
+        f'<div class="stats-grid">{"".join(cards)}</div>'
+        f"{output_link}"
+        f"{gallery}"
+    )
+
+
 def render_generic(entry: Dict[str, Any], analysis_root: Path) -> str:
     """Fallback renderer for unknown analysis types."""
     stats = entry.get("summary_stats", {})
@@ -301,6 +322,7 @@ RENDERERS = {
     "tbss": render_tbss,
     "roi_extraction": render_roi_extraction,
     "covnet": render_covnet,
+    "connectome": render_connectome,
     "classification": render_classification,
     "regression": render_regression,
     "mvpa": render_mvpa,
