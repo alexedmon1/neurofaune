@@ -34,6 +34,10 @@ from neurofaune.preprocess.utils.func.ica_denoising import (
     remove_noise_components,
     generate_ica_denoising_qc
 )
+from neurofaune.preprocess.utils.func.meica_classify import (
+    classify_meica_components,
+    generate_meica_qc,
+)
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.func.acompcor import (
     extract_acompcor_components,
@@ -1419,6 +1423,7 @@ def run_functional_preprocessing(
 
     # TEDANA config (for multi-echo)
     tedana_config = func_config.get('tedana', {})
+    meica_config = tedana_config.get('meica', {})
 
     # Try to read TR from JSON sidecar
     # BIDS convention: RepetitionTime = effective volume TR
@@ -1590,6 +1595,72 @@ def run_functional_preprocessing(
             ica_enabled = False
             classification = None
 
+        elif me_denoise_method == 'meica':
+            # ME-ICA: Optimal combination + MELODIC ICA + kappa/rho classification
+            # Step A: Optimal combination
+            optcom_dir = work_dir / 'optcom'
+            optcom_results = run_optimal_combination(
+                echo_files=me_masked_echoes,
+                echo_times_ms=echo_times,
+                output_dir=optcom_dir,
+                mask_file=brain_mask,
+            )
+            results['optcom'] = optcom_results
+
+            if 'optcom' not in optcom_results:
+                raise RuntimeError("Optimal combination produced no output")
+
+            bold_optcom = optcom_results['optcom']
+
+            # Step B: MELODIC ICA on optimally combined data
+            print(f"\n  Running MELODIC ICA on optimally combined data (auto-dim)...")
+            melodic_dir = work_dir / 'melodic'
+            melodic_outputs = run_melodic_ica(
+                input_file=bold_optcom,
+                output_dir=melodic_dir,
+                brain_mask=brain_mask,
+                tr=tr,
+                n_components=None,  # auto-estimate dimensionality
+            )
+
+            # Step C: ME-ICA classification using per-echo kappa/rho
+            rho_kappa_scale = meica_config.get('rho_kappa_scale', 1.0)
+            classification = classify_meica_components(
+                echo_files=me_masked_echoes,
+                echo_times_ms=echo_times,
+                melodic_dir=melodic_dir,
+                brain_mask_file=brain_mask,
+                rho_kappa_scale=rho_kappa_scale,
+            )
+
+            # Step D: Remove noise components via fsl_regfilt
+            bold_denoised = work_dir / f"{subject}_{session}_desc-meica_denoised_bold.nii.gz"
+            remove_noise_components(
+                input_file=bold_optcom,
+                output_file=bold_denoised,
+                melodic_dir=melodic_dir,
+                noise_components=classification['summary']['noise_components'],
+            )
+
+            # Step E: QC report
+            meica_qc_report = generate_meica_qc(
+                subject=subject,
+                session=session,
+                classification_results=classification,
+                melodic_dir=melodic_dir,
+                output_dir=qc_dir,
+            )
+
+            results['ica_denoising'] = {
+                'denoised_bold': bold_denoised,
+                'melodic_dir': melodic_dir,
+                'classification': classification,
+                'qc_report': meica_qc_report,
+            }
+
+            bold_for_smoothing = bold_denoised
+            ica_enabled = True
+
         elif me_denoise_method in ('optcom_melodic', 'optcom_only'):
             # Optimal combination (without ICA) via tedana's t2smap
             optcom_dir = work_dir / 'optcom'
@@ -1669,7 +1740,7 @@ def run_functional_preprocessing(
 
         else:
             raise ValueError(f"Unknown ME denoise method: {me_denoise_method}. "
-                             f"Use 'tedana', 'optcom_melodic', or 'optcom_only'.")
+                             f"Use 'tedana', 'meica', 'optcom_melodic', or 'optcom_only'.")
 
         bold_mcf = bold_for_smoothing
 
@@ -2087,14 +2158,49 @@ def run_functional_preprocessing(
     # Determine denoising method label for metadata
     if is_multiecho:
         me_method = tedana_config.get('method', 'tedana')
-        if me_method == 'optcom_melodic':
-            denoise_method_label = 'optcom_melodic'
-        elif me_method == 'optcom_only':
-            denoise_method_label = 'optcom_only'
-        else:
-            denoise_method_label = 'tedana'
+        denoise_method_label = {
+            'optcom_melodic': 'optcom_melodic',
+            'optcom_only': 'optcom_only',
+            'meica': 'meica',
+        }.get(me_method, 'tedana')
     else:
         denoise_method_label = 'ica' if ica_enabled else 'none'
+
+    # Build denoising-specific metadata
+    denoising_meta = {'method': denoise_method_label}
+
+    if denoise_method_label == 'tedana':
+        denoising_meta['tedana'] = {
+            'tedpca': str(tedana_config.get('tedpca', 'aic')),
+            'tree': tedana_config.get('tree', 'kundu'),
+        }
+    elif denoise_method_label == 'meica' and classification:
+        denoising_meta['meica'] = {
+            'rho_kappa_scale': meica_config.get('rho_kappa_scale', 1.0),
+            'kappa_elbow': classification.get('thresholds', {}).get('kappa_elbow'),
+            'rho_elbow': classification.get('thresholds', {}).get('rho_elbow'),
+            'kappa_median': classification.get('metrics', {}).get('kappa_median'),
+            'rho_median': classification.get('metrics', {}).get('rho_median'),
+            'n_signal_components': classification['summary']['n_signal'],
+            'n_noise_components': classification['summary']['n_noise'],
+        }
+    elif denoise_method_label == 'optcom_melodic' and ica_enabled and classification:
+        denoising_meta['ica'] = {
+            'enabled': ica_enabled,
+            'n_components': ica_config_local.get('n_components', 30),
+            'classification_mode': ica_config_local.get('classification_mode', 'score'),
+            'n_signal_components': classification['summary']['n_signal'],
+            'n_noise_components': classification['summary']['n_noise'],
+        }
+
+    if denoise_method_label not in ('tedana', 'meica', 'optcom_melodic') and ica_enabled and classification:
+        denoising_meta['ica'] = {
+            'enabled': ica_enabled,
+            'n_components': ica_config_local.get('n_components', 30),
+            'classification_mode': ica_config_local.get('classification_mode', 'score'),
+            'n_signal_components': classification['summary']['n_signal'],
+            'n_noise_components': classification['summary']['n_noise'],
+        }
 
     metadata = {
         'subject': subject,
@@ -2119,20 +2225,7 @@ def run_functional_preprocessing(
             'highpass_hz': highpass_freq,
             'lowpass_hz': lowpass_freq
         },
-        'denoising': {
-            'method': denoise_method_label,
-            'tedana': {
-                'tedpca': str(tedana_config.get('tedpca', 'aic')),
-                'tree': tedana_config.get('tree', 'kundu'),
-            } if denoise_method_label == 'tedana' else None,
-            'ica': {
-                'enabled': ica_enabled,
-                'n_components': ica_config_local.get('n_components', 30) if ica_enabled else None,
-                'classification_mode': ica_config_local.get('classification_mode', 'score') if ica_enabled else None,
-                'n_signal_components': classification['summary']['n_signal'] if (ica_enabled and classification) else None,
-                'n_noise_components': classification['summary']['n_noise'] if (ica_enabled and classification) else None
-            } if (ica_enabled and classification) else None,
-        },
+        'denoising': denoising_meta,
         'acompcor': {
             'enabled': acompcor_enabled,
             'n_components': results.get('acompcor', {}).get('n_components') if acompcor_enabled else None,
