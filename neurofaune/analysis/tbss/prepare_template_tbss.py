@@ -55,7 +55,7 @@ MSME_METRICS = ['MWF', 'IWF', 'CSFF', 'T2']
 # Per-modality defaults: (transform_prefix, derivatives_subdir, coverage_metric)
 MODALITY_DEFAULTS = {
     'dti':  ('FA',   'dwi',  'FA'),
-    'msme': ('MSME', 'msme', 'MWF'),
+    'msme': ('MSME', 'msme', 'T2'),
 }
 
 
