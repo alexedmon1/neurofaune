@@ -3,18 +3,17 @@
 Prepare MSME metric data for TBSS-style voxel-wise analysis.
 
 Discovers MSME SIGMA-space maps (MWF, IWF, CSFF, T2), merges with
-study tracker metadata, stacks into masked 4D volumes using the
-DTI-derived WM analysis mask, and writes subject list + tbss_config.json.
+study tracker metadata, stacks into masked 4D volumes using the shared
+WM analysis mask, and writes subject list + tbss_config.json.
 
-The analysis mask from DTI TBSS is reused because:
-  - It's derived from FA skeletonization / WM thresholding
-  - MSME maps cover the same white matter regions
-  - Using the same mask enables direct cross-modality comparison
+The analysis mask is a modality-agnostic WM probability mask (SIGMA
+WM template thresholded + boundary erosion), shared across DTI and
+MSME TBSS analyses for direct cross-modality comparison.
 
 Usage:
     uv run python scripts/prepare_msme_tbss.py \
         --derivatives-dir /mnt/arborea/bpa-rat/derivatives \
-        --dti-tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
+        --analysis-mask /mnt/arborea/bpa-rat/analysis/tbss/stats/analysis_mask.nii.gz \
         --output-dir /mnt/arborea/bpa-rat/analysis/tbss_msme \
         --study-tracker /mnt/arborea/bpa-rat/study_tracker_combined_250916.csv
 """
@@ -155,7 +154,7 @@ Output structure:
     subject_list.txt          # Deterministic subject order
     subject_manifest.json     # Per-subject metadata
     stats/
-      analysis_mask.nii.gz    # Copied from DTI TBSS
+      analysis_mask.nii.gz    # Shared WM probability mask
       all_MWF.nii.gz          # 4D masked volumes
       all_IWF.nii.gz
       all_CSFF.nii.gz
@@ -165,8 +164,8 @@ Output structure:
 
     parser.add_argument('--derivatives-dir', type=Path, required=True,
                         help='Path to derivatives directory')
-    parser.add_argument('--dti-tbss-dir', type=Path, required=True,
-                        help='Path to DTI TBSS directory (for analysis mask)')
+    parser.add_argument('--analysis-mask', type=Path, required=True,
+                        help='Path to WM analysis mask NIfTI (shared across modalities)')
     parser.add_argument('--output-dir', type=Path, required=True,
                         help='Output directory for MSME TBSS data')
     parser.add_argument('--study-tracker', type=Path, required=True,
@@ -180,7 +179,7 @@ Output structure:
     logger.info("MSME TBSS Data Preparation")
     logger.info("=" * 70)
     logger.info(f"Derivatives: {args.derivatives_dir}")
-    logger.info(f"DTI TBSS: {args.dti_tbss_dir}")
+    logger.info(f"Analysis mask: {args.analysis_mask}")
     logger.info(f"Output: {args.output_dir}")
     logger.info(f"Metrics: {args.metrics}")
 
@@ -189,9 +188,8 @@ Output structure:
         logger.error(f"Derivatives dir not found: {args.derivatives_dir}")
         sys.exit(1)
 
-    dti_mask = args.dti_tbss_dir / 'stats' / 'analysis_mask.nii.gz'
-    if not dti_mask.exists():
-        logger.error(f"DTI analysis mask not found: {dti_mask}")
+    if not args.analysis_mask.exists():
+        logger.error(f"Analysis mask not found: {args.analysis_mask}")
         sys.exit(1)
 
     if not args.study_tracker.exists():
@@ -228,10 +226,10 @@ Output structure:
     stats_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy analysis mask from DTI TBSS
+    # Copy analysis mask
     mask_dst = stats_dir / 'analysis_mask.nii.gz'
-    shutil.copy2(dti_mask, mask_dst)
-    logger.info(f"Copied analysis mask from {dti_mask}")
+    shutil.copy2(args.analysis_mask, mask_dst)
+    logger.info(f"Copied analysis mask from {args.analysis_mask}")
 
     mask_img = nib.load(mask_dst)
     mask_data = mask_img.get_fdata() > 0
@@ -282,7 +280,7 @@ Output structure:
         'metrics': args.metrics,
         'n_subjects': len(merged),
         'subject_list_sha256': subject_list_hash,
-        'analysis_mask_source': str(dti_mask),
+        'analysis_mask_source': str(args.analysis_mask),
         'date_prepared': datetime.now().isoformat(),
     }
     with open(output_dir / 'tbss_config.json', 'w') as f:

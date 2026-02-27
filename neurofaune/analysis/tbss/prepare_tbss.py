@@ -402,10 +402,9 @@ def warp_metric_to_sigma(
 
 
 def create_wm_mask(
-    mean_fa: Path,
     config: Dict,
     output_dir: Path,
-    fa_threshold: float = 0.2,
+    reference_img: Path,
     wm_prob_threshold: float = 0.3,
     erosion_voxels: int = 2
 ) -> Tuple[Path, Path]:
@@ -413,13 +412,15 @@ def create_wm_mask(
     Create interior WM mask excluding exterior WM artifacts.
 
     Uses SIGMA study-space WM probability template to identify true WM,
-    then erodes from brain boundary to remove exterior high-FA voxels.
+    then erodes from brain boundary to remove exterior voxels. No FA
+    gating — the mask is purely tissue-informed so it can be shared
+    across modalities (DTI, MSME, etc.).
 
     Args:
-        mean_fa: Path to mean FA in SIGMA space
         config: Configuration dictionary
         output_dir: Output directory for masks
-        fa_threshold: Minimum FA for WM (default: 0.2 for rodent)
+        reference_img: Path to a reference NIfTI in SIGMA space (for
+            affine/shape; typically mean FA or the SIGMA template)
         wm_prob_threshold: Minimum WM probability (default: 0.3)
         erosion_voxels: Voxels to erode from brain boundary
 
@@ -430,41 +431,37 @@ def create_wm_mask(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load mean FA
-    fa_img = nib.load(mean_fa)
-    fa_data = fa_img.get_fdata()
+    ref_img = nib.load(reference_img)
 
     # Load SIGMA WM probability
     study_root = Path(get_config_value(config, 'paths.study_root'))
     wm_prob_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_WM.nii.gz'
 
     if not wm_prob_file.exists():
-        logger.warning(f"SIGMA WM probability not found: {wm_prob_file}")
-        logger.warning("Falling back to FA-only mask (no tissue-informed masking)")
-        # Fallback: just threshold FA
-        wm_mask = (fa_data > fa_threshold).astype(np.uint8)
-    else:
-        wm_prob_img = nib.load(wm_prob_file)
-        wm_prob_data = wm_prob_img.get_fdata()
+        raise FileNotFoundError(
+            f"SIGMA WM probability template not found: {wm_prob_file}"
+        )
 
-        # Normalize WM probability to [0,1] if needed
-        if wm_prob_data.max() > 1.0:
-            wm_prob_data = wm_prob_data / wm_prob_data.max()
+    wm_prob_img = nib.load(wm_prob_file)
+    wm_prob_data = wm_prob_img.get_fdata()
 
-        # Create WM mask: WM probability AND FA above threshold
-        wm_mask = ((wm_prob_data > wm_prob_threshold) &
-                   (fa_data > fa_threshold)).astype(np.uint8)
+    # Normalize WM probability to [0,1] if needed
+    if wm_prob_data.max() > 1.0:
+        wm_prob_data = wm_prob_data / wm_prob_data.max()
 
-        # Save WM probability in SIGMA space for reference
-        wm_prob_out = output_dir / 'wm_probability_sigma.nii.gz'
-        nib.save(nib.Nifti1Image(wm_prob_data, fa_img.affine), wm_prob_out)
+    # Create WM mask from probability only
+    wm_mask = (wm_prob_data > wm_prob_threshold).astype(np.uint8)
+
+    # Save WM probability in SIGMA space for reference
+    wm_prob_out = output_dir / 'wm_probability_sigma.nii.gz'
+    nib.save(nib.Nifti1Image(wm_prob_data, ref_img.affine), wm_prob_out)
 
     # Erode from brain boundary to remove exterior WM
     if erosion_voxels > 0:
         from scipy import ndimage
 
-        # Create brain mask from FA > 0
-        brain_mask = (fa_data > 0).astype(np.uint8)
+        # Create brain mask from WM probability > 0
+        brain_mask = (wm_prob_data > 0).astype(np.uint8)
 
         # Erode brain mask
         struct = ndimage.generate_binary_structure(3, 1)
@@ -495,8 +492,8 @@ def create_wm_mask(
     interior_mask_file = output_dir / 'interior_wm_mask.nii.gz'
     exterior_mask_file = output_dir / 'exterior_wm_removed.nii.gz'
 
-    nib.save(nib.Nifti1Image(interior_wm, fa_img.affine), interior_mask_file)
-    nib.save(nib.Nifti1Image(exterior_removed, fa_img.affine), exterior_mask_file)
+    nib.save(nib.Nifti1Image(interior_wm, ref_img.affine), interior_mask_file)
+    nib.save(nib.Nifti1Image(exterior_removed, ref_img.affine), exterior_mask_file)
 
     n_interior = int(np.sum(interior_wm))
     n_exterior = int(np.sum(exterior_removed))
@@ -933,8 +930,6 @@ def prepare_tbss_data(
     cohorts: List[str] = None,
     subjects: Optional[List[str]] = None,
     exclude_file: Optional[Path] = None,
-    fa_threshold: float = 0.2,
-    skeleton_threshold: float = 0.3,
     wm_prob_threshold: float = 0.3,
     erosion_voxels: int = 2,
     dry_run: bool = False,
@@ -943,15 +938,15 @@ def prepare_tbss_data(
     """
     Main workflow: Prepare TBSS-style analysis from preprocessed DTI data.
 
-    Uses a thresholded WM mask as the analysis mask rather than skeleton
-    projection, since rodent WM tracts are thin enough that skeletonization
-    provides no benefit over direct masking.
+    Uses a tissue-informed WM mask (SIGMA WM probability with boundary
+    erosion) as the analysis mask. The mask is modality-agnostic and can
+    be shared across DTI, MSME, etc.
 
     Phases:
     1. Discover and validate subjects
     2. Collect SIGMA-space metrics (prewarped) or warp from native space
     3. Create mean FA and WM mask
-    4. Create analysis mask (WM mask thresholded at analysis FA level)
+    4. Create analysis mask (interior WM mask)
     5. Mask metrics with analysis mask
     6. Generate manifest
 
@@ -962,9 +957,6 @@ def prepare_tbss_data(
         cohorts: Cohorts to include (default: all)
         subjects: Explicit subject list (format: 'sub-Rat1_ses-p60')
         exclude_file: Path to exclusion list
-        fa_threshold: FA threshold for WM mask creation
-        skeleton_threshold: FA threshold for analysis mask (higher = more
-            selective, removes partial-volume edges)
         wm_prob_threshold: WM probability threshold
         erosion_voxels: Erosion from brain boundary
         dry_run: If True, only discover subjects without processing
@@ -990,8 +982,8 @@ def prepare_tbss_data(
     logger.info(f"Metrics: {metrics}")
     logger.info(f"Cohorts: {cohorts}")
     logger.info(f"Output: {output_dir}")
-    logger.info(f"WM mask FA threshold: {fa_threshold}")
-    logger.info(f"Analysis mask FA threshold: {skeleton_threshold}")
+    logger.info(f"WM probability threshold: {wm_prob_threshold}")
+    logger.info(f"Erosion voxels: {erosion_voxels}")
     logger.info(f"Use prewarped SIGMA files: {use_prewarped}")
 
     # Phase 1: Discover subjects
@@ -1120,31 +1112,25 @@ def prepare_tbss_data(
     nib.save(nib.Nifti1Image(mean_fa_data, affine), mean_fa_file)
     logger.info(f"Mean FA created from {len(fa_files)} subjects")
 
-    # Create WM mask
+    # Create WM mask (purely tissue-informed, no FA gating)
     wm_mask_dir = output_dir / 'wm_mask'
     interior_mask, exterior_mask = create_wm_mask(
-        mean_fa=mean_fa_file,
         config=config,
         output_dir=wm_mask_dir,
-        fa_threshold=fa_threshold,
+        reference_img=mean_fa_file,
         wm_prob_threshold=wm_prob_threshold,
         erosion_voxels=erosion_voxels
     )
 
-    # Phase 4: Create analysis mask (thresholded WM mask)
-    # For rodent brains, WM tracts are thin enough that skeletonization is
-    # unnecessary. Instead, threshold the mean FA within the WM mask to
-    # exclude partial-volume edge voxels.
+    # Phase 4: Analysis mask = interior WM mask
+    # The WM mask is based on SIGMA WM probability with boundary erosion,
+    # making it modality-agnostic (usable for DTI, MSME, etc.).
     logger.info("\n[Phase 4] Creating analysis mask...")
-    analysis_mask_data = (
-        (nib.load(interior_mask).get_fdata() > 0) &
-        (mean_fa_data >= skeleton_threshold)
-    ).astype(np.uint8)
+    analysis_mask_data = (nib.load(interior_mask).get_fdata() > 0).astype(np.uint8)
     analysis_mask_file = stats_dir / 'analysis_mask.nii.gz'
     nib.save(nib.Nifti1Image(analysis_mask_data, affine), analysis_mask_file)
     n_mask_voxels = int(analysis_mask_data.sum())
-    logger.info(f"Analysis mask: {n_mask_voxels} voxels "
-                f"(WM mask with FA >= {skeleton_threshold})")
+    logger.info(f"Analysis mask: {n_mask_voxels} voxels (interior WM)")
 
     # Phase 5: Mask metrics with analysis mask
     logger.info("\n[Phase 5] Masking metrics...")
@@ -1250,11 +1236,6 @@ Examples:
                         help='Path to subject list file (one per line, format: sub-Rat1_ses-p60)')
     parser.add_argument('--exclude-file', type=Path,
                         help='Path to exclusion list from batch QC')
-    parser.add_argument('--fa-threshold', type=float, default=0.2,
-                        help='FA threshold for WM mask (default: 0.2)')
-    parser.add_argument('--analysis-threshold', type=float, default=0.3,
-                        dest='skeleton_threshold',
-                        help='FA threshold for analysis mask within WM (default: 0.3)')
     parser.add_argument('--wm-prob-threshold', type=float, default=0.3,
                         help='WM probability threshold (default: 0.3)')
     parser.add_argument('--erosion-voxels', type=int, default=2,
@@ -1284,8 +1265,6 @@ Examples:
         cohorts=args.cohorts,
         subjects=subjects,
         exclude_file=args.exclude_file,
-        fa_threshold=args.fa_threshold,
-        skeleton_threshold=args.skeleton_threshold,
         wm_prob_threshold=args.wm_prob_threshold,
         erosion_voxels=args.erosion_voxels,
         dry_run=args.dry_run,
