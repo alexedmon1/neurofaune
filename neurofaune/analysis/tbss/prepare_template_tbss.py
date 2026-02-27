@@ -50,6 +50,13 @@ from neurofaune.analysis.tbss.prepare_tbss import (
 )
 
 DTI_METRICS = ['FA', 'MD', 'AD', 'RD']
+MSME_METRICS = ['MWF', 'IWF', 'CSFF', 'T2']
+
+# Per-modality defaults: (transform_prefix, derivatives_subdir, coverage_metric)
+MODALITY_DEFAULTS = {
+    'dti':  ('FA',   'dwi',  'FA'),
+    'msme': ('MSME', 'msme', 'MWF'),
+}
 
 
 def warp_atlas_to_template(
@@ -148,16 +155,20 @@ def discover_template_subjects(
     metrics: List[str],
     exclude_file: Optional[Path] = None,
     subject_list: Optional[List[str]] = None,
+    transform_prefix: str = 'FA',
+    derivatives_subdir: str = 'dwi',
 ) -> List[SubjectData]:
     """
-    Find subjects with FA_to_template transforms and native DTI metrics.
+    Find subjects with modality-to-template transforms and native metrics.
 
     Args:
         study_root: Study root directory
         cohort: Age cohort (p30, p60, p90)
-        metrics: DTI metrics to require
+        metrics: Metrics to require (e.g. FA/MD/AD/RD or MWF/IWF/CSFF/T2)
         exclude_file: Optional exclusion list
         subject_list: Optional explicit subject list
+        transform_prefix: Transform name prefix ('FA' or 'MSME')
+        derivatives_subdir: Subdirectory under derivatives ('dwi' or 'msme')
 
     Returns:
         List of SubjectData with validation status
@@ -217,17 +228,17 @@ def discover_template_subjects(
 
         sd = SubjectData(subject=subject, session=session, cohort=cohort)
 
-        # Check FA_to_template transform
+        # Check modality_to_template transform
         subj_transforms = transforms_dir / subject / session
-        fa_to_tpl = subj_transforms / 'FA_to_template_0GenericAffine.mat'
-        if not fa_to_tpl.exists():
-            sd.exclusion_reason = 'Missing FA_to_template transform'
+        mod_to_tpl = subj_transforms / f'{transform_prefix}_to_template_0GenericAffine.mat'
+        if not mod_to_tpl.exists():
+            sd.exclusion_reason = f'Missing {transform_prefix}_to_template transform'
             subjects_data.append(sd)
             continue
-        sd.fa_to_t2w_affine = fa_to_tpl  # reusing field for the affine
+        sd.fa_to_t2w_affine = mod_to_tpl  # reusing field for the affine
 
-        # Check native DTI metrics
-        dwi_dir = derivatives_dir / subject / session / 'dwi'
+        # Check native metrics
+        dwi_dir = derivatives_dir / subject / session / derivatives_subdir
         missing_metrics = []
         for metric in metrics:
             metric_file = _find_metric_file(dwi_dir, subject, session, metric)
@@ -362,6 +373,7 @@ def prepare_template_tbss_data(
     erosion_voxels: int = 2,
     exclude_file: Optional[Path] = None,
     subject_list: Optional[List[str]] = None,
+    modality: str = 'dti',
 ) -> Dict:
     """
     Main 7-phase workflow for template-space TBSS preparation.
@@ -370,18 +382,21 @@ def prepare_template_tbss_data(
         study_root: Study root directory
         output_dir: Output directory for this cohort's TBSS data
         cohort: Age cohort (p30, p60, p90)
-        metrics: DTI metrics to prepare (default: FA MD AD RD)
-        min_coverage: Minimum fraction of subjects with nonzero FA per voxel
+        metrics: Metrics to prepare (default depends on modality)
+        min_coverage: Minimum fraction of subjects with nonzero coverage per voxel
         wm_prob_threshold: WM probability threshold for mask
         erosion_voxels: Erosion from brain boundary in voxels
         exclude_file: Path to exclusion list
         subject_list: Optional explicit subject list
+        modality: 'dti' or 'msme'
 
     Returns:
         Dict with preparation results
     """
+    transform_prefix, derivatives_subdir, coverage_metric = MODALITY_DEFAULTS[modality]
+
     if metrics is None:
-        metrics = DTI_METRICS
+        metrics = DTI_METRICS if modality == 'dti' else MSME_METRICS
 
     study_root = Path(study_root)
     output_dir = Path(output_dir)
@@ -393,10 +408,11 @@ def prepare_template_tbss_data(
     reference = study_root / 'templates' / 'anat' / cohort / f'tpl-BPARat_{cohort}_T2w.nii.gz'
 
     logger.info("=" * 80)
-    logger.info(f"TEMPLATE-SPACE TBSS PREPARATION — {cohort}")
+    logger.info(f"TEMPLATE-SPACE TBSS PREPARATION — {cohort} ({modality.upper()})")
     logger.info("=" * 80)
     logger.info(f"Study root: {study_root}")
     logger.info(f"Cohort: {cohort}")
+    logger.info(f"Modality: {modality} (transform={transform_prefix}, dir={derivatives_subdir})")
     logger.info(f"Metrics: {metrics}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"Min coverage: {min_coverage}")
@@ -433,6 +449,8 @@ def prepare_template_tbss_data(
         metrics=metrics,
         exclude_file=exclude_file,
         subject_list=subject_list,
+        transform_prefix=transform_prefix,
+        derivatives_subdir=derivatives_subdir,
     )
 
     included = [s for s in subjects_data if s.included]
@@ -442,8 +460,8 @@ def prepare_template_tbss_data(
 
     logger.info(f"Found {len(included)} valid subjects for {cohort}")
 
-    # ── Phase 4: Warp DTI metrics to template space ─────────────────────
-    logger.info(f"\n[Phase 4] Warping DTI metrics to template space...")
+    # ── Phase 4: Warp metrics to template space ───────────────────────
+    logger.info(f"\n[Phase 4] Warping {modality.upper()} metrics to template space...")
     transforms_dir = study_root / 'transforms'
 
     for metric in metrics:
@@ -459,11 +477,12 @@ def prepare_template_tbss_data(
                 )
                 continue
 
-            # For FA, reuse existing FA_to_template_Warped.nii.gz if present
-            if metric == 'FA':
+            # For DTI FA, reuse existing FA_to_template_Warped.nii.gz
+            # (MSME Warped file is raw echo, not a derived metric — skip)
+            if modality == 'dti' and metric == coverage_metric:
                 prewarped = (
                     transforms_dir / sd.subject / session
-                    / 'FA_to_template_Warped.nii.gz'
+                    / f'{transform_prefix}_to_template_Warped.nii.gz'
                 )
                 if prewarped.exists():
                     import shutil
@@ -474,10 +493,10 @@ def prepare_template_tbss_data(
                     )
                     continue
 
-            # Warp native metric via FA_to_template affine
+            # Warp native metric via modality_to_template affine
             transform = (
                 transforms_dir / sd.subject / session
-                / 'FA_to_template_0GenericAffine.mat'
+                / f'{transform_prefix}_to_template_0GenericAffine.mat'
             )
             logger.info(
                 f"  [{i+1}/{len(included)}] {sd.subject} {metric}"
@@ -502,21 +521,21 @@ def prepare_template_tbss_data(
 
     # ── Phase 5: Build coverage mask ────────────────────────────────────
     logger.info("\n[Phase 5] Building coverage mask...")
-    fa_dir = output_dir / 'FA'
-    warped_fa_files = [
-        fa_dir / f'{sd.subject}_{sd.session}_FA_template.nii.gz'
+    cov_dir = output_dir / coverage_metric
+    warped_cov_files = [
+        cov_dir / f'{sd.subject}_{sd.session}_{coverage_metric}_template.nii.gz'
         for sd in included
     ]
-    missing_fa = [f for f in warped_fa_files if not f.exists()]
-    if missing_fa:
-        logger.error(f"Missing FA files for {len(missing_fa)} subjects")
-        return {"success": False, "error": f"Missing FA: {missing_fa[:5]}"}
+    missing_cov = [f for f in warped_cov_files if not f.exists()]
+    if missing_cov:
+        logger.error(f"Missing {coverage_metric} files for {len(missing_cov)} subjects")
+        return {"success": False, "error": f"Missing {coverage_metric}: {missing_cov[:5]}"}
 
     stats_dir = output_dir / 'stats'
     stats_dir.mkdir(parents=True, exist_ok=True)
 
     analysis_mask_file, coverage_file = build_coverage_mask(
-        warped_fa_files=warped_fa_files,
+        warped_fa_files=warped_cov_files,
         wm_mask=interior_mask,
         output_dir=stats_dir,
         min_coverage=min_coverage,
@@ -524,7 +543,7 @@ def prepare_template_tbss_data(
 
     # ── Phase 6: Stack 4D volumes ───────────────────────────────────────
     logger.info("\n[Phase 6] Stacking 4D volumes...")
-    first_img = nib.load(warped_fa_files[0])
+    first_img = nib.load(warped_cov_files[0])
     shape_3d = first_img.shape[:3]
     affine = first_img.affine
     analysis_mask_data = (nib.load(analysis_mask_file).get_fdata() > 0)
@@ -548,12 +567,12 @@ def prepare_template_tbss_data(
         nib.save(nib.Nifti1Image(stack_masked, affine), out_4d)
         logger.info(f"  {metric}: {stack_masked.shape}")
 
-    # Mean FA
-    fa_stack = nib.load(stats_dir / 'all_FA.nii.gz').get_fdata()
-    mean_fa = np.mean(fa_stack, axis=-1).astype(np.float32)
-    mean_fa_file = stats_dir / 'mean_FA.nii.gz'
-    nib.save(nib.Nifti1Image(mean_fa, affine), mean_fa_file)
-    logger.info(f"  mean FA saved")
+    # Mean of coverage metric (FA for DTI, MWF for MSME)
+    cov_stack = nib.load(stats_dir / f'all_{coverage_metric}.nii.gz').get_fdata()
+    mean_cov = np.mean(cov_stack, axis=-1).astype(np.float32)
+    mean_fa_file = stats_dir / 'mean_FA.nii.gz'  # keep name for FSL compat
+    nib.save(nib.Nifti1Image(mean_cov, affine), mean_fa_file)
+    logger.info(f"  mean {coverage_metric} saved as mean_FA.nii.gz")
 
     # ── Phase 7: Write manifests ────────────────────────────────────────
     logger.info("\n[Phase 7] Writing manifests...")
@@ -635,9 +654,12 @@ Examples:
     parser.add_argument('--cohort', type=str, required=True,
                         choices=['p30', 'p60', 'p90'],
                         help='Age cohort')
-    parser.add_argument('--metrics', nargs='+', default=DTI_METRICS,
-                        choices=DTI_METRICS,
-                        help='Metrics to prepare (default: FA MD AD RD)')
+    parser.add_argument('--modality', type=str, default='dti',
+                        choices=['dti', 'msme'],
+                        help='Modality (default: dti)')
+    parser.add_argument('--metrics', nargs='+', default=None,
+                        help='Metrics to prepare (default: FA MD AD RD for dti, '
+                             'MWF IWF CSFF T2 for msme)')
     parser.add_argument('--min-coverage', type=float, default=0.75,
                         help='Min fraction of subjects with nonzero voxel (default: 0.75)')
     parser.add_argument('--wm-prob-threshold', type=float, default=0.3,
@@ -670,6 +692,7 @@ Examples:
         erosion_voxels=args.erosion_voxels,
         exclude_file=args.exclude_file,
         subject_list=subjects,
+        modality=args.modality,
     )
 
     exit(0 if result['success'] else 1)
