@@ -234,6 +234,7 @@ def register_subject(
     n_cores: int = 4,
     force: bool = False,
     z_range: Optional[tuple] = None,
+    z_anchor: Optional[int] = None,
     config: Optional[Dict] = None
 ) -> Dict:
     """
@@ -310,6 +311,7 @@ def register_subject(
                 work_dir=work_dir,
                 n_cores=n_cores,
                 z_range=z_range,
+                z_anchor=z_anchor,
                 config=config
             )
             result['steps']['msme_to_template'] = 'computed'
@@ -391,6 +393,8 @@ def main():
                         help='Show what would be processed without running')
     parser.add_argument('--z-range', type=int, nargs=2, metavar=('MIN', 'MAX'),
                         help='Constrain NCC Z search to slice range (default: 14 28)')
+    parser.add_argument('--z-anchor', type=int, default=None,
+                        help='Fixed template slice for MSME middle slice (bypasses NCC scan)')
     parser.add_argument('--fix-outliers', action='store_true',
                         help='After registration, detect z-outliers and re-register with tightened z_range')
     parser.add_argument('--outlier-threshold', type=float, default=3.0,
@@ -414,7 +418,11 @@ def main():
     print("=" * 70)
     print(f"Study root: {args.study_root}")
     print(f"Cores: {args.n_cores}")
-    print(f"Pipeline: MSME (rigid, NCC Z-init) → Template → SIGMA (pre-computed SyN)")
+    if args.z_anchor is not None:
+        print(f"Z-init: fixed anchor (middle MSME slice -> template slice {args.z_anchor})")
+    else:
+        print(f"Z-init: NCC scan")
+    print(f"Pipeline: MSME (rigid) → Template → SIGMA (pre-computed SyN)")
     print()
 
     # Discover subjects
@@ -476,6 +484,7 @@ def main():
             n_cores=args.n_cores,
             force=args.force,
             z_range=z_range,
+            z_anchor=args.z_anchor,
             config=config
         )
         results.append(result)

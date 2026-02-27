@@ -30,15 +30,15 @@ def register_msme_to_template(
     work_dir: Path,
     n_cores: int = 4,
     z_range: Optional[Tuple[int, int]] = None,
+    z_anchor: Optional[int] = None,
     config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Register MSME first echo directly to the cohort template.
 
-    Uses NCC-based Z initialization followed by rigid-only registration.
-    MSME has only 5 slices covering a small portion of the 41-slice template,
-    requiring careful Z positioning. This produces better SIGMA atlas overlap
-    than the old MSME→T2w→Template chain.
+    Uses either fixed-anchor Z positioning or NCC-based Z initialization,
+    followed by rigid-only registration. MSME has only 5 slices covering
+    a small portion of the 41-slice template, requiring careful Z positioning.
 
     Parameters
     ----------
@@ -59,9 +59,14 @@ def register_msme_to_template(
     z_range : tuple of (int, int), optional
         (min_slice, max_slice) to constrain the NCC Z search. Explicit value
         takes priority over config. If neither provided, defaults to (14, 28).
+        Ignored when z_anchor is set.
+    z_anchor : int, optional
+        Template slice index where the MSME middle slice should land. When set,
+        bypasses NCC scan entirely and computes z_offset directly. Explicit
+        value takes priority over config (msme.registration.z_anchor).
     config : dict, optional
-        Configuration dictionary. If provided and z_range is None, reads
-        z_range from msme.registration.z_range.
+        Configuration dictionary. If provided and z_anchor/z_range are None,
+        reads from msme.registration.z_anchor / msme.registration.z_range.
 
     Returns
     -------
@@ -81,19 +86,45 @@ def register_msme_to_template(
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'MSME_to_template_'
 
-    # Step 1: Find optimal Z offset via NCC scan
-    # Priority: explicit arg > config > hardcoded default (14, 28)
-    if z_range is None:
-        if config:
-            z_range_cfg = get_config_value(config, 'msme.registration.z_range', default=None)
-            if z_range_cfg is not None:
-                z_range = tuple(z_range_cfg)
+    # Step 1: Z initialization
+    # Resolve z_anchor: explicit arg > config > None (fall back to NCC scan)
+    if z_anchor is None and config:
+        z_anchor = get_config_value(config, 'msme.registration.z_anchor', default=None)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if z_anchor is not None:
+        # Fixed anchor mode: compute z_offset directly from anchor position
+        n_msme_slices = msme_img.shape[2]
+        middle_slice = n_msme_slices // 2  # index 2 for 5 slices
+        z_start = z_anchor - middle_slice
+        z_offset_mm = z_start * float(template_img.header.get_zooms()[2])
+
+        print(f"\n  Fixed anchor mode: middle MSME slice -> template slice {z_anchor}")
+        print(f"  MSME maps to template slices {z_start}-{z_start + n_msme_slices - 1}")
+
+        # Write ITK initial transform (same format as NCC path)
+        initial_transform = work_dir / 'initial_z_offset.txt'
+        with open(initial_transform, 'w') as f:
+            f.write("#Insight Transform File V1.0\n")
+            f.write("#Transform 0\n")
+            f.write("Transform: AffineTransform_double_3_3\n")
+            f.write(f"Parameters: 1 0 0 0 1 0 0 0 1 0 0 {-z_offset_mm}\n")
+            f.write("FixedParameters: 0 0 0\n")
+    else:
+        # NCC scan mode (original behavior)
+        # Priority: explicit arg > config > hardcoded default (14, 28)
         if z_range is None:
-            z_range = (14, 28)
-    print(f"\n  Finding optimal Z offset via NCC scan (z_range={z_range})...")
-    initial_transform, z_offset_info = _find_z_offset_ncc(
-        msme_img, template_img, work_dir, z_range=z_range
-    )
+            if config:
+                z_range_cfg = get_config_value(config, 'msme.registration.z_range', default=None)
+                if z_range_cfg is not None:
+                    z_range = tuple(z_range_cfg)
+            if z_range is None:
+                z_range = (14, 28)
+        print(f"\n  Finding optimal Z offset via NCC scan (z_range={z_range})...")
+        initial_transform, z_offset_info = _find_z_offset_ncc(
+            msme_img, template_img, work_dir, z_range=z_range
+        )
 
     # Step 2: Rigid registration with conservative shrink factors
     # (5 slices is very partial — use 2x1x1 to avoid losing Z info)
