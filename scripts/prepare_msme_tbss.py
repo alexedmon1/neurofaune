@@ -172,6 +172,8 @@ Output structure:
                         help='Path to study_tracker_combined CSV')
     parser.add_argument('--metrics', nargs='+', default=MSME_METRICS,
                         help=f'Metrics to prepare (default: {MSME_METRICS})')
+    parser.add_argument('--min-coverage', type=float, default=0.75,
+                        help='Minimum fraction of subjects with non-zero data per voxel (default: 0.75)')
 
     args = parser.parse_args()
 
@@ -226,15 +228,10 @@ Output structure:
     stats_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy analysis mask
-    mask_dst = stats_dir / 'analysis_mask.nii.gz'
-    shutil.copy2(args.analysis_mask, mask_dst)
-    logger.info(f"Copied analysis mask from {args.analysis_mask}")
-
-    mask_img = nib.load(mask_dst)
-    mask_data = mask_img.get_fdata() > 0
-    n_mask_voxels = int(mask_data.sum())
-    logger.info(f"Analysis mask: {n_mask_voxels} voxels")
+    # Load WM analysis mask and refine with MSME coverage
+    wm_mask_img = nib.load(args.analysis_mask)
+    wm_mask_data = wm_mask_img.get_fdata() > 0
+    logger.info(f"WM mask from {args.analysis_mask}: {int(wm_mask_data.sum())} voxels")
 
     # Phase 4: Build subject list and manifest
     logger.info("\n[Phase 4] Writing subject list and manifest...")
@@ -289,16 +286,48 @@ Output structure:
     logger.info(f"Subject list: {len(merged)} subjects")
     logger.info(f"Subject list SHA256: {subject_list_hash[:16]}...")
 
-    # Phase 5: Stack 4D volumes
-    logger.info("\n[Phase 5] Building 4D volumes...")
+    # Phase 5: Build coverage mask from MSME FOV
+    # MSME covers fewer slices than DTI, so we intersect the WM mask with
+    # voxels that have data in at least 90% of subjects.
+    logger.info("\n[Phase 5] Building MSME coverage mask...")
 
-    # Get reference shape from mask
-    ref_shape = mask_img.shape[:3]
-    ref_affine = mask_img.affine
+    ref_shape = wm_mask_img.shape[:3]
+    ref_affine = wm_mask_img.affine
+    coverage_metric = args.metrics[0]  # Use first metric for coverage
+    n_subjects = len(merged)
+
+    coverage_count = np.zeros(ref_shape, dtype=np.int32)
+    for _, row in merged.iterrows():
+        subject_key = row['subject_key']
+        metric_file = metric_files_lookup[subject_key][coverage_metric]
+        data = nib.load(metric_file).get_fdata()
+        coverage_count += (data != 0).astype(np.int32)
+
+    min_coverage_frac = args.min_coverage
+    min_coverage = int(min_coverage_frac * n_subjects)
+    coverage_mask = coverage_count >= min_coverage
+    mask_data = (wm_mask_data & coverage_mask).astype(np.uint8)
+
+    # Save the analysis mask and coverage map
+    mask_dst = stats_dir / 'analysis_mask.nii.gz'
+    nib.save(nib.Nifti1Image(mask_data, ref_affine), mask_dst)
+    coverage_dst = stats_dir / 'coverage_count.nii.gz'
+    nib.save(nib.Nifti1Image(coverage_count, ref_affine), coverage_dst)
+
+    n_wm = int(wm_mask_data.sum())
+    n_coverage = int(coverage_mask.sum())
+    n_final = int(mask_data.sum())
+    logger.info(f"  Coverage metric: {coverage_metric}")
+    logger.info(f"  Min subjects per voxel: {min_coverage}/{n_subjects} ({min_coverage_frac:.0%})")
+    logger.info(f"  WM mask: {n_wm} voxels")
+    logger.info(f"  Coverage >= {min_coverage_frac:.0%}: {n_coverage} voxels")
+    logger.info(f"  Final analysis mask (WM & coverage): {n_final} voxels")
+
+    # Phase 6: Stack 4D volumes
+    logger.info("\n[Phase 6] Building 4D volumes...")
 
     for metric in args.metrics:
         logger.info(f"\n  {metric}:")
-        n_subjects = len(merged)
         volume_4d = np.zeros((*ref_shape, n_subjects), dtype=np.float32)
 
         for i, (_, row) in enumerate(merged.iterrows()):
@@ -317,7 +346,8 @@ Output structure:
             volume_4d[..., i] = data
 
         # Apply mask
-        mask_4d = mask_data[:, :, :, np.newaxis]
+        mask_bool = mask_data > 0
+        mask_4d = mask_bool[:, :, :, np.newaxis]
         volume_4d_masked = volume_4d * mask_4d
 
         # Save
@@ -325,7 +355,7 @@ Output structure:
         nib.save(nib.Nifti1Image(volume_4d_masked, ref_affine), out_file)
 
         # Summary stats within mask
-        masked_vals = volume_4d_masked[mask_data]
+        masked_vals = volume_4d_masked[mask_bool]
         logger.info(f"    Shape: {volume_4d_masked.shape}")
         logger.info(
             f"    Within-mask range: [{masked_vals.min():.4f}, {masked_vals.max():.4f}]"
@@ -339,7 +369,7 @@ Output structure:
     logger.info("=" * 70)
     logger.info(f"Subjects: {len(merged)}")
     logger.info(f"Metrics: {args.metrics}")
-    logger.info(f"Mask voxels: {n_mask_voxels}")
+    logger.info(f"Mask voxels: {n_final}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"\nNext steps:")
     logger.info(f"  1. Generate designs:")
