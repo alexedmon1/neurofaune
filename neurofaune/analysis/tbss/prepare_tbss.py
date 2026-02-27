@@ -133,8 +133,9 @@ def discover_tbss_subjects(
         metrics = DTI_METRICS
 
     derivatives_dir = Path(get_config_value(config, 'paths.derivatives'))
-    transforms_dir = Path(get_config_value(config, 'paths.transforms'))
-    templates_dir = Path(get_config_value(config, 'paths.templates'))
+    if not use_prewarped:
+        transforms_dir = Path(get_config_value(config, 'paths.transforms'))
+        templates_dir = Path(get_config_value(config, 'paths.templates'))
 
     # Load exclusion list
     excluded_ids = set()
