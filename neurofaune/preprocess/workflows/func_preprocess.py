@@ -920,6 +920,11 @@ def run_optimal_combination(
     print(f"  Mask: {mask_file.name}")
     print(f"  Fit type: {fittype}, Combination mode: {combmode}")
 
+    # Clear existing outputs to allow re-runs
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     tedana_workflows.t2smap_workflow(
         data=[str(f) for f in echo_files],
         tes=[float(te) for te in echo_times_ms],
@@ -1196,6 +1201,8 @@ def run_multiecho_motion_correction(
     brain_ref = work_dir / 'mean_bold_brain.nii.gz'
 
     # Use the same adaptive skull strip as SE pipeline
+    # fMRI EPI: brain is brightest tissue, so use n_classes=3 with
+    # brightest-class strategy (same as DWI b0)
     ss_params = skull_strip_config or {}
     brain_ref, brain_mask_out, ss_info = skull_strip(
         input_file=mean_norm,
@@ -1207,11 +1214,34 @@ def run_multiecho_motion_correction(
         frac_range=tuple(ss_params.get('frac_range', [0.30, 0.90])),
         frac_step=ss_params.get('frac_step', 0.05),
         invert_intensity=ss_params.get('invert_intensity', False),
+        n_classes=ss_params.get('n_classes', 3),
     )
 
     print(f"  Skull strip: {ss_info.get('method', 'unknown')}, "
           f"{ss_info.get('total_voxels', 0):,} voxels, "
           f"ratio={ss_info.get('extraction_ratio', 0):.3f}")
+
+    # Erode mask to remove edge voxels that are noisy after motion correction
+    # (MCFLIRT interpolation at brain/non-brain boundary creates artifacts)
+    mask_erode = ss_params.get('mask_erode', 1)
+    if mask_erode > 0:
+        from scipy import ndimage
+        mask_img = nib.load(brain_mask_out)
+        mask_data = mask_img.get_fdata() > 0
+        n_before = int(mask_data.sum())
+        struct = ndimage.generate_binary_structure(3, 1)
+        mask_data = ndimage.binary_erosion(mask_data, structure=struct,
+                                           iterations=mask_erode).astype(np.float32)
+        n_after = int(mask_data.sum())
+        nib.save(nib.Nifti1Image(mask_data, mask_img.affine, mask_img.header),
+                 brain_mask_out)
+        # Re-apply eroded mask to brain ref
+        ref_img = nib.load(brain_ref)
+        brain_data = ref_img.get_fdata() * mask_data
+        nib.save(nib.Nifti1Image(brain_data.astype(np.float32),
+                                 ref_img.affine, ref_img.header), brain_ref)
+        print(f"  Mask erosion ({mask_erode} iter): {n_before:,} -> {n_after:,} voxels "
+              f"({n_before - n_after:,} edge voxels removed)")
 
     return {
         'corrected_echoes': corrected_echoes,
@@ -1625,12 +1655,17 @@ def run_functional_preprocessing(
 
             # Step C: ME-ICA classification using per-echo kappa/rho
             rho_kappa_scale = meica_config.get('rho_kappa_scale', 1.0)
+            kappa_elbow_scale = meica_config.get('kappa_elbow_scale', 1.0)
+            rho_elbow_scale = meica_config.get('rho_elbow_scale', 1.0)
             classification = classify_meica_components(
                 echo_files=me_masked_echoes,
                 echo_times_ms=echo_times,
                 melodic_dir=melodic_dir,
                 brain_mask_file=brain_mask,
+                optcom_file=Path(bold_optcom),
                 rho_kappa_scale=rho_kappa_scale,
+                kappa_elbow_scale=kappa_elbow_scale,
+                rho_elbow_scale=rho_elbow_scale,
             )
 
             # Step D: Remove noise components via fsl_regfilt
@@ -1853,6 +1888,7 @@ def run_functional_preprocessing(
             frac_range=frac_range,
             frac_step=frac_step,
             invert_intensity=invert_intensity,
+            n_classes=skull_strip_params.get('n_classes', 3),
         )
 
         print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
@@ -1860,6 +1896,26 @@ def run_functional_preprocessing(
         print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
         if 'mean_frac' in skull_strip_info:
             print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
+
+        # Erode mask to remove edge voxels noisy after motion correction
+        mask_erode = skull_strip_params.get('mask_erode', 1)
+        if mask_erode > 0:
+            from scipy import ndimage
+            mask_img = nib.load(brain_mask)
+            mask_data = mask_img.get_fdata() > 0
+            n_before = int(mask_data.sum())
+            struct = ndimage.generate_binary_structure(3, 1)
+            mask_data = ndimage.binary_erosion(mask_data, structure=struct,
+                                               iterations=mask_erode).astype(np.float32)
+            n_after = int(mask_data.sum())
+            nib.save(nib.Nifti1Image(mask_data, mask_img.affine, mask_img.header),
+                     brain_mask)
+            ref_img = nib.load(brain_ref)
+            brain_data = ref_img.get_fdata() * mask_data
+            nib.save(nib.Nifti1Image(brain_data.astype(np.float32),
+                                     ref_img.affine, ref_img.header), brain_ref)
+            print(f"  Mask erosion ({mask_erode} iter): {n_before:,} -> {n_after:,} voxels "
+                  f"({n_before - n_after:,} edge voxels removed)")
 
         print("\nApplying mask to 4D timeseries...")
         bold_masked = work_dir / f"{subject}_{session}_bold_brain.nii.gz"
@@ -2127,7 +2183,41 @@ def run_functional_preprocessing(
         lowpass=lowpass_freq
     )
 
-    # Save filtered data as final output
+    # =========================================================================
+    # STEP 10b: Global Signal Regression (optional, AFTER temporal filtering)
+    # =========================================================================
+    gsr_enabled = func_config.get('global_signal_regression', False)
+    if gsr_enabled:
+        print("\n" + "="*60)
+        print("STEP 10b: Global Signal Regression")
+        print("="*60)
+
+        mask_img = nib.load(brain_mask)
+        mask_data = mask_img.get_fdata() > 0
+        filt_img = nib.load(bold_filtered)
+        filt_data = filt_img.get_fdata()
+
+        brain_ts = filt_data[mask_data]  # (voxels, time)
+        gs = brain_ts.mean(axis=0)
+        gs_dm = gs - gs.mean()
+        gs_var = gs_dm @ gs_dm
+        if gs_var > 0:
+            betas = brain_ts @ gs_dm / gs_var
+            residuals = brain_ts - np.outer(betas, gs_dm)
+            var_before = brain_ts.var(axis=1).mean()
+            var_after = residuals.var(axis=1).mean()
+            pct_removed = 100 * (1 - var_after / var_before) if var_before > 0 else 0
+            filt_data[mask_data] = residuals
+            bold_gsr = work_dir / f"{subject}_{session}_bold_filtered_gsr.nii.gz"
+            nib.save(nib.Nifti1Image(filt_data.astype(np.float32),
+                                     filt_img.affine, filt_img.header), bold_gsr)
+            print(f"  Global signal variance removed: {pct_removed:.1f}%")
+            print(f"  Saved: {bold_gsr.name}")
+            bold_filtered = bold_gsr
+        else:
+            print("  WARNING: Global signal has zero variance, skipping GSR")
+
+    # Save final output
     final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
     shutil.copy(str(bold_filtered), str(final_bold))
 

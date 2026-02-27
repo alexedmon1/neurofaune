@@ -29,13 +29,15 @@ def compute_meica_kappa_rho(
     echo_times_ms: List[float],
     mixing_matrix: np.ndarray,
     brain_mask_file: Path,
+    optcom_file: Optional[Path] = None,
     f_max: float = 500.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute kappa (TE-dependence) and rho (TE-independence) for MELODIC components.
 
-    Projects MELODIC mixing columns onto per-echo data and fits S0 and T2*
-    models to the resulting beta maps, following the same F-statistic approach
-    as tedana's dependence.py:calculate_f_maps().
+    Uses multivariate OLS with intercept (matching tedana's approach) to compute
+    per-echo partial regression betas, then fits S0 and T2* models across echoes.
+    Weights are Fisher-z-transformed correlations from the optimally combined data,
+    matching tedana's calculate_dependence_metrics().
 
     Parameters
     ----------
@@ -47,6 +49,9 @@ def compute_meica_kappa_rho(
         MELODIC mixing matrix, shape (T, n_components).
     brain_mask_file : Path
         Brain mask NIfTI file.
+    optcom_file : Path, optional
+        Optimally combined NIfTI file (used for weight computation).
+        If None, a simple T2*-weighted combination is computed from echo data.
     f_max : float
         Cap for pseudo-F statistics (default 500).
 
@@ -59,6 +64,8 @@ def compute_meica_kappa_rho(
     varex : np.ndarray
         Variance explained per component (%), shape (n_components,).
     """
+    from scipy.stats import zscore as scipy_zscore
+
     mask_img = nib.load(brain_mask_file)
     mask = mask_img.get_fdata().astype(bool)
 
@@ -83,48 +90,123 @@ def compute_meica_kappa_rho(
     # Mean signal per echo per voxel: (E, V)
     mu = data_cat.mean(axis=2)
 
-    # Exclude low-signal voxels (any echo mean < 1% of brain median)
-    brain_median = np.median(mu[mu > 0]) if np.any(mu > 0) else 1.0
-    low_signal_thresh = 0.01 * brain_median
-    valid_voxels = np.all(mu > low_signal_thresh, axis=0)  # (V,)
-    n_valid = valid_voxels.sum()
-    print(f"  ME-ICA: {n_valid}/{n_voxels} voxels above signal threshold")
+    # ── Voxel selection: Otsu + echo decay filter ──
+    mu_e1 = mu[0]
+    e1_nonzero = mu_e1[mu_e1 > 0]
+    if len(e1_nonzero) > 0:
+        hist_vals, bin_edges = np.histogram(np.log1p(e1_nonzero), bins=100)
+        total = hist_vals.sum()
+        cum_sum = np.cumsum(hist_vals)
+        cum_mean = np.cumsum(hist_vals * (bin_edges[:-1] + bin_edges[1:]) / 2)
+        best_thresh_idx = 0
+        best_var = 0
+        for t in range(1, len(hist_vals)):
+            w0 = cum_sum[t]
+            w1 = total - w0
+            if w0 == 0 or w1 == 0:
+                continue
+            m0 = cum_mean[t] / w0
+            m1 = (cum_mean[-1] - cum_mean[t]) / w1
+            var = w0 * w1 * (m0 - m1) ** 2
+            if var > best_var:
+                best_var = var
+                best_thresh_idx = t
+        otsu_log = (bin_edges[best_thresh_idx] + bin_edges[best_thresh_idx + 1]) / 2
+        signal_thresh = np.expm1(otsu_log)
+    else:
+        signal_thresh = 0.0
 
-    # Compute betas: project mixing columns onto each echo
-    # beta_e(v, j) = Y_e(v,:) . m_j / (m_j . m_j)
-    # Shape: (E, V, n_components)
-    mix_norm = np.sum(mix ** 2, axis=0)  # (n_components,)
-    mix_norm[mix_norm == 0] = 1.0  # avoid division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        decay_ratio = np.where(mu_e1 > 0, mu[-1] / mu_e1, 1.0)
+
+    valid_voxels = (mu_e1 > signal_thresh) & (decay_ratio < 0.9)
+    n_valid = valid_voxels.sum()
+    print(f"  ME-ICA: {n_valid}/{n_voxels} voxels pass signal+decay filter "
+          f"(signal>{signal_thresh:.0f}, decay<0.9)")
+
+    # ── Multivariate OLS with intercept (matching tedana) ──
+    # Design matrix: [mix | ones] → partial regression betas
+    X = np.column_stack([mix, np.ones(n_timepoints)])  # (T, C+1)
     betas = np.zeros((n_echoes, n_voxels, n_components), dtype=np.float64)
     for e in range(n_echoes):
-        # data_cat[e] is (V, T), mix is (T, C)
-        betas[e] = data_cat[e] @ mix / mix_norm  # (V, C)
+        # Solve: Y_e = X @ B_e where Y_e is (T, V) and B_e is (C+1, V)
+        B, _, _, _ = np.linalg.lstsq(X, data_cat[e].T, rcond=None)
+        betas[e] = B[:n_components].T  # (V, C), drop intercept row
 
-    # Compute total variance for varex
-    total_var = np.sum(data_cat ** 2)
+    # ── Compute spatial weights from optcom (matching tedana) ──
+    # tedana: z-score optcom + z-score mixing → OLS → correlations → Fisher z → z-score → clip → square
+    if optcom_file is not None:
+        optcom_data = nib.load(optcom_file).get_fdata()[mask]  # (V, T)
+    else:
+        # Simple T2*-weighted combination: weight_e = TE_e * exp(-TE_e / T2*)
+        # Estimate T2* from log-linear fit: log(S) = log(S0) - TE/T2*
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_mu = np.log(np.maximum(mu, 1e-10))  # (E, V)
+        # Linear fit: log(S) vs TE → slope = -1/T2*
+        te_col = tes.reshape(-1, 1)
+        te_design = np.column_stack([te_col, np.ones(n_echoes)])
+        fit_coeffs = np.linalg.lstsq(te_design, log_mu, rcond=None)[0]  # (2, V)
+        t2star = np.clip(-1.0 / np.where(fit_coeffs[0] != 0, fit_coeffs[0], -1e-10),
+                         1.0, 200.0)  # (V,) in ms
+        # Weights: TE * exp(-TE/T2*)
+        oc_weights = tes[:, None] * np.exp(-tes[:, None] / t2star[None, :])  # (E, V)
+        oc_weights /= oc_weights.sum(axis=0, keepdims=True)  # normalize
+        optcom_data = (data_cat * oc_weights[:, :, None]).sum(axis=0)  # (V, T)
+
+    optcom_valid = optcom_data[valid_voxels]  # (V_valid, T)
+    optcom_valid = optcom_valid[:, :n_timepoints]
+
+    # Z-score the optcom data across time (per voxel)
+    optcom_std = optcom_valid.std(axis=1, keepdims=True)
+    optcom_std[optcom_std == 0] = 1.0
+    optcom_z = (optcom_valid - optcom_valid.mean(axis=1, keepdims=True)) / optcom_std
+
+    # Z-score the mixing matrix across time (per component)
+    mix_std = mix.std(axis=0, keepdims=True)
+    mix_std[mix_std == 0] = 1.0
+    mix_z = (mix - mix.mean(axis=0, keepdims=True)) / mix_std
+
+    # OLS of z-scored mixing against z-scored optcom → approx correlations
+    # optcom_z: (V_valid, T), mix_z: (T, C)
+    corr_betas = np.linalg.lstsq(mix_z, optcom_z.T, rcond=None)[0].T  # (V_valid, C)
+
+    # Clip and Fisher z-transform
+    corr_betas = np.clip(corr_betas, -0.999, 0.999)
+    fisher_z = np.arctanh(corr_betas)  # (V_valid, C)
+
+    # Z-score across voxels per component, clip at ±8
+    fz_std = fisher_z.std(axis=0, keepdims=True)
+    fz_std[fz_std == 0] = 1.0
+    z_maps = (fisher_z - fisher_z.mean(axis=0, keepdims=True)) / fz_std
+    z_maps = np.clip(z_maps, -8, 8)
+
+    # Square for final weights: (V_valid, C)
+    weight_maps = z_maps ** 2
+
+    # ── Compute total variance for varex (using optcom betas) ──
+    # Match tedana: varex relative to sum of all component variances, not total data variance
+    optcom_betas_all = np.linalg.lstsq(
+        X, optcom_data[:, :n_timepoints].T, rcond=None
+    )[0][:n_components].T  # (V, C)
+    comp_variances = (optcom_betas_all ** 2).sum(axis=0)  # (C,)
+    total_comp_var = comp_variances.sum()
 
     kappas = np.zeros(n_components)
     rhos = np.zeros(n_components)
     varex = np.zeros(n_components)
 
     for j in range(n_components):
-        # Beta for this component across echoes: (E, V)
-        beta_j = betas[:, :, j]
-
-        # Only use valid voxels
-        beta_v = beta_j[:, valid_voxels]  # (E, V_valid)
+        # Beta for this component across echoes: (E, V_valid)
+        beta_v = betas[:, valid_voxels, j]  # (E, V_valid)
         mu_v = mu[:, valid_voxels]  # (E, V_valid)
 
         # T2* model (TE-dependent): beta_e(v) ~ c(v) * TE_e * mu_e(v)
-        # Design: x2[e, v] = TE_e * mu_e(v)
         x2 = tes[:, None] * mu_v  # (E, V_valid)
 
         # S0 model (TE-independent): beta_e(v) ~ c(v) * mu_e(v)
-        # Design: x1[e, v] = mu_e(v)
         x1 = mu_v  # (E, V_valid)
 
         # Fit single coefficient per voxel for each model
-        # coeffs = sum(beta * X, axis=0) / sum(X^2, axis=0)
         x2_sq = np.sum(x2 ** 2, axis=0)
         x2_sq[x2_sq == 0] = 1.0
         c_t2 = np.sum(beta_v * x2, axis=0) / x2_sq
@@ -134,30 +216,23 @@ def compute_meica_kappa_rho(
         c_s0 = np.sum(beta_v * x1, axis=0) / x1_sq
 
         # Predicted betas
-        pred_t2 = x2 * c_t2  # (E, V_valid)
-        pred_s0 = x1 * c_s0  # (E, V_valid)
+        pred_t2 = x2 * c_t2
+        pred_s0 = x1 * c_s0
 
         # Sum of squares
-        alpha = np.sum(beta_v ** 2, axis=0)  # total SS per voxel
+        alpha = np.sum(beta_v ** 2, axis=0)
         sse_t2 = np.sum((beta_v - pred_t2) ** 2, axis=0)
         sse_s0 = np.sum((beta_v - pred_s0) ** 2, axis=0)
 
-        # Pseudo-F: (alpha - sse) * (E-2) / sse  (df_model=1, df_resid=E-2)
-        # But use (E-1) as tedana does: F = (alpha - sse) * (n_echo - 1) / sse
+        # Pseudo-F: (alpha - sse) * (n_echoes - 1) / sse
         sse_t2[sse_t2 == 0] = 1e-10
         sse_s0[sse_s0 == 0] = 1e-10
 
         f_t2 = np.clip((alpha - sse_t2) * (n_echoes - 1) / sse_t2, 0, f_max)
         f_s0 = np.clip((alpha - sse_s0) * (n_echoes - 1) / sse_s0, 0, f_max)
 
-        # Weights: z-score(mean_beta)^2
-        beta_mean = np.mean(beta_v, axis=0)  # mean across echoes per voxel
-        beta_std = beta_mean.std()
-        if beta_std > 0:
-            z_beta = (beta_mean - beta_mean.mean()) / beta_std
-        else:
-            z_beta = np.zeros_like(beta_mean)
-        weights = z_beta ** 2
+        # Weighted average using Fisher-z weights for this component
+        weights = weight_maps[:, j]
         w_sum = weights.sum()
 
         if w_sum > 0:
@@ -167,9 +242,8 @@ def compute_meica_kappa_rho(
             kappas[j] = 0.0
             rhos[j] = 0.0
 
-        # Variance explained: fraction of total variance accounted for by this component
-        comp_var = np.sum(beta_j ** 2) * np.sum(mix[:, j] ** 2)
-        varex[j] = 100.0 * comp_var / total_var if total_var > 0 else 0.0
+        # Variance explained (matching tedana: relative to sum of component variances)
+        varex[j] = 100.0 * comp_variances[j] / total_comp_var if total_comp_var > 0 else 0.0
 
     return kappas, rhos, varex
 
@@ -236,7 +310,10 @@ def classify_meica_components(
     echo_times_ms: List[float],
     melodic_dir: Path,
     brain_mask_file: Path,
+    optcom_file: Optional[Path] = None,
     rho_kappa_scale: float = 1.0,
+    kappa_elbow_scale: float = 1.0,
+    rho_elbow_scale: float = 1.0,
 ) -> Dict[str, Any]:
     """Classify MELODIC components using ME-ICA kappa/rho approach.
 
@@ -244,9 +321,9 @@ def classify_meica_components(
 
     1. Reject if rho > rho_kappa_scale * kappa
     2. Compute kappa_elbow and rho_elbow via getelbow()
-    3. Provisionally accept if kappa >= kappa_elbow, else provisionally reject
+    3. Provisionally accept if kappa >= kappa_elbow * kappa_elbow_scale
     4. Accept provisionally accepted if kappa > 2*rho
-    5. Provisionally reject if rho > rho_elbow
+    5. Provisionally reject if rho > rho_elbow * rho_elbow_scale
     6. Accept low-variance provisionally rejected (<0.1% individual, <1% cumulative)
     7. Finalize: remaining provisional accepts -> accepted, rest -> rejected
     8. Safety floor: if ALL rejected, retain highest-kappa component
@@ -261,8 +338,16 @@ def classify_meica_components(
         MELODIC output directory (contains melodic_mix, melodic_IC.nii.gz).
     brain_mask_file : Path
         Brain mask NIfTI.
+    optcom_file : Path, optional
+        Optimally combined NIfTI file (used for weight computation).
     rho_kappa_scale : float
         Scale factor for rho > scale*kappa rejection (default 1.0).
+    kappa_elbow_scale : float
+        Multiplier for kappa elbow threshold (default 1.0).
+        Values < 1.0 lower the threshold, accepting more components.
+    rho_elbow_scale : float
+        Multiplier for rho elbow threshold (default 1.0).
+        Values > 1.0 raise the threshold, making rho rejection less strict.
 
     Returns
     -------
@@ -286,6 +371,7 @@ def classify_meica_components(
         echo_times_ms=echo_times_ms,
         mixing_matrix=mixing_matrix,
         brain_mask_file=brain_mask_file,
+        optcom_file=optcom_file,
     )
 
     print(f"  Kappa range: [{kappas.min():.1f}, {kappas.max():.1f}], "
@@ -297,7 +383,8 @@ def classify_meica_components(
 
     # Classification state: 'unclassified', 'rejected', 'provisionalaccept',
     # 'provisionalreject', 'accepted'
-    status = np.array(['unclassified'] * n_components)
+    # Use a Python list (not numpy array) to avoid string truncation
+    status = ['unclassified'] * n_components
     reasons = [[] for _ in range(n_components)]
 
     # --- Node 1: Reject if rho > scale * kappa ---
@@ -314,16 +401,24 @@ def classify_meica_components(
     # The minimal tree already works without them being the primary drivers.
 
     # --- Node 6: Compute kappa_elbow ---
-    kappa_elbow_val = getelbow(kappas, return_val=True)
-    print(f"  Kappa elbow: {kappa_elbow_val:.1f}")
+    kappa_elbow_raw = getelbow(kappas, return_val=True)
+    kappa_elbow_val = kappa_elbow_raw * kappa_elbow_scale
+    if kappa_elbow_scale != 1.0:
+        print(f"  Kappa elbow: {kappa_elbow_raw:.1f} × {kappa_elbow_scale} = {kappa_elbow_val:.1f}")
+    else:
+        print(f"  Kappa elbow: {kappa_elbow_val:.1f}")
 
     # --- Node 7: Compute rho_elbow (liberal, on unclassified components) ---
-    unclassified_mask = status == 'unclassified'
-    if unclassified_mask.sum() > 2:
-        rho_elbow_val = getelbow(rhos[unclassified_mask], return_val=True)
+    unclassified_idx = [i for i in range(n_components) if status[i] == 'unclassified']
+    if len(unclassified_idx) > 2:
+        rho_elbow_raw = getelbow(rhos[unclassified_idx], return_val=True)
     else:
-        rho_elbow_val = getelbow(rhos, return_val=True)
-    print(f"  Rho elbow (liberal): {rho_elbow_val:.1f}")
+        rho_elbow_raw = getelbow(rhos, return_val=True)
+    rho_elbow_val = rho_elbow_raw * rho_elbow_scale
+    if rho_elbow_scale != 1.0:
+        print(f"  Rho elbow: {rho_elbow_raw:.1f} × {rho_elbow_scale} = {rho_elbow_val:.1f}")
+    else:
+        print(f"  Rho elbow (liberal): {rho_elbow_val:.1f}")
 
     # --- Node 8: Provisional accept/reject based on kappa_elbow ---
     for i in range(n_components):
@@ -335,8 +430,8 @@ def classify_meica_components(
             status[i] = 'provisionalreject'
             reasons[i].append(f'kappa ({kappas[i]:.1f}) < kappa_elbow ({kappa_elbow_val:.1f})')
 
-    n_prov_acc = (status == 'provisionalaccept').sum()
-    n_prov_rej = (status == 'provisionalreject').sum()
+    n_prov_acc = sum(1 for s in status if s == 'provisionalaccept')
+    n_prov_rej = sum(1 for s in status if s == 'provisionalreject')
     print(f"  Step 3 (kappa elbow): {n_prov_acc} provisional accept, "
           f"{n_prov_rej} provisional reject")
 
@@ -348,7 +443,7 @@ def classify_meica_components(
             status[i] = 'accepted'
             reasons[i].append(f'kappa ({kappas[i]:.1f}) > 2*rho ({2*rhos[i]:.1f})')
 
-    n_accepted_rescue = (status == 'accepted').sum()
+    n_accepted_rescue = sum(1 for s in status if s == 'accepted')
     print(f"  Step 4 (kappa > 2*rho rescue): {n_accepted_rescue} accepted")
 
     # --- Node 10: Provisionally reject if rho > rho_elbow ---
@@ -362,8 +457,6 @@ def classify_meica_components(
             status[i] = 'provisionalreject'
 
     # --- Node 11: Accept low-variance provisionally rejected ---
-    prov_rej_mask = status == 'provisionalreject'
-    prov_rej_varex = varex[prov_rej_mask]
     cum_varex = 0.0
     for i in range(n_components):
         if status[i] != 'provisionalreject':
@@ -382,8 +475,8 @@ def classify_meica_components(
                 reasons[i].append('remaining unclassified/provisionalreject')
             status[i] = 'rejected'
 
-    n_accepted = (status == 'accepted').sum()
-    n_rejected = (status == 'rejected').sum()
+    n_accepted = sum(1 for s in status if s == 'accepted')
+    n_rejected = sum(1 for s in status if s == 'rejected')
     print(f"  Final: {n_accepted} accepted, {n_rejected} rejected")
 
     # --- Safety floor: if ALL rejected, retain highest-kappa component ---
@@ -423,7 +516,11 @@ def classify_meica_components(
         },
         'thresholds': {
             'kappa_elbow': float(kappa_elbow_val),
+            'kappa_elbow_raw': float(kappa_elbow_raw),
+            'kappa_elbow_scale': float(kappa_elbow_scale),
             'rho_elbow': float(rho_elbow_val),
+            'rho_elbow_raw': float(rho_elbow_raw),
+            'rho_elbow_scale': float(rho_elbow_scale),
             'rho_kappa_scale': float(rho_kappa_scale),
         },
         'metrics': {

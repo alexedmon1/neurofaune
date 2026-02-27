@@ -39,6 +39,7 @@ def skull_strip(
     atropos_convergence: float = 0.0,
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: Optional[list] = None,
+    class_strategy: str = 'middle',
     # 3D method parameters
     template_file: Optional[Path] = None,
     template_mask: Optional[Path] = None,
@@ -94,6 +95,13 @@ def skull_strip(
         Markov Random Field smoothing factor (default: 0.1)
     mrf_radius : list, optional
         MRF neighborhood radius (default: [1, 1, 1])
+    class_strategy : str
+        Atropos class selection strategy for atropos_bet method:
+        - 'middle': Middle classes by volume (excludes largest + smallest).
+          Selects brain parenchyma. Best for structural (T2w, DWI).
+        - 'non_background': All classes except the largest by volume.
+          Selects full head tissue. Best for fMRI where you want to keep
+          CSF, vessels, and meninges to avoid masking out BOLD signal.
     template_file : Path, optional
         Atlas template for ANTs brain extraction (3D methods)
     template_mask : Path, optional
@@ -144,6 +152,7 @@ def skull_strip(
             atropos_convergence=atropos_convergence,
             mrf_smoothing_factor=mrf_smoothing_factor,
             mrf_radius=mrf_radius if mrf_radius is not None else [1, 1, 1],
+            class_strategy=class_strategy,
         )
     elif method == 'atropos':
         return _skull_strip_atropos_only(
@@ -215,17 +224,22 @@ def _skull_strip_atropos_bet(
     atropos_convergence: float = 0.0,
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: list = None,
+    class_strategy: str = 'middle',
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """
     Two-pass Atropos+BET skull stripping for full-coverage data.
 
-    Class selection strategy depends on n_classes:
-    - n_classes=3 (DWI/low-contrast): brightest class = brain.
-      With 3 classes (background, intermediate, brain), the brightest class
-      reliably captures brain parenchyma in EPI/DWI b0 images.
-    - n_classes=5 (T2w/high-contrast): middle 3 classes by volume = brain.
-      With 5 classes, exclude largest (background) and smallest (noise),
-      keeping the 3 middle classes as brain tissue.
+    Class selection strategy depends on n_classes and class_strategy:
+    - n_classes<=3: brightest class = brain (DWI/low-contrast).
+    - n_classes>=5 + class_strategy='middle': middle classes by volume = brain
+      (structural T2w). Excludes largest (background) and smallest (noise).
+    - n_classes>=5 + class_strategy='non_background': all classes except the
+      largest by volume (fMRI). Keeps full head tissue including CSF, vessels,
+      and meninges to avoid masking out BOLD signal near brain edges.
+
+    After Atropos class selection and BET intersection, a morphological
+    closing (dilation then erosion) is applied to fill small holes and
+    smooth the mask boundary.
 
     Parameters
     ----------
@@ -242,7 +256,7 @@ def _skull_strip_atropos_bet(
     n_classes : int
         Number of Atropos K-means classes.
         Use 3 for DWI b0 (brightest class strategy).
-        Use 5 for T2w (middle 3 by volume strategy, default).
+        Use 5 for T2w/fMRI (default).
     bet_frac : float
         BET fractional intensity threshold for refinement (default: 0.3)
     atropos_iterations : int
@@ -253,6 +267,10 @@ def _skull_strip_atropos_bet(
         Markov Random Field smoothing factor (default: 0.1)
     mrf_radius : list
         MRF neighborhood radius (default: [1, 1, 1])
+    class_strategy : str
+        Class selection strategy for n_classes>=5:
+        - 'middle': middle classes by volume (structural)
+        - 'non_background': all except largest class (fMRI)
     """
     if mrf_radius is None:
         mrf_radius = [1, 1, 1]
@@ -313,17 +331,26 @@ def _skull_strip_atropos_bet(
         print(f"  Using class {brain_class} as brain (brightest)")
         atropos_mask = (seg_data == brain_class).astype(np.uint8)
     else:
-        # T2w/high-contrast strategy: middle classes by volume
+        # Multi-class strategy: select classes based on class_strategy
         volumes = []
         for p in posteriors:
             p_data = nib.load(p).get_fdata()
             volumes.append((p_data > 0.5).sum())
 
         sorted_indices = np.argsort(volumes)
-        brain_indices = sorted_indices[1:-1]  # Exclude largest and smallest
-
         print(f"  Posterior volumes: {volumes}")
-        print(f"  Selected brain classes (middle {len(brain_indices)} by volume): {brain_indices.tolist()}")
+
+        if class_strategy == 'non_background':
+            # fMRI strategy: keep all classes except the largest (air/background)
+            # This gives a head mask (brain + CSF + meninges + vessels)
+            background_idx = sorted_indices[-1]
+            brain_indices = np.array([i for i in range(len(volumes)) if i != background_idx])
+            print(f"  Excluding background class {background_idx} ({volumes[background_idx]:,} voxels)")
+            print(f"  Selected head classes (non-background): {brain_indices.tolist()}")
+        else:
+            # Structural strategy: middle classes by volume (exclude largest + smallest)
+            brain_indices = sorted_indices[1:-1]
+            print(f"  Selected brain classes (middle {len(brain_indices)} by volume): {brain_indices.tolist()}")
 
         atropos_mask = np.zeros(img_data.shape)
         for i in brain_indices:
@@ -340,8 +367,15 @@ def _skull_strip_atropos_bet(
     cog = brain_coords.mean(axis=0)
     print(f"  Atropos COG: [{cog[0]:.1f}, {cog[1]:.1f}, {cog[2]:.1f}]")
 
-    # Step 5: BET refinement on Atropos-masked image
+    # Step 5: BET refinement on ORIGINAL image (not pre-masked)
+    # BET needs the full intensity profile (brain + skull + air) to fit its
+    # surface mesh. Running on pre-masked data (zeros outside brain) causes
+    # BET's surface to expand to the full FOV. The Atropos COG guides BET
+    # to the brain center, and the final mask is the intersection of BET's
+    # spatial boundary with Atropos's tissue classification.
     print(f"  Running BET refinement (frac={bet_frac})...")
+
+    # Save Atropos-masked image for reference
     masked_input = work_dir / f"{input_file.stem}_atropos_masked.nii.gz"
     masked_data = img_data * atropos_mask
     nib.save(nib.Nifti1Image(masked_data, img.affine, img.header), masked_input)
@@ -349,7 +383,7 @@ def _skull_strip_atropos_bet(
     bet_output = work_dir / f"{input_file.stem}_bet.nii.gz"
     bet_cmd = [
         'bet',
-        str(masked_input),
+        str(input_file),  # original unmasked image
         str(bet_output),
         '-f', str(bet_frac),
         '-m',
@@ -357,21 +391,43 @@ def _skull_strip_atropos_bet(
     ]
     subprocess.run(bet_cmd, check=True, capture_output=True)
 
-    # Get BET mask
+    # Get BET mask and intersect with Atropos
     bet_mask_file = work_dir / f"{input_file.stem}_bet_mask.nii.gz"
     if bet_mask_file.exists():
-        final_mask = nib.load(bet_mask_file).get_fdata() > 0
+        bet_mask = nib.load(bet_mask_file).get_fdata() > 0
     else:
         alt_mask = Path(str(bet_output).replace('.nii.gz', '_mask.nii.gz'))
         if alt_mask.exists():
-            final_mask = nib.load(alt_mask).get_fdata() > 0
+            bet_mask = nib.load(alt_mask).get_fdata() > 0
         else:
             print("  WARNING: BET refinement failed, using Atropos mask")
-            final_mask = atropos_mask > 0
+            bet_mask = atropos_mask > 0
 
-    n_final = int(final_mask.sum())
-    print(f"  BET refined mask: {n_final:,} voxels")
-    print(f"  Reduction: {n_atropos:,} -> {n_final:,} ({100*(n_atropos - n_final)/max(n_atropos, 1):.1f}% removed)")
+    n_bet = int(bet_mask.sum())
+    print(f"  BET mask: {n_bet:,} voxels")
+
+    # Intersect: Atropos tissue classification AND BET spatial boundary
+    final_mask = (atropos_mask > 0) & bet_mask
+    n_intersect = int(final_mask.sum())
+    print(f"  Atropos ∩ BET: {n_intersect:,} voxels")
+    print(f"  Reduction: {n_atropos:,} -> {n_intersect:,} ({100*(n_atropos - n_intersect)/max(n_atropos, 1):.1f}% removed)")
+
+    # Step 6: Morphological cleanup (only for non_background / fMRI strategy)
+    # For structural data, the tight Atropos ∩ BET mask is already clean.
+    # For fMRI, the broader non_background mask benefits from closing to fill
+    # small holes and smoothing the boundary.
+    if class_strategy == 'non_background':
+        # Closing fills small gaps in the mask boundary, then fill internal holes
+        # No extra erosion — the BET intersection already defines the outer boundary
+        struct = ndimage.generate_binary_structure(3, 1)  # 6-connected
+        final_mask = ndimage.binary_closing(final_mask, structure=struct, iterations=2)
+        for z in range(final_mask.shape[2]):
+            final_mask[:, :, z] = ndimage.binary_fill_holes(final_mask[:, :, z])
+        final_mask = final_mask.astype(np.uint8)
+        n_final = int(final_mask.sum())
+        print(f"  After morphological cleanup: {n_final:,} voxels")
+    else:
+        n_final = n_intersect
 
     # Save final mask and brain-extracted image
     nib.save(nib.Nifti1Image(final_mask.astype(np.float32), img.affine, img.header), mask_file)
@@ -391,6 +447,7 @@ def _skull_strip_atropos_bet(
         'total_voxels': total_voxels,
         'bet_frac': bet_frac,
         'n_classes': n_classes,
+        'class_strategy': class_strategy,
         'cog': cog.tolist(),
         'posteriors': [str(p) for p in posteriors],
     }
