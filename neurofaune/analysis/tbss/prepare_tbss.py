@@ -460,8 +460,13 @@ def create_wm_mask(
     if erosion_voxels > 0:
         from scipy import ndimage
 
-        # Create brain mask from WM probability > 0
-        brain_mask = (wm_prob_data > 0).astype(np.uint8)
+        # Use SIGMA brain mask for erosion (covers full brain, not just WM)
+        brain_mask_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Brain_Mask.nii.gz'
+        if brain_mask_file.exists():
+            brain_mask = (nib.load(brain_mask_file).get_fdata() > 0).astype(np.uint8)
+        else:
+            logger.warning("SIGMA brain mask not found, using WM probability extent")
+            brain_mask = (wm_prob_data > 0).astype(np.uint8)
 
         # Erode brain mask
         struct = ndimage.generate_binary_structure(3, 1)
