@@ -495,10 +495,21 @@ Output structure:
     logger.info(f"Permutations: {args.n_permutations}")
     logger.info(f"TFCE: 2D (--T2)")
 
-    # Load config
+    # Load config: explicit --config > auto-discover config.yaml in parent dirs
     config = None
-    if args.config:
-        config = load_config(args.config)
+    config_path = args.config
+    if config_path is None:
+        # Walk up from tbss_dir to find study config.yaml
+        for parent in tbss_dir.resolve().parents:
+            candidate = parent / 'config.yaml'
+            if candidate.exists():
+                config_path = candidate
+                break
+    if config_path and config_path.exists():
+        config = load_config(config_path)
+        logger.info(f"Config loaded: {config_path}")
+    elif args.config:
+        logger.warning(f"Config not found: {args.config}")
 
     # Load master subject list (order matches 4D volumes from prep)
     master_list_file = tbss_dir / "subject_list.txt"

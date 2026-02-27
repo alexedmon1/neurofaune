@@ -406,12 +406,15 @@ def main():
 
     args = parser.parse_args()
 
-    # Load config if provided (for z_range and outlier threshold)
+    # Load config: explicit --config > {study_root}/config.yaml > None
     config = None
-    if args.config:
+    config_path = args.config or (args.study_root / 'config.yaml')
+    if config_path and config_path.exists():
         from neurofaune.config import load_config, get_config_value
-        config = load_config(args.config)
-        print(f"Config loaded: {args.config}")
+        config = load_config(config_path)
+        print(f"Config loaded: {config_path}")
+    elif args.config:
+        print(f"WARNING: Config not found: {args.config}")
 
     print("=" * 70)
     print("Batch MSME Registration to SIGMA Space (Direct MSME→Template Pipeline)")
