@@ -50,7 +50,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from neurofaune.preprocess.workflows.msme_preprocess import register_msme_to_template
+from neurofaune.preprocess.workflows.msme_preprocess import (
+    register_msme_to_template,
+    detect_z_registration_outliers,
+)
 
 
 @dataclass
@@ -230,7 +233,8 @@ def register_subject(
     study_root: Path,
     n_cores: int = 4,
     force: bool = False,
-    z_range: Optional[tuple] = None
+    z_range: Optional[tuple] = None,
+    config: Optional[Dict] = None
 ) -> Dict:
     """
     Run full registration chain for a single subject.
@@ -305,7 +309,8 @@ def register_subject(
                 session=info.session,
                 work_dir=work_dir,
                 n_cores=n_cores,
-                z_range=z_range
+                z_range=z_range,
+                config=config
             )
             result['steps']['msme_to_template'] = 'computed'
         else:
@@ -386,10 +391,23 @@ def main():
                         help='Show what would be processed without running')
     parser.add_argument('--z-range', type=int, nargs=2, metavar=('MIN', 'MAX'),
                         help='Constrain NCC Z search to slice range (default: 14 28)')
+    parser.add_argument('--fix-outliers', action='store_true',
+                        help='After registration, detect z-outliers and re-register with tightened z_range')
+    parser.add_argument('--outlier-threshold', type=float, default=3.0,
+                        help='MAD threshold for z-position outlier detection (default: 3.0)')
+    parser.add_argument('--config', type=Path,
+                        help='Path to config YAML (for z_range lookup)')
     parser.add_argument('--output-json', type=Path,
                         help='Save results to JSON file')
 
     args = parser.parse_args()
+
+    # Load config if provided (for z_range and outlier threshold)
+    config = None
+    if args.config:
+        from neurofaune.config import load_config, get_config_value
+        config = load_config(args.config)
+        print(f"Config loaded: {args.config}")
 
     print("=" * 70)
     print("Batch MSME Registration to SIGMA Space (Direct MSME→Template Pipeline)")
@@ -457,7 +475,8 @@ def main():
             study_root=args.study_root,
             n_cores=args.n_cores,
             force=args.force,
-            z_range=z_range
+            z_range=z_range,
+            config=config
         )
         results.append(result)
 
@@ -486,6 +505,82 @@ def main():
         for r in results:
             if r['status'] == 'failed':
                 print(f"  {r['subject']}/{r['session']}: {r.get('error', 'unknown')}")
+
+    # Post-registration outlier detection and re-registration
+    if args.fix_outliers:
+        print("\n" + "=" * 70)
+        print("POST-HOC OUTLIER DETECTION")
+        print("=" * 70)
+
+        # Group registered subjects by cohort
+        cohorts = set(s.cohort for s in ready)
+
+        for cohort in sorted(cohorts):
+            print(f"\nCohort: {cohort}")
+            outlier_result = detect_z_registration_outliers(
+                study_root=args.study_root,
+                cohort=cohort,
+                threshold=args.outlier_threshold,
+            )
+
+            n_total = len(outlier_result['subjects'])
+            n_outliers = len(outlier_result['outliers'])
+
+            if n_total == 0:
+                print(f"  No registered subjects found")
+                continue
+
+            print(f"  Subjects: {n_total}, median z_start={outlier_result['median_z']}, "
+                  f"MAD={outlier_result['mad']:.1f}")
+            print(f"  Outliers: {n_outliers} (threshold={args.outlier_threshold} MAD)")
+
+            if n_outliers == 0:
+                print(f"  No outliers detected")
+                continue
+
+            rec_range = outlier_result['recommended_z_range']
+            print(f"  Recommended z_range: {rec_range}")
+            print(f"  Outlier subjects:")
+            for sub, ses, z in outlier_result['outliers']:
+                print(f"    {sub}/{ses}: z_start={z} (expected ~{outlier_result['median_z']})")
+
+            # Re-register outliers with tightened z_range
+            print(f"\n  Re-registering {n_outliers} outliers with z_range={rec_range}...")
+            cohort_subjects = [s for s in ready if s.cohort == cohort]
+            outlier_ids = {(sub, ses) for sub, ses, _ in outlier_result['outliers']}
+
+            for info in cohort_subjects:
+                if (info.subject, info.session) not in outlier_ids:
+                    continue
+
+                print(f"\n  [{info.subject}/{info.session}] Re-registering...")
+                rerun_result = register_subject(
+                    info=info,
+                    study_root=args.study_root,
+                    n_cores=args.n_cores,
+                    force=True,
+                    z_range=rec_range,
+                    config=config
+                )
+
+                if rerun_result['status'] == 'success':
+                    print(f"    Re-registration complete")
+                else:
+                    print(f"    Re-registration {rerun_result['status']}: "
+                          f"{rerun_result.get('error', 'unknown')}")
+
+            # Verify: re-run outlier detection
+            print(f"\n  Verifying {cohort} after re-registration...")
+            verify_result = detect_z_registration_outliers(
+                study_root=args.study_root,
+                cohort=cohort,
+                threshold=args.outlier_threshold,
+            )
+            n_remaining = len(verify_result['outliers'])
+            print(f"  Remaining outliers: {n_remaining} / {len(verify_result['subjects'])}")
+            if n_remaining > 0:
+                for sub, ses, z in verify_result['outliers']:
+                    print(f"    {sub}/{ses}: z_start={z}")
 
     # Save results
     if args.output_json:

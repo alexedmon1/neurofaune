@@ -428,6 +428,8 @@ msme:
   registration:
     method: "ants"
     target_space: "SIGMA"
+    z_range: [14, 28]              # NCC search range (template slice indices)
+    outlier_z_threshold: 3.0       # MAD multiplier for z-position outlier detection
 
   # QC settings
   run_qc: true

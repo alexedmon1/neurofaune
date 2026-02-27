@@ -29,7 +29,8 @@ def register_msme_to_template(
     session: str,
     work_dir: Path,
     n_cores: int = 4,
-    z_range: Optional[Tuple[int, int]] = None
+    z_range: Optional[Tuple[int, int]] = None,
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Register MSME first echo directly to the cohort template.
@@ -56,9 +57,11 @@ def register_msme_to_template(
     n_cores : int
         Number of CPU cores for ANTs
     z_range : tuple of (int, int), optional
-        (min_slice, max_slice) to constrain the NCC Z search. Defaults to
-        (14, 28) for MSME hippocampal slab positioning in template space.
-        Set to None to search all positions (original behavior).
+        (min_slice, max_slice) to constrain the NCC Z search. Explicit value
+        takes priority over config. If neither provided, defaults to (14, 28).
+    config : dict, optional
+        Configuration dictionary. If provided and z_range is None, reads
+        z_range from msme.registration.z_range.
 
     Returns
     -------
@@ -79,10 +82,14 @@ def register_msme_to_template(
     output_prefix = transforms_dir / 'MSME_to_template_'
 
     # Step 1: Find optimal Z offset via NCC scan
-    # Default z_range constrains to hippocampal region (slices 14-28)
-    # to avoid spurious NCC peaks at extreme positions
+    # Priority: explicit arg > config > hardcoded default (14, 28)
     if z_range is None:
-        z_range = (14, 28)
+        if config:
+            z_range_cfg = get_config_value(config, 'msme.registration.z_range', default=None)
+            if z_range_cfg is not None:
+                z_range = tuple(z_range_cfg)
+        if z_range is None:
+            z_range = (14, 28)
     print(f"\n  Finding optimal Z offset via NCC scan (z_range={z_range})...")
     initial_transform, z_offset_info = _find_z_offset_ncc(
         msme_img, template_img, work_dir, z_range=z_range
@@ -149,6 +156,123 @@ def register_msme_to_template(
         'template_file': template_file,
         'msme_shape': msme_img.shape,
         'template_shape': template_img.shape,
+    }
+
+
+def detect_z_registration_outliers(
+    study_root: Path,
+    cohort: str,
+    threshold: float = 3.0,
+) -> Dict[str, Any]:
+    """
+    Detect MSME registrations with anomalous z-positioning.
+
+    Scans all warped MSME files for a cohort, computes the z-start
+    (first template slice with signal), and flags subjects whose
+    z-start deviates from the cohort median by more than
+    `threshold * MAD` (median absolute deviation).
+
+    Parameters
+    ----------
+    study_root : Path
+        Study root directory
+    cohort : str
+        Cohort name (e.g., 'p30', 'p60', 'p90')
+    threshold : float
+        MAD multiplier for outlier detection (default: 3.0)
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - subjects: list of (subject, session, z_start) for all subjects
+        - median_z: median z-start across cohort
+        - mad: median absolute deviation of z-starts
+        - outliers: list of (subject, session, z_start) flagged as outliers
+        - recommended_z_range: (min, max) tightened z_range based on median
+    """
+    transforms_root = study_root / 'transforms'
+
+    # Find all warped MSME files for this cohort
+    warped_files = sorted(transforms_root.glob(
+        f'sub-*/ses-{cohort}/MSME_to_template_Warped.nii.gz'
+    ))
+
+    if not warped_files:
+        return {
+            'subjects': [],
+            'median_z': None,
+            'mad': None,
+            'outliers': [],
+            'recommended_z_range': None,
+        }
+
+    # Compute z-start for each subject (first z-slice with signal)
+    subjects = []
+    n_slices_native = None
+    for wf in warped_files:
+        parts = wf.parts
+        subject = [p for p in parts if p.startswith('sub-')][0]
+        session = [p for p in parts if p.startswith('ses-')][0]
+
+        img = nib.load(wf)
+        data = img.get_fdata()
+        data_max = data.max()
+        if data_max == 0:
+            continue
+
+        # Count native MSME slices from signal extent
+        sig_threshold = data_max * 0.05
+        slice_sums = np.array([data[:, :, z].max() for z in range(data.shape[2])])
+        signal_slices = np.where(slice_sums > sig_threshold)[0]
+
+        if len(signal_slices) == 0:
+            continue
+
+        z_start = int(signal_slices[0])
+        if n_slices_native is None:
+            n_slices_native = len(signal_slices)
+
+        subjects.append((subject, session, z_start))
+
+    if len(subjects) < 3:
+        return {
+            'subjects': subjects,
+            'median_z': subjects[0][2] if subjects else None,
+            'mad': 0.0,
+            'outliers': [],
+            'recommended_z_range': None,
+        }
+
+    z_starts = np.array([s[2] for s in subjects])
+    median_z = int(np.median(z_starts))
+    mad = float(np.median(np.abs(z_starts - median_z)))
+
+    # Flag outliers
+    if mad > 0:
+        outliers = [
+            (sub, ses, z) for sub, ses, z in subjects
+            if abs(z - median_z) > threshold * mad
+        ]
+    else:
+        # MAD=0 means perfect consensus; flag anything != median
+        outliers = [
+            (sub, ses, z) for sub, ses, z in subjects
+            if z != median_z
+        ]
+
+    # Recommended tightened z_range: center on median, span native slice count + margin
+    if n_slices_native is None:
+        n_slices_native = 5
+    margin = 4
+    recommended = (max(0, median_z - margin), median_z + n_slices_native + margin)
+
+    return {
+        'subjects': subjects,
+        'median_z': median_z,
+        'mad': mad,
+        'outliers': outliers,
+        'recommended_z_range': recommended,
     }
 
 
@@ -620,7 +744,8 @@ def run_msme_preprocessing(
                         subject=subject,
                         session=session,
                         work_dir=reg_work_dir,
-                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                        n_cores=config.get('execution', {}).get('n_procs', 4),
+                        config=config
                     )
 
                     reg_metadata_file = derivatives_dir / f'{subject}_{session}_MSME_to_template_registration.json'
