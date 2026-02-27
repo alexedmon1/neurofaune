@@ -412,22 +412,16 @@ def _skull_strip_atropos_bet(
     print(f"  Atropos ∩ BET: {n_intersect:,} voxels")
     print(f"  Reduction: {n_atropos:,} -> {n_intersect:,} ({100*(n_atropos - n_intersect)/max(n_atropos, 1):.1f}% removed)")
 
-    # Step 6: Morphological cleanup (only for non_background / fMRI strategy)
-    # For structural data, the tight Atropos ∩ BET mask is already clean.
-    # For fMRI, the broader non_background mask benefits from closing to fill
-    # small holes and smoothing the boundary.
-    if class_strategy == 'non_background':
-        # Closing fills small gaps in the mask boundary, then fill internal holes
-        # No extra erosion — the BET intersection already defines the outer boundary
-        struct = ndimage.generate_binary_structure(3, 1)  # 6-connected
-        final_mask = ndimage.binary_closing(final_mask, structure=struct, iterations=2)
-        for z in range(final_mask.shape[2]):
-            final_mask[:, :, z] = ndimage.binary_fill_holes(final_mask[:, :, z])
-        final_mask = final_mask.astype(np.uint8)
-        n_final = int(final_mask.sum())
-        print(f"  After morphological cleanup: {n_final:,} voxels")
-    else:
-        n_final = n_intersect
+    # Step 6: Morphological closing (dilate then erode) to fill holes in the mask.
+    # The Atropos ∩ BET intersection can leave small gaps where the two methods
+    # disagree slightly. Closing smooths the boundary and fills internal holes.
+    struct = ndimage.generate_binary_structure(3, 1)  # 6-connected
+    final_mask = ndimage.binary_closing(final_mask, structure=struct, iterations=2)
+    for z in range(final_mask.shape[2]):
+        final_mask[:, :, z] = ndimage.binary_fill_holes(final_mask[:, :, z])
+    final_mask = final_mask.astype(np.uint8)
+    n_final = int(final_mask.sum())
+    print(f"  After morphological closing + hole fill: {n_final:,} voxels")
 
     # Save final mask and brain-extracted image
     nib.save(nib.Nifti1Image(final_mask.astype(np.float32), img.affine, img.header), mask_file)

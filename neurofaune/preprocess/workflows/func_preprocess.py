@@ -1200,16 +1200,17 @@ def run_multiecho_motion_correction(
     print("  Running skull stripping...")
     brain_ref = work_dir / 'mean_bold_brain.nii.gz'
 
-    # Use the same adaptive skull strip as SE pipeline
-    # fMRI EPI: brain is brightest tissue, so use n_classes=3 with
-    # brightest-class strategy (same as DWI b0)
+    # Force adaptive per-slice BET for all fMRI regardless of slice count.
+    # The atropos_bet method's BET intersection is too aggressive for
+    # high-coverage fMRI (21+ slices), losing valid brain voxels.
+    # Adaptive per-slice BET gives consistent results across all slice counts.
     ss_params = skull_strip_config or {}
     brain_ref, brain_mask_out, ss_info = skull_strip(
         input_file=mean_norm,
         output_file=brain_ref,
         mask_file=brain_mask_out,
         work_dir=ss_work,
-        method='auto',
+        method='adaptive',
         target_ratio=ss_params.get('target_ratio', 0.15),
         frac_range=tuple(ss_params.get('frac_range', [0.30, 0.90])),
         frac_step=ss_params.get('frac_step', 0.05),
@@ -1877,13 +1878,13 @@ def run_functional_preprocessing(
         ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
         nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
 
-        print("  Running skull stripping (auto-selects method based on slice count)...")
+        print("  Running skull stripping (adaptive per-slice BET for all fMRI)...")
         brain_ref, brain_mask, skull_strip_info = skull_strip(
             input_file=ref_norm,
             output_file=brain_ref,
             mask_file=brain_mask,
             work_dir=skull_strip_work_dir,
-            method='auto',
+            method='adaptive',
             target_ratio=target_ratio,
             frac_range=frac_range,
             frac_step=frac_step,
