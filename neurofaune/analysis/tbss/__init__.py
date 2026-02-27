@@ -15,6 +15,7 @@ Modules:
 """
 
 from neurofaune.analysis.tbss.prepare_tbss import prepare_tbss_data
+from neurofaune.analysis.tbss.prepare_template_tbss import prepare_template_tbss_data
 from neurofaune.analysis.tbss.run_tbss_stats import run_tbss_statistical_analysis
 from neurofaune.analysis.tbss.slice_qc import apply_slice_masking
 from neurofaune.analysis.tbss.reporting import generate_tbss_report

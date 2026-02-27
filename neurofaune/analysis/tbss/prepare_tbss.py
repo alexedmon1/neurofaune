@@ -407,23 +407,29 @@ def create_wm_mask(
     output_dir: Path,
     reference_img: Path,
     wm_prob_threshold: float = 0.3,
-    erosion_voxels: int = 2
+    erosion_voxels: int = 2,
+    wm_prob_file: Optional[Path] = None,
+    brain_mask_file: Optional[Path] = None,
 ) -> Tuple[Path, Path]:
     """
     Create interior WM mask excluding exterior WM artifacts.
 
-    Uses SIGMA study-space WM probability template to identify true WM,
-    then erodes from brain boundary to remove exterior voxels. No FA
-    gating — the mask is purely tissue-informed so it can be shared
-    across modalities (DTI, MSME, etc.).
+    Uses WM probability template to identify true WM, then erodes from
+    brain boundary to remove exterior voxels. No FA gating — the mask
+    is purely tissue-informed so it can be shared across modalities.
+
+    When wm_prob_file / brain_mask_file are provided, those are used
+    directly (e.g. atlas assets already warped to template space).
+    Otherwise falls back to SIGMA study-space lookup via config.
 
     Args:
         config: Configuration dictionary
         output_dir: Output directory for masks
-        reference_img: Path to a reference NIfTI in SIGMA space (for
-            affine/shape; typically mean FA or the SIGMA template)
+        reference_img: Path to a reference NIfTI (for affine/shape)
         wm_prob_threshold: Minimum WM probability (default: 0.3)
         erosion_voxels: Voxels to erode from brain boundary
+        wm_prob_file: Pre-warped WM probability NIfTI (overrides config)
+        brain_mask_file: Pre-warped brain mask NIfTI (overrides config)
 
     Returns:
         Tuple of (interior_wm_mask, exterior_removed_mask) paths
@@ -434,13 +440,14 @@ def create_wm_mask(
 
     ref_img = nib.load(reference_img)
 
-    # Load SIGMA WM probability
-    study_root = Path(get_config_value(config, 'paths.study_root'))
-    wm_prob_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_WM.nii.gz'
+    # Load WM probability — use override or fall back to SIGMA study-space
+    if wm_prob_file is None:
+        study_root = Path(get_config_value(config, 'paths.study_root'))
+        wm_prob_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_WM.nii.gz'
 
-    if not wm_prob_file.exists():
+    if not Path(wm_prob_file).exists():
         raise FileNotFoundError(
-            f"SIGMA WM probability template not found: {wm_prob_file}"
+            f"WM probability template not found: {wm_prob_file}"
         )
 
     wm_prob_img = nib.load(wm_prob_file)
@@ -453,7 +460,7 @@ def create_wm_mask(
     # Create WM mask from probability only
     wm_mask = (wm_prob_data > wm_prob_threshold).astype(np.uint8)
 
-    # Save WM probability in SIGMA space for reference
+    # Save WM probability for reference
     wm_prob_out = output_dir / 'wm_probability_sigma.nii.gz'
     nib.save(nib.Nifti1Image(wm_prob_data, ref_img.affine), wm_prob_out)
 
@@ -461,9 +468,11 @@ def create_wm_mask(
     if erosion_voxels > 0:
         from scipy import ndimage
 
-        # Use SIGMA brain mask for erosion (covers full brain, not just WM)
-        brain_mask_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Brain_Mask.nii.gz'
-        if brain_mask_file.exists():
+        # Use brain mask for erosion — override or SIGMA study-space
+        if brain_mask_file is None:
+            study_root = Path(get_config_value(config, 'paths.study_root'))
+            brain_mask_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Brain_Mask.nii.gz'
+        if Path(brain_mask_file).exists():
             brain_mask = (nib.load(brain_mask_file).get_fdata() > 0).astype(np.uint8)
         else:
             logger.warning("SIGMA brain mask not found, using WM probability extent")

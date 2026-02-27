@@ -220,6 +220,7 @@ def run_single_analysis(
     config: Optional[Dict],
     logger: logging.Logger,
     skip_existing: bool = False,
+    parcellation_override: Optional[Path] = None,
 ) -> Dict:
     """
     Run randomise for a single analysis (design).
@@ -365,7 +366,9 @@ def run_single_analysis(
     logger.info("\nExtracting clusters...")
 
     sigma_parcellation = None
-    if config:
+    if parcellation_override and parcellation_override.exists():
+        sigma_parcellation = parcellation_override
+    elif config:
         study_root = Path(get_config_value(config, 'paths.study_root', default=''))
         parc_path = (
             study_root / 'atlas' / 'SIGMA_study_space'
@@ -471,6 +474,8 @@ Output structure:
                         help='Random seed for reproducibility')
     parser.add_argument('--skip-existing', action='store_true',
                         help='Skip metrics that already have randomise output (corrp NIfTIs)')
+    parser.add_argument('--parcellation', type=Path,
+                        help='Override SIGMA parcellation NIfTI (e.g. template-space atlas)')
 
     args = parser.parse_args()
 
@@ -535,6 +540,7 @@ Output structure:
                 config=config,
                 logger=logger,
                 skip_existing=args.skip_existing,
+                parcellation_override=args.parcellation,
             )
             results[analysis] = result
         except Exception as e:
