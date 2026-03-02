@@ -36,6 +36,7 @@ from neurofaune.analysis.classification.data_prep import prepare_classification_
 from neurofaune.analysis.classification.lda import run_lda
 from neurofaune.analysis.classification.omnibus import run_manova, run_permanova
 from neurofaune.analysis.classification.pca import run_pca
+from neurofaune.analysis.progress import AnalysisProgress
 
 logging.basicConfig(
     level=logging.INFO,
@@ -382,10 +383,17 @@ def main():
     best_accuracy = 0.0
     total_n_subjects = 0
 
+    total_tasks = len(args.metrics) * len(cohorts) * len(args.feature_sets)
+    progress = AnalysisProgress(args.output_dir, "run_classification_analysis.py", total_tasks)
+    completed = 0
+    failed = 0
+
     for metric in args.metrics:
         wide_csv = args.roi_dir / f"roi_{metric}_wide.csv"
         if not wide_csv.exists():
             logger.warning("Wide CSV not found: %s, skipping %s", wide_csv, metric)
+            failed += len(cohorts) * len(args.feature_sets)
+            progress.update(task=metric, phase="skipped — CSV not found", completed=completed, failed=failed)
             continue
 
         metric_summaries = {}
@@ -394,6 +402,13 @@ def main():
             for feature_set in args.feature_sets:
                 cohort_label = cohort if cohort else "pooled"
                 key = f"{cohort_label}_{feature_set}"
+
+                progress.update(
+                    task=f"{metric} / {cohort_label} / {feature_set}",
+                    phase="running",
+                    completed=completed,
+                    failed=failed,
+                )
 
                 summary = run_single_analysis(
                     wide_csv=wide_csv,
@@ -408,6 +423,7 @@ def main():
                     skip_classification=args.skip_classification,
                 )
                 metric_summaries[key] = summary
+                completed += 1
 
                 # Track global stats
                 if summary.get("status") == "completed":
@@ -436,6 +452,8 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(overall, f, indent=2, default=str)
     logger.info("Saved overall summary: %s", summary_path)
+
+    progress.finish()
 
     # Write provenance tracking
     try:

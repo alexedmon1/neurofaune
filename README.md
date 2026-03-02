@@ -24,10 +24,9 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 2. Bruker → BIDS           → convert raw scanner data to standard format
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
 4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
-5. Connectome              → ROI extraction, FC matrices, covariance networks
-6. Analysis (voxelwise)    → TBSS, voxelwise fMRI (fALFF, ReHo), MVPA
-7. Network (ROI-based)     → Classification, regression, connectome, MCCA
-8. Reporting               → Unified dashboard across all analysis types
+5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo), MVPA
+6. Network (ROI-based)     → ROI extraction, CovNet, classification, regression, MCCA
+7. Reporting               → Unified dashboard across all analysis types
 ```
 
 ### Normalization Strategy
@@ -61,6 +60,8 @@ This creates the directory structure, generates `config.yaml` with all preproces
 ├── derivatives/                 # Preprocessed outputs (per subject/session)
 ├── templates/                   # Age-specific templates
 ├── transforms/                  # Cross-modal transforms
+├── analysis/                    # Voxelwise group analyses (TBSS, VBM, fMRI, MVPA)
+├── network/                     # ROI-based analyses (connectome, classification, MCCA)
 ├── qc/                          # Quality control reports
 └── work/                        # Temporary files (deletable)
 ```
@@ -164,9 +165,9 @@ uv run python scripts/batch_skull_strip_qc.py --config config.yaml
 
 ---
 
-## Connectome
+## Network
 
-The `neurofaune/connectome/` module provides ROI extraction, connectivity matrices, and network analysis tools. All operate in SIGMA atlas space.
+ROI-based analyses that operate in SIGMA atlas space. Outputs are organized under `{study_root}/network/` with subdirectories per analysis type and modality.
 
 ### ROI Extraction
 
@@ -265,11 +266,67 @@ analysis.run_graph_metrics()
 analysis.run_whole_network()
 ```
 
+### Classification
+
+PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
+
+```bash
+uv run python scripts/run_classification_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/classification/dwi \
+    --metrics FA MD AD RD --n-permutations 5000
+```
+
+### Regression
+
+Dose-response regression with SVR, Ridge, and PLS:
+
+```bash
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/regression/dwi \
+    --metrics FA MD AD RD --n-permutations 5000
+```
+
+### MCCA (Multiset Canonical Correlation Analysis)
+
+Cross-modality integration that finds linear combinations of ROI features maximizing correlation across modality views. Uses regularized generalized eigenvalue decomposition with Ledoit-Wolf shrinkage and PCA dimensionality reduction for fast permutation testing.
+
+```bash
+uv run python scripts/run_mcca_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/mcca \
+    --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
+    --feature-set bilateral \
+    --n-components 5 \
+    --regs lw \
+    --n-permutations 5000 --seed 42
+```
+
+Per cohort (pooled, p30, p60, p90), the pipeline runs:
+1. Load and intersect subjects across all views (bilateral ROIs, z-scored per view)
+2. Fit regularized MCCA via generalized eigenvalue problem
+3. Permutation test for significance of canonical correlations (5000 perms)
+4. Dose-response association (Spearman correlation with ordinal dose per canonical variate)
+5. PERMANOVA on MCCA score space (group separability)
+6. Generate visualizations (canonical correlations, score scatter plots, loading heatmaps, null distributions)
+
+```python
+from neurofaune.network.mcca import load_multiview_data, run_mcca, permutation_test_mcca
+
+Xs, view_names, metadata = load_multiview_data(
+    roi_dir, views={"dwi": ["FA", "MD"], "msme": ["MWF", "T2"]},
+    feature_set="bilateral",
+)
+result = run_mcca(Xs, n_components=5, regs="lw")
+perm = permutation_test_mcca(Xs, result.canonical_correlations, n_permutations=5000)
+```
+
 ---
 
 ## Analysis
 
-Group-level statistical analysis tools in `neurofaune/analysis/`. All operate on data already extracted/warped to SIGMA atlas space.
+Voxel-wise group-level statistical analysis tools in `neurofaune/analysis/`. All operate on data already warped to SIGMA atlas space.
 
 ### TBSS (Tract-Based Spatial Statistics)
 
@@ -307,96 +364,6 @@ uv run python scripts/prepare_fmri_voxelwise.py \
 
 uv run python scripts/run_voxelwise_fmri_analysis.py \
     --analysis-dir $STUDY_ROOT/analysis/reho --metrics ReHo --config config.yaml
-
-# Prepare and run fALFF
-uv run python scripts/prepare_fmri_voxelwise.py \
-    --study-root $STUDY_ROOT \
-    --output-dir $STUDY_ROOT/analysis/falff --metrics fALFF
-
-uv run python scripts/run_voxelwise_fmri_analysis.py \
-    --analysis-dir $STUDY_ROOT/analysis/falff --metrics fALFF --config config.yaml
-```
-
-### Classification
-
-PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
-
-```bash
-# DTI
-uv run python scripts/run_classification_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/classification/dwi \
-    --metrics FA MD AD RD --n-permutations 5000
-
-# MSME
-uv run python scripts/run_classification_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/classification/msme \
-    --metrics MWF IWF CSFF T2 --n-permutations 5000
-
-# Functional (fALFF, ReHo, ALFF)
-uv run python scripts/run_classification_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/classification/func \
-    --metrics fALFF ReHo ALFF --n-permutations 1000
-```
-
-### Regression
-
-Dose-response regression with SVR, Ridge, and PLS:
-
-```bash
-# DTI
-uv run python scripts/run_regression_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/regression/dwi \
-    --metrics FA MD AD RD --n-permutations 5000
-
-# MSME
-uv run python scripts/run_regression_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/regression/msme \
-    --metrics MWF IWF CSFF T2 --n-permutations 5000
-
-# Functional
-uv run python scripts/run_regression_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/regression/func \
-    --metrics fALFF ReHo ALFF --n-permutations 1000
-```
-
-### MCCA (Multiset Canonical Correlation Analysis)
-
-Cross-modality integration that finds linear combinations of ROI features maximizing correlation across modality views. Uses regularized generalized eigenvalue decomposition with Ledoit-Wolf shrinkage and PCA dimensionality reduction for fast permutation testing.
-
-```bash
-uv run python scripts/run_mcca_analysis.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/mcca \
-    --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
-    --feature-set bilateral \
-    --n-components 5 \
-    --regs lw \
-    --n-permutations 5000 --seed 42
-```
-
-Per cohort (pooled, p30, p60, p90), the pipeline runs:
-1. Load and intersect subjects across all views (bilateral ROIs, z-scored per view)
-2. Fit regularized MCCA via generalized eigenvalue problem
-3. Permutation test for significance of canonical correlations (5000 perms)
-4. Dose-response association (Spearman correlation with ordinal dose per canonical variate)
-5. PERMANOVA on MCCA score space (group separability)
-6. Generate visualizations (canonical correlations, score scatter plots, loading heatmaps, null distributions)
-
-```python
-from neurofaune.network.mcca import load_multiview_data, run_mcca, permutation_test_mcca
-
-Xs, view_names, metadata = load_multiview_data(
-    roi_dir, views={"dwi": ["FA", "MD"], "msme": ["MWF", "T2"]},
-    feature_set="bilateral",
-)
-result = run_mcca(Xs, n_components=5, regs="lw")
-perm = permutation_test_mcca(Xs, result.canonical_correlations, n_permutations=5000)
 ```
 
 ### MVPA (Multi-Voxel Pattern Analysis)
@@ -630,7 +597,7 @@ neurofaune/
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
 │       └── skull_strip.py           # Unified skull stripping dispatcher
-├── connectome/                      # ROI extraction, connectivity, network analysis
+├── connectome/                      # Covariance network analysis (CovNet)
 │   ├── roi_extraction.py            # Atlas-based ROI means and territory aggregation
 │   ├── functional.py                # BOLD FC matrices (Pearson, Fisher z)
 │   ├── matrices.py                  # Spearman correlation matrices per group
@@ -639,21 +606,21 @@ neurofaune/
 │   ├── whole_network.py             # Mantel, Frobenius, spectral divergence
 │   ├── visualization.py             # Heatmaps, network plots, comparison charts
 │   └── pipeline.py                  # CovNetAnalysis orchestrator class
+├── network/                         # Multi-modal network analyses
+│   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA
+│   └── mcca_visualization.py        # Canonical correlations, scores, loadings plots
+├── analysis/                        # Group-level statistical analysis
+│   ├── classification/              # PERMANOVA, PCA, LDA, SVM
+│   ├── regression/                  # Dose-response regression
+│   ├── stats/                       # FSL randomise wrapper, cluster reporting
+│   ├── mvpa/                        # Multi-voxel pattern analysis
+│   ├── progress.py                  # Lightweight progress tracking for runner scripts
+│   └── provenance.py                # Provenance chain for analysis reproducibility
 ├── reporting/                       # Unified analysis dashboard
 │   ├── registry.py                  # JSON registry (file-locked, NFS-safe)
 │   ├── discover.py                  # Backfill existing results into registry
 │   ├── section_renderers.py         # Per-type HTML section builders
 │   └── index_generator.py           # Self-contained HTML dashboard generator
-├── network/                         # Multi-modal network analyses
-│   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA
-│   └── mcca_visualization.py        # Canonical correlations, scores, loadings plots
-├── analysis/                        # Group-level statistical analysis
-│   ├── func/                        # ReHo, fALFF (voxel-level resting-state)
-│   ├── tbss/                        # Tract-Based Spatial Statistics
-│   ├── stats/                       # FSL randomise wrapper, cluster reporting
-│   ├── classification/              # PERMANOVA, PCA, LDA, SVM
-│   ├── regression/                  # Dose-response regression
-│   └── mvpa/                        # Multi-voxel pattern analysis
 ├── templates/                       # Template building and registration
 ├── registration/                    # Cross-modal registration utilities
 └── utils/                           # Transforms, exclusions, orientation

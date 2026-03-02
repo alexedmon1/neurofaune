@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-from neurofaune.network.mcca import MCCAResult, PermutationResult
+from neurofaune.network.mcca import MCCAResult, PermutationResult, SexTestResult
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,47 @@ def plot_scores_by_dose(
         ax.set_ylabel("CV2")
     ax.set_title(title)
     ax.legend(title="Dose", framealpha=0.9)
+    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
+    ax.axvline(0, color="grey", linewidth=0.5, linestyle="--")
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved: %s", out_path)
+    plt.close(fig)
+
+
+SEX_COLORS = {"M": "#2196F3", "F": "#E91E63"}
+
+
+def plot_scores_by_sex(
+    result: MCCAResult,
+    sex_labels: np.ndarray,
+    title: str = "MCCA Scores by Sex",
+    out_path: Optional[Path] = None,
+) -> None:
+    """Scatter plot of CV1 vs CV2 coloured by sex."""
+    avg_scores = np.mean(result.scores, axis=0)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    for sex in ["M", "F"]:
+        mask = sex_labels == sex
+        if not mask.any():
+            continue
+        ax.scatter(
+            avg_scores[mask, 0], avg_scores[mask, 1],
+            c=SEX_COLORS[sex], label=sex, s=50, alpha=0.7,
+            edgecolors="white", linewidths=0.5,
+        )
+
+    ax.set_xlabel(f"CV1 (r={result.canonical_correlations[0]:.3f})")
+    if result.n_components > 1:
+        ax.set_ylabel(f"CV2 (r={result.canonical_correlations[1]:.3f})")
+    else:
+        ax.set_ylabel("CV2")
+    ax.set_title(title)
+    ax.legend(title="Sex", framealpha=0.9)
     ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
     ax.axvline(0, color="grey", linewidth=0.5, linestyle="--")
 

@@ -36,6 +36,7 @@ from typing import Dict, List, Optional
 import nibabel as nib
 import numpy as np
 
+from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.analysis.stats.randomise_wrapper import run_randomise, summarize_results
 from neurofaune.analysis.stats.cluster_report import generate_reports_for_all_contrasts
 from neurofaune.config import load_config, get_config_value
@@ -524,7 +525,13 @@ Output structure:
 
     # Run each analysis
     results = {}
+    progress = AnalysisProgress(vbm_dir, "run_vbm_analysis.py", len(args.analyses))
+    completed = 0
+    failed = 0
+
     for analysis in args.analyses:
+        progress.update(task=analysis, phase="running randomise", completed=completed, failed=failed)
+
         try:
             result = run_single_analysis(
                 vbm_dir=vbm_dir,
@@ -541,9 +548,11 @@ Output structure:
                 parcellation_override=args.parcellation,
             )
             results[analysis] = result
+            completed += 1
         except Exception as e:
             logger.error(f"\nFAILED: {analysis}: {e}")
             results[analysis] = {'success': False, 'error': str(e)}
+            failed += 1
             continue
 
     # Register with unified reporting
@@ -598,6 +607,8 @@ Output structure:
 
     n_ok = sum(1 for r in results.values() if r['success'])
     logger.info(f"\n{n_ok}/{len(results)} analyses completed successfully")
+
+    progress.finish()
 
     logger.info("\nTo check significance:")
     logger.info(

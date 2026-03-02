@@ -34,6 +34,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.analysis.mvpa.data_loader import (
     align_data_to_design,
     discover_sigma_images,
@@ -433,11 +434,22 @@ def main():
     total_n_subjects = 0
     n_searchlight_sig = 0
 
+    n_dose = 0 if args.skip_dose_response else len(dose_response_designs)
+    total_tasks = len(args.metrics) * (len(categorical_designs) + n_dose)
+    progress = AnalysisProgress(args.output_dir, "run_mvpa_analysis.py", total_tasks)
+    completed = 0
+
     for metric in args.metrics:
         metric_summaries = {}
 
         # Classification analyses (categorical designs)
         for design_name, design_path in categorical_designs.items():
+            progress.update(
+                task=f"{metric} / {design_name} / classification",
+                phase="running",
+                completed=completed,
+            )
+
             summary = run_single_mvpa(
                 metric=metric,
                 design_name=design_name,
@@ -457,6 +469,7 @@ def main():
                 sl_n_perm_fwer=100,
             )
             metric_summaries[f"{design_name}_classification"] = summary
+            completed += 1
 
             if summary.get("status") == "completed":
                 total_n_subjects = max(total_n_subjects, summary.get("n_subjects", 0))
@@ -469,6 +482,12 @@ def main():
         # Dose-response analyses
         if not args.skip_dose_response:
             for design_name, design_path in dose_response_designs.items():
+                progress.update(
+                    task=f"{metric} / {design_name} / dose_response",
+                    phase="running",
+                    completed=completed,
+                )
+
                 summary = run_single_mvpa(
                     metric=metric,
                     design_name=design_name,
@@ -488,6 +507,7 @@ def main():
                     sl_n_perm_fwer=100,
                 )
                 metric_summaries[f"{design_name}_dose_response"] = summary
+                completed += 1
 
                 if summary.get("status") == "completed":
                     total_n_subjects = max(total_n_subjects, summary.get("n_subjects", 0))
@@ -516,6 +536,8 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(overall, f, indent=2, default=str)
     logger.info("Saved overall summary: %s", summary_path)
+
+    progress.finish()
 
     # Write provenance tracking (MVPA uses NIfTIs, not ROI CSVs — track mask hash)
     try:

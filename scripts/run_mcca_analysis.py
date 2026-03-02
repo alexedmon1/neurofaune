@@ -29,12 +29,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.network.mcca import (
     load_multiview_data,
     permutation_test_mcca,
     run_mcca,
     test_dose_association,
     test_group_differences,
+    test_sex_differences,
 )
 from neurofaune.network.mcca_visualization import (
     plot_canonical_correlations,
@@ -43,6 +45,7 @@ from neurofaune.network.mcca_visualization import (
     plot_permutation_null,
     plot_scores_by_cohort,
     plot_scores_by_dose,
+    plot_scores_by_sex,
 )
 
 logging.basicConfig(
@@ -87,6 +90,7 @@ def run_cohort_mcca(
     n_permutations: int,
     seed: int,
     exclusion_csv: Path,
+    confounds: list = None,
 ) -> dict:
     """Run MCCA pipeline for a single cohort (or pooled)."""
     cohort_label = cohort if cohort else "pooled"
@@ -107,6 +111,7 @@ def run_cohort_mcca(
             feature_set=feature_set,
             cohort_filter=cohort if cohort else None,
             exclusion_csv=exclusion_csv,
+            confounds=confounds,
         )
     except (ValueError, FileNotFoundError) as exc:
         logger.warning("Skipping %s/%s: %s", cohort_label, feature_set, exc)
@@ -140,6 +145,7 @@ def run_cohort_mcca(
         "group_sizes": {
             name: int((dose_labels == dose_map[name]).sum()) for name in label_names
         },
+        "confounds_residualized": confounds if confounds else None,
     }
 
     # Phase 2: Fit MCCA
@@ -208,6 +214,29 @@ def run_cohort_mcca(
         permanova["pseudo_f"], permanova["r_squared"], permanova["p_value"],
     )
 
+    # Phase 5b: Sex differences
+    if "sex" in metadata.columns and metadata["sex"].nunique() == 2:
+        logger.info("[Phase 5b] Testing sex differences in canonical variate space...")
+        sex_result = test_sex_differences(
+            result.scores, metadata["sex"].values,
+            n_permutations=n_permutations, seed=seed,
+        )
+        summary["sex_differences"] = {
+            "permanova": sex_result.permanova,
+            "n_male": sex_result.n_male,
+            "n_female": sex_result.n_female,
+            "per_component": {
+                f"CV{i+1}": sex_result.per_component[i]
+                for i in range(result.n_components)
+            },
+        }
+        logger.info(
+            "  Sex PERMANOVA: F=%.4f, R²=%.4f, p=%.4f",
+            sex_result.permanova["pseudo_f"],
+            sex_result.permanova["r_squared"],
+            sex_result.permanova["p_value"],
+        )
+
     # Phase 6: Visualisations
     logger.info("[Phase 6] Generating visualisations...")
 
@@ -228,6 +257,13 @@ def run_cohort_mcca(
         title=f"MCCA Scores by Cohort — {cohort_label}",
         out_path=combo_dir / "scores_by_cohort.png",
     )
+
+    if "sex" in metadata.columns and metadata["sex"].nunique() == 2:
+        plot_scores_by_sex(
+            result, metadata["sex"].values,
+            title=f"MCCA Scores by Sex — {cohort_label}",
+            out_path=combo_dir / "scores_by_sex.png",
+        )
 
     for k, vn in enumerate(view_names):
         plot_loadings_heatmap(
@@ -253,6 +289,7 @@ def run_cohort_mcca(
         "n_samples": n_samples,
         "n_components": result.n_components,
         "regularisation": regs,
+        "confounds_residualized": confounds if confounds else None,
         "view_names": view_names,
         "view_dims": {vn: X.shape[1] for vn, X in zip(view_names, Xs)},
         "canonical_correlations": result.canonical_correlations.tolist(),
@@ -261,6 +298,8 @@ def run_cohort_mcca(
         "permanova": permanova,
         "group_sizes": summary["group_sizes"],
     }
+    if "sex_differences" in summary:
+        mcca_json["sex_differences"] = summary["sex_differences"]
     with open(combo_dir / "mcca_results.json", "w") as f:
         json.dump(mcca_json, f, indent=2)
 
@@ -320,8 +359,13 @@ def write_design_description(args: argparse.Namespace, views: dict, output_path:
         "   - Euclidean distances on average canonical variate scores",
         "   - Tests group separability in fused multi-modal space",
         "",
+        "5. Sex differences test (when sex data available)",
+        "   - PERMANOVA on MCCA score space by sex",
+        "   - Per-CV Cohen's d with permutation p-values",
+        "",
         "PREPROCESSING",
         "-------------",
+        f"- Confounds residualized: {args.confounds or 'None'}",
         "- Z-score standardisation per view (independent)",
         "- Median imputation for NaN values",
         "- ROIs with >20% zeros excluded",
@@ -369,6 +413,10 @@ def main():
         help="Regularisation method: 'lw' (Ledoit-Wolf), 'identity', or float (default: lw)",
     )
     parser.add_argument(
+        "--confounds", nargs="*", default=None,
+        help="Metadata columns to residualize before MCCA (e.g. 'sex')",
+    )
+    parser.add_argument(
         "--exclusion-csv", type=Path, default=None,
         help="CSV of sessions to exclude (must have subject, session columns)",
     )
@@ -403,6 +451,7 @@ def main():
     config = {
         "roi_dir": str(args.roi_dir),
         "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
+        "confounds": args.confounds,
         "output_dir": str(args.output_dir),
         "views": {k: v for k, v in views.items()},
         "feature_set": args.feature_set,
@@ -425,8 +474,13 @@ def main():
     n_significant_cv = 0
     n_significant_dose = 0
 
+    progress = AnalysisProgress(args.output_dir, "run_mcca_analysis.py", len(cohorts))
+    completed = 0
+
     for cohort in cohorts:
         cohort_label = cohort if cohort else "pooled"
+
+        progress.update(task=cohort_label, phase="running MCCA", completed=completed)
 
         summary = run_cohort_mcca(
             roi_dir=args.roi_dir,
@@ -439,8 +493,10 @@ def main():
             n_permutations=args.n_permutations,
             seed=args.seed,
             exclusion_csv=args.exclusion_csv,
+            confounds=args.confounds,
         )
         all_summaries[cohort_label] = summary
+        completed += 1
 
         if summary.get("status") == "completed":
             total_n_subjects = max(total_n_subjects, summary.get("n_samples", 0))
@@ -468,6 +524,8 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(overall, f, indent=2, default=str)
     logger.info("Saved overall summary: %s", summary_path)
+
+    progress.finish()
 
     # Write provenance tracking
     try:

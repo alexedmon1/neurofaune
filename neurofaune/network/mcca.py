@@ -63,6 +63,7 @@ def load_multiview_data(
     feature_set: str = "bilateral",
     cohort_filter: Optional[str] = None,
     exclusion_csv: Optional[Path] = None,
+    confounds: Optional[List[str]] = None,
 ) -> Tuple[List[np.ndarray], List[str], List[List[str]], pd.DataFrame]:
     """Load and align multi-view ROI data for MCCA.
 
@@ -83,6 +84,9 @@ def load_multiview_data(
         Restrict to a single cohort (e.g. 'p30').
     exclusion_csv : Path, optional
         Exclusion list CSV.
+    confounds : list of str, optional
+        Metadata columns to residualize from features before z-scoring
+        (e.g. ``["sex"]``). Categorical columns are dummy-encoded.
 
     Returns
     -------
@@ -93,7 +97,7 @@ def load_multiview_data(
     feature_names : list of list of str
         Per-view feature name lists (prefixed with metric name).
     metadata_df : DataFrame
-        Subject/session/dose/cohort for the intersected samples.
+        Subject/session/dose/cohort(/sex) for the intersected samples.
     """
     view_names = list(views.keys())
     view_data = {}  # view_name -> {subject_session_key -> (row_info, feature_dict)}
@@ -165,7 +169,7 @@ def load_multiview_data(
     if n_common < 10:
         raise ValueError(f"Too few common subjects ({n_common}) across views")
 
-    # Align and standardise
+    # Align views to common subjects
     Xs = []
     all_feature_names = []
     metadata_df = None
@@ -178,18 +182,36 @@ def load_multiview_data(
         idx = [key_to_idx[k] for k in common_keys_sorted]
 
         X_aligned = vd["X"][idx]
-
-        # Z-score standardise per view
-        scaler = StandardScaler()
-        X_aligned = scaler.fit_transform(X_aligned)
-
         Xs.append(X_aligned)
         all_feature_names.append(vd["feature_names"])
 
         if metadata_df is None:
             metadata_df = vd["info"].iloc[idx].reset_index(drop=True)
 
+    # Residualize confounds (before z-scoring)
+    if confounds:
+        missing = [c for c in confounds if c not in metadata_df.columns]
+        if missing:
+            raise ValueError(f"Confound columns not found in metadata: {missing}")
+        C = pd.get_dummies(metadata_df[confounds], drop_first=True, dtype=float).values
+        logger.info("Residualising confounds: %s (%d regressors)", confounds, C.shape[1])
+        Xs = [_residualize_confounds(X, C) for X in Xs]
+
+    # Z-score standardise per view
+    for i in range(len(Xs)):
+        scaler = StandardScaler()
+        Xs[i] = scaler.fit_transform(Xs[i])
+
     return Xs, view_names, all_feature_names, metadata_df
+
+
+def _residualize_confounds(X: np.ndarray, confound_matrix: np.ndarray) -> np.ndarray:
+    """Regress out confounds from each feature via OLS, return residuals."""
+    from sklearn.linear_model import LinearRegression
+
+    model = LinearRegression()
+    model.fit(confound_matrix, X)
+    return X - model.predict(confound_matrix)
 
 
 def _regularise_cov(X: np.ndarray, method: str = "lw") -> np.ndarray:
@@ -651,3 +673,98 @@ def test_group_differences(
         "r_squared": float(observed_r2),
         "p_value": float(p_value),
     }
+
+
+@dataclass
+class SexTestResult:
+    """Result container for sex difference test on MCCA scores."""
+
+    permanova: Dict  # {pseudo_f, r_squared, p_value}
+    per_component: List[Dict]  # [{cohens_d, p_value}, ...] per CV
+    n_male: int
+    n_female: int
+
+
+def test_sex_differences(
+    scores: List[np.ndarray],
+    sex_labels: np.ndarray,
+    n_permutations: int = 5000,
+    seed: int = 42,
+) -> SexTestResult:
+    """Test sex differences in MCCA canonical variate space.
+
+    Runs PERMANOVA for overall separability and per-CV Cohen's d with
+    permutation p-values.
+
+    Parameters
+    ----------
+    scores : list of ndarray
+        Per-view MCCA scores, each shape [n_samples, n_components].
+    sex_labels : ndarray
+        Sex labels (str 'M'/'F'), shape [n_samples].
+    n_permutations : int
+        Number of permutations.
+    seed : int
+        Random seed.
+
+    Returns
+    -------
+    SexTestResult
+    """
+    # Encode sex as integer: M=0, F=1
+    sex_int = np.array([0 if s == "M" else 1 for s in sex_labels])
+    n_male = int((sex_int == 0).sum())
+    n_female = int((sex_int == 1).sum())
+
+    logger.info("Sex groups: M=%d, F=%d", n_male, n_female)
+
+    # PERMANOVA on scores
+    permanova = test_group_differences(
+        scores, sex_int, n_permutations=n_permutations, seed=seed,
+    )
+
+    # Average scores across views
+    avg_scores = np.mean(scores, axis=0)  # [n_samples, n_components]
+    n_comp = avg_scores.shape[1]
+
+    # Per-CV Cohen's d and permutation p-values
+    rng = np.random.RandomState(seed)
+
+    def _cohens_d(vals, labels):
+        m0 = vals[labels == 0]
+        m1 = vals[labels == 1]
+        n0, n1 = len(m0), len(m1)
+        if n0 < 2 or n1 < 2:
+            return 0.0
+        pooled_sd = np.sqrt(
+            ((n0 - 1) * np.var(m0, ddof=1) + (n1 - 1) * np.var(m1, ddof=1))
+            / (n0 + n1 - 2)
+        )
+        if pooled_sd == 0:
+            return 0.0
+        return (np.mean(m0) - np.mean(m1)) / pooled_sd
+
+    per_component = []
+    for c in range(n_comp):
+        obs_d = _cohens_d(avg_scores[:, c], sex_int)
+
+        # Permutation p-value (two-tailed)
+        null_d = np.zeros(n_permutations)
+        for perm_i in range(n_permutations):
+            perm_labels = rng.permutation(sex_int)
+            null_d[perm_i] = _cohens_d(avg_scores[:, c], perm_labels)
+
+        p_val = (np.sum(np.abs(null_d) >= np.abs(obs_d)) + 1) / (n_permutations + 1)
+        per_component.append({"cohens_d": float(obs_d), "p_value": float(p_val)})
+
+        logger.info(
+            "  CV%d sex: d=%.4f, p=%.4f%s",
+            c + 1, obs_d, p_val, " *" if p_val < 0.05 else "",
+        )
+
+    return SexTestResult(
+        permanova=permanova,
+        per_component=per_component,
+        n_male=n_male,
+        n_female=n_female,
+    )

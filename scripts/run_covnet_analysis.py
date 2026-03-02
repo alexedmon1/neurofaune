@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.connectome import CovNetAnalysis
 
 logging.basicConfig(
@@ -304,10 +305,16 @@ def main():
 
     # Run for each metric
     all_summaries = {}
+    progress = AnalysisProgress(args.output_dir, "run_covnet_analysis.py", len(args.metrics))
+    completed = 0
+    failed = 0
+
     for metric in args.metrics:
         logger.info(f"\n{'=' * 60}")
         logger.info(f"Processing metric: {metric}")
         logger.info(f"{'=' * 60}")
+
+        progress.update(task=metric, phase="preparing", completed=completed, failed=failed)
 
         try:
             analysis = CovNetAnalysis.prepare(
@@ -315,16 +322,21 @@ def main():
                 labels_csv=args.labels_csv,
             )
             analysis.save()
+            progress.update(task=metric, phase="running analyses", completed=completed, failed=failed)
             summary = run_single_metric(analysis, args)
             all_summaries[metric] = summary
+            completed += 1
         except FileNotFoundError as e:
             logger.warning(str(e))
+            failed += 1
             continue
 
     # Save overall summary
     summary_path = args.output_dir / "covnet_summary.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
+
+    progress.finish()
 
     # Write provenance tracking
     try:

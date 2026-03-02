@@ -121,7 +121,10 @@ def prepare_classification_data(
         scaler = StandardScaler()
         X = scaler.fit_transform(X)
 
-    sample_info = df[["subject", "session", "dose", "cohort"]].reset_index(drop=True)
+    info_cols = ["subject", "session", "dose", "cohort"]
+    if "sex" in df.columns:
+        info_cols.append("sex")
+    sample_info = df[info_cols].reset_index(drop=True)
 
     logger.info(
         "Classification data: n=%d, features=%d, groups=%s",
