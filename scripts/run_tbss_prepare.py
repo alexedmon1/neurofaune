@@ -18,25 +18,25 @@ Usage:
     # Prepare all subjects with default settings
     uv run python scripts/run_tbss_prepare.py \\
         --config config.yaml \\
-        --output-dir /study/analysis/tbss/
+        --output-dir /study/analysis/tbss/dwi/
 
     # Use subject list from neuroaider design matrix
     uv run python scripts/run_tbss_prepare.py \\
         --config config.yaml \\
-        --output-dir /study/analysis/tbss/ \\
+        --output-dir /study/analysis/tbss/dwi/ \\
         --subject-list /study/designs/model1/subject_list.txt
 
     # Specific cohort with QC exclusions
     uv run python scripts/run_tbss_prepare.py \\
         --config config.yaml \\
-        --output-dir /study/analysis/tbss/ \\
+        --output-dir /study/analysis/tbss/dwi/ \\
         --cohorts p60 \\
         --exclude-file /study/qc/dwi_batch_summary/exclude_subjects.txt
 
     # Dry run to verify subject discovery
     uv run python scripts/run_tbss_prepare.py \\
         --config config.yaml \\
-        --output-dir /study/analysis/tbss/ \\
+        --output-dir /study/analysis/tbss/dwi/ \\
         --dry-run
 """
 

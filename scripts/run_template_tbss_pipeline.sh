@@ -20,7 +20,7 @@
 set -euo pipefail
 
 STUDY_ROOT="${STUDY_ROOT:-/mnt/arborea/bpa-rat}"
-OUTPUT="${OUTPUT:-${STUDY_ROOT}/analysis/tbss_template}"
+OUTPUT="${OUTPUT:-${STUDY_ROOT}/analysis/tbss/template}"
 CONFIG="${CONFIG:-${STUDY_ROOT}/configs/bpa_rat_example.yaml}"
 TRACKER="${TRACKER:-${STUDY_ROOT}/study_tracker_combined.csv}"
 COHORTS="${COHORTS:-p30 p60 p90}"

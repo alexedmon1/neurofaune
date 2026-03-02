@@ -14,19 +14,19 @@ Prerequisites:
 Usage:
     # Run all 4 analyses with 5000 permutations
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
+        --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
         --config configs/bpa_rat_example.yaml \
         --n-permutations 5000
 
     # Run a single analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
+        --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
         --config configs/bpa_rat_example.yaml \
         --analyses per_pnd_p60
 
     # Quick test with fewer permutations
     uv run python scripts/run_tbss_analysis.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
+        --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
         --config configs/bpa_rat_example.yaml \
         --analyses per_pnd_p30 \
         --n-permutations 100 --seed 42
@@ -461,8 +461,8 @@ Output structure:
     parser.add_argument('--analyses', nargs='+', default=ALL_ANALYSES,
                         help=f'Analyses to run (default: {ALL_ANALYSES}). '
                              'Each name must have a matching designs/ subdirectory.')
-    parser.add_argument('--metrics', nargs='+', default=DTI_METRICS,
-                        help='Metrics to analyze (default: FA MD AD RD). '
+    parser.add_argument('--metrics', nargs='+', default=None,
+                        help='Metrics to analyze (auto-detected from tbss_config.json if not specified). '
                              'Use MWF IWF CSFF T2 for MSME.')
     parser.add_argument('--n-permutations', type=int, default=5000,
                         help='Number of permutations (default: 5000)')
@@ -483,6 +483,16 @@ Output structure:
     if not tbss_dir.exists():
         print(f"ERROR: TBSS directory not found: {tbss_dir}", file=sys.stderr)
         sys.exit(1)
+
+    # Auto-detect metrics from tbss_config.json if not specified
+    if args.metrics is None:
+        config_file = tbss_dir / 'tbss_config.json'
+        if config_file.exists():
+            with open(config_file) as f:
+                tbss_cfg = json.load(f)
+            args.metrics = tbss_cfg.get('metrics', DTI_METRICS)
+        else:
+            args.metrics = DTI_METRICS
 
     logger = setup_logging(tbss_dir)
 

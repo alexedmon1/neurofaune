@@ -1215,25 +1215,25 @@ Examples:
   # Prepare all cohorts with default settings
   uv run python -m neurofaune.analysis.tbss.prepare_tbss \\
       --config config.yaml \\
-      --output-dir /study/analysis/tbss/
+      --output-dir /study/analysis/tbss/dwi/
 
   # Use subject list from neuroaider design matrix
   uv run python -m neurofaune.analysis.tbss.prepare_tbss \\
       --config config.yaml \\
-      --output-dir /study/analysis/tbss/ \\
+      --output-dir /study/analysis/tbss/dwi/ \\
       --subject-list /study/designs/model1/subject_list.txt
 
   # Specific cohort with exclusions
   uv run python -m neurofaune.analysis.tbss.prepare_tbss \\
       --config config.yaml \\
-      --output-dir /study/analysis/tbss/ \\
+      --output-dir /study/analysis/tbss/dwi/ \\
       --cohorts p60 \\
       --exclude-file /study/qc/dwi_batch_summary/exclude_subjects.txt
 
   # Dry run to check subject discovery
   uv run python -m neurofaune.analysis.tbss.prepare_tbss \\
       --config config.yaml \\
-      --output-dir /study/analysis/tbss/ \\
+      --output-dir /study/analysis/tbss/dwi/ \\
       --dry-run
         """
     )

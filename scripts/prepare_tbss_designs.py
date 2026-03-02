@@ -13,9 +13,9 @@ Creates 4 sets of design files:
 
 Usage:
     uv run python scripts/prepare_tbss_designs.py \
-        --study-tracker /mnt/arborea/bpa-rat/study_tracker_combined_250916.csv \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
-        --output-dir /mnt/arborea/bpa-rat/analysis/tbss/designs
+        --study-tracker $STUDY_ROOT/study_tracker_combined_250916.csv \
+        --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
+        --output-dir $STUDY_ROOT/analysis/tbss/dwi/designs
 """
 
 import argparse

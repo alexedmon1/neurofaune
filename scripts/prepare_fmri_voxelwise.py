@@ -10,10 +10,17 @@ Unlike TBSS which uses a skeletonized WM mask, this analysis uses the full
 SIGMA brain mask because fALFF and ReHo are whole-brain metrics.
 
 Usage:
+    # Prepare ReHo
     PYTHONUNBUFFERED=1 uv run python scripts/prepare_fmri_voxelwise.py \
-        --study-root /mnt/arborea/bpa-rat \
-        --output-dir /mnt/arborea/bpa-rat/analysis/voxelwise_fmri \
-        --metrics fALFF ReHo
+        --study-root $STUDY_ROOT \
+        --output-dir $STUDY_ROOT/analysis/reho \
+        --metrics ReHo
+
+    # Prepare fALFF
+    PYTHONUNBUFFERED=1 uv run python scripts/prepare_fmri_voxelwise.py \
+        --study-root $STUDY_ROOT \
+        --output-dir $STUDY_ROOT/analysis/falff \
+        --metrics fALFF
 """
 
 import argparse

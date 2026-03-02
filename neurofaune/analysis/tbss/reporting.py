@@ -14,9 +14,9 @@ Usage:
 
     report_path = generate_tbss_report(
         analysis_name='dose_response',
-        tbss_dir=Path('/study/analysis/tbss'),
-        randomise_dir=Path('/study/analysis/tbss/randomise/dose_response'),
-        output_file=Path('/study/analysis/tbss/reports/tbss_summary.html'),
+        tbss_dir=Path('/study/analysis/tbss/dwi'),
+        randomise_dir=Path('/study/analysis/tbss/dwi/randomise/dose_response'),
+        output_file=Path('/study/analysis/tbss/dwi/reports/tbss_summary.html'),
         metrics=['FA', 'MD', 'AD', 'RD']
     )
 """
@@ -65,16 +65,33 @@ def load_subject_manifest(tbss_dir: Path) -> Optional[Dict]:
     return None
 
 
-def load_slice_qc_summary(tbss_dir: Path) -> Optional[Dict]:
+def load_slice_qc_summary(
+    tbss_dir: Path,
+    qc_dir: Optional[Path] = None,
+    modality: Optional[str] = None,
+) -> Optional[Dict]:
     """
     Load slice QC validity report if available.
 
+    Checks both the centralized ``qc/tbss/{modality}/`` location and the
+    legacy ``{tbss_dir}/slice_qc/`` location.
+
     Args:
         tbss_dir: TBSS output directory
+        qc_dir: Optional study-level QC root
+        modality: Modality name (e.g. 'dwi', 'msme')
 
     Returns:
         Slice QC report dict or None if not available
     """
+    # Check centralized QC location first
+    if qc_dir is not None and modality is not None:
+        report_file = Path(qc_dir) / 'tbss' / modality / 'validity_report.json'
+        if report_file.exists():
+            with open(report_file) as f:
+                return json.load(f)
+
+    # Fall back to legacy location
     report_file = tbss_dir / 'slice_qc' / 'validity_report.json'
     if report_file.exists():
         with open(report_file) as f:

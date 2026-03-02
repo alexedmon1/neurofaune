@@ -20,12 +20,12 @@ Workflow:
 Usage:
     uv run python -m neurofaune.analysis.tbss.prepare_template_tbss \\
         --study-root /mnt/arborea/bpa-rat \\
-        --output-dir /mnt/arborea/bpa-rat/analysis/tbss_template/p90 \\
+        --output-dir /mnt/arborea/bpa-rat/analysis/tbss/template/p90 \\
         --cohort p90
 
     uv run python scripts/run_template_tbss_prepare.py \\
         --study-root /mnt/arborea/bpa-rat \\
-        --output-dir /mnt/arborea/bpa-rat/analysis/tbss_template/p90 \\
+        --output-dir /mnt/arborea/bpa-rat/analysis/tbss/template/p90 \\
         --cohort p90 --metrics FA MD AD RD
 """
 
@@ -54,7 +54,7 @@ MSME_METRICS = ['MWF', 'IWF', 'CSFF', 'T2']
 
 # Per-modality defaults: (transform_prefix, derivatives_subdir, coverage_metric)
 MODALITY_DEFAULTS = {
-    'dti':  ('FA',   'dwi',  'FA'),
+    'dwi':  ('FA',   'dwi',  'FA'),
     'msme': ('MSME', 'msme', 'T2'),
 }
 
@@ -373,7 +373,7 @@ def prepare_template_tbss_data(
     erosion_voxels: int = 2,
     exclude_file: Optional[Path] = None,
     subject_list: Optional[List[str]] = None,
-    modality: str = 'dti',
+    modality: str = 'dwi',
 ) -> Dict:
     """
     Main 7-phase workflow for template-space TBSS preparation.
@@ -388,7 +388,7 @@ def prepare_template_tbss_data(
         erosion_voxels: Erosion from brain boundary in voxels
         exclude_file: Path to exclusion list
         subject_list: Optional explicit subject list
-        modality: 'dti' or 'msme'
+        modality: 'dwi' or 'msme'
 
     Returns:
         Dict with preparation results
@@ -396,7 +396,7 @@ def prepare_template_tbss_data(
     transform_prefix, derivatives_subdir, coverage_metric = MODALITY_DEFAULTS[modality]
 
     if metrics is None:
-        metrics = DTI_METRICS if modality == 'dti' else MSME_METRICS
+        metrics = DTI_METRICS if modality == 'dwi' else MSME_METRICS
 
     study_root = Path(study_root)
     output_dir = Path(output_dir)
@@ -479,7 +479,7 @@ def prepare_template_tbss_data(
 
             # For DTI FA, reuse existing FA_to_template_Warped.nii.gz
             # (MSME Warped file is raw echo, not a derived metric — skip)
-            if modality == 'dti' and metric == coverage_metric:
+            if modality == 'dwi' and metric == coverage_metric:
                 prewarped = (
                     transforms_dir / sd.subject / session
                     / f'{transform_prefix}_to_template_Warped.nii.gz'
@@ -636,13 +636,13 @@ Examples:
   # Prepare p90 cohort
   uv run python -m neurofaune.analysis.tbss.prepare_template_tbss \\
       --study-root /mnt/arborea/bpa-rat \\
-      --output-dir /mnt/arborea/bpa-rat/analysis/tbss_template/p90 \\
+      --output-dir /mnt/arborea/bpa-rat/analysis/tbss/template/p90 \\
       --cohort p90
 
   # All metrics with custom coverage threshold
   uv run python -m neurofaune.analysis.tbss.prepare_template_tbss \\
       --study-root /mnt/arborea/bpa-rat \\
-      --output-dir /mnt/arborea/bpa-rat/analysis/tbss_template/p60 \\
+      --output-dir /mnt/arborea/bpa-rat/analysis/tbss/template/p60 \\
       --cohort p60 --metrics FA MD AD RD --min-coverage 0.80
         """
     )
@@ -654,11 +654,11 @@ Examples:
     parser.add_argument('--cohort', type=str, required=True,
                         choices=['p30', 'p60', 'p90'],
                         help='Age cohort')
-    parser.add_argument('--modality', type=str, default='dti',
-                        choices=['dti', 'msme'],
-                        help='Modality (default: dti)')
+    parser.add_argument('--modality', type=str, default='dwi',
+                        choices=['dwi', 'msme'],
+                        help='Modality (default: dwi)')
     parser.add_argument('--metrics', nargs='+', default=None,
-                        help='Metrics to prepare (default: FA MD AD RD for dti, '
+                        help='Metrics to prepare (default: FA MD AD RD for dwi, '
                              'MWF IWF CSFF T2 for msme)')
     parser.add_argument('--min-coverage', type=float, default=0.75,
                         help='Min fraction of subjects with nonzero voxel (default: 0.75)')

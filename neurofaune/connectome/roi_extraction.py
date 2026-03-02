@@ -178,7 +178,8 @@ def discover_sigma_metrics(
     modality : str
         Subdirectory name: 'dwi', 'msme', 'func'
     metrics : list[str]
-        Metric suffixes to search for (e.g. ['FA', 'MD', 'AD', 'RD'])
+        Metric suffixes to search for (e.g. ['FA', 'MD', 'AD', 'RD']
+        for DWI/MSME, or ['fALFF', 'ReHo'] for func)
 
     Returns
     -------
@@ -188,12 +189,27 @@ def discover_sigma_metrics(
     found = []
 
     for metric in metrics:
-        pattern = f"sub-*/ses-*/{modality}/sub-*_ses-*_space-SIGMA_{metric}.nii.gz"
-        for path in sorted(derivatives_dir.glob(pattern)):
-            match = re.match(
-                r'(sub-\w+)_(ses-\w+)_space-SIGMA_(\w+)\.nii\.gz',
-                path.name,
+        if modality == "func":
+            # Functional files: sub-*_ses-*_space-SIGMA_desc-{metric}_bold.nii.gz
+            pattern = (
+                f"sub-*/ses-*/{modality}/"
+                f"sub-*_ses-*_space-SIGMA_desc-{metric}_bold.nii.gz"
             )
+            fname_re = re.compile(
+                r'(sub-\w+)_(ses-\w+)_space-SIGMA_desc-(\w+)_bold\.nii\.gz'
+            )
+        else:
+            # DWI/MSME files: sub-*_ses-*_space-SIGMA_{metric}.nii.gz
+            pattern = (
+                f"sub-*/ses-*/{modality}/"
+                f"sub-*_ses-*_space-SIGMA_{metric}.nii.gz"
+            )
+            fname_re = re.compile(
+                r'(sub-\w+)_(ses-\w+)_space-SIGMA_(\w+)\.nii\.gz'
+            )
+
+        for path in sorted(derivatives_dir.glob(pattern)):
+            match = fname_re.match(path.name)
             if match:
                 found.append({
                     'subject': match.group(1),

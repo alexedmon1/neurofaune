@@ -16,25 +16,24 @@ Prerequisites:
         design.mat, design.con, subject_order.txt, design_summary.json
 
 Usage:
-    # Run all analyses with 5000 permutations
+    # Run ReHo analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_voxelwise_fmri_analysis.py \
-        --analysis-dir /mnt/arborea/bpa-rat/analysis/voxelwise_fmri \
+        --analysis-dir $STUDY_ROOT/analysis/reho \
         --config configs/bpa_rat_example.yaml \
-        --n-permutations 5000
+        --metrics ReHo --n-permutations 5000
 
-    # Run a single analysis
+    # Run fALFF analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_voxelwise_fmri_analysis.py \
-        --analysis-dir /mnt/arborea/bpa-rat/analysis/voxelwise_fmri \
+        --analysis-dir $STUDY_ROOT/analysis/falff \
         --config configs/bpa_rat_example.yaml \
-        --analyses per_pnd_p60 \
-        --metrics fALFF
+        --metrics fALFF --n-permutations 5000
 
     # Quick test
     uv run python scripts/run_voxelwise_fmri_analysis.py \
-        --analysis-dir /mnt/arborea/bpa-rat/analysis/voxelwise_fmri \
+        --analysis-dir $STUDY_ROOT/analysis/reho \
         --config configs/bpa_rat_example.yaml \
         --analyses per_pnd_p30 \
-        --n-permutations 100 --seed 42
+        --metrics ReHo --n-permutations 100 --seed 42
 """
 
 import argparse
@@ -69,9 +68,9 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f"voxelwise_fmri_analysis_{timestamp}.log"
+    log_file = log_dir / f"fmri_voxelwise_analysis_{timestamp}.log"
 
-    logger = logging.getLogger("neurofaune.voxelwise_fmri")
+    logger = logging.getLogger("neurofaune.fmri_voxelwise")
     logger.setLevel(logging.INFO)
 
     if not logger.handlers:
@@ -564,11 +563,12 @@ Output structure:
                     if c.get('significant'):
                         n_sig += 1
 
+            modality_name = analysis_dir.name  # 'reho' or 'falff'
             report_register(
                 analysis_root=analysis_root,
-                entry_id=f"voxelwise_fmri_{analysis}",
-                analysis_type="voxelwise_fmri",
-                display_name=f"Voxelwise fMRI: {analysis}",
+                entry_id=f"{modality_name}_{analysis}",
+                analysis_type=modality_name,
+                display_name=f"{modality_name.upper()}: {analysis}",
                 output_dir=str(output_dir.relative_to(analysis_root)),
                 summary_stats={
                     "n_subjects": result.get('n_subjects', 0),

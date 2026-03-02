@@ -7,10 +7,10 @@ within-mask statistics and generates montage PNGs for visual QC.
 
 Usage:
     uv run python scripts/generate_tbss_qc_maps.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss --metrics FA MD AD RD
+        --tbss-dir $STUDY_ROOT/analysis/tbss/dwi --metrics FA MD AD RD
 
     uv run python scripts/generate_tbss_qc_maps.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss_msme --metrics MWF IWF CSFF T2
+        --tbss-dir $STUDY_ROOT/analysis/tbss/msme --metrics MWF IWF CSFF T2
 """
 
 import argparse

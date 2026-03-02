@@ -141,18 +141,18 @@ Collect all SIGMA-space metrics, create the WM analysis mask, and build 4D volum
 ```bash
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config /path/to/study/config.yaml \
-    --output-dir /path/to/study/analysis/tbss
+    --output-dir /path/to/study/analysis/tbss/dwi
 
 # With subject exclusions
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config config.yaml \
-    --output-dir /study/analysis/tbss \
-    --exclude-file /study/analysis/tbss/exclude_bad_dti.txt
+    --output-dir /study/analysis/tbss/dwi \
+    --exclude-file /study/analysis/tbss/dwi/exclude_bad_dti.txt
 
 # Dry run (discover subjects only)
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config config.yaml \
-    --output-dir /study/analysis/tbss \
+    --output-dir /study/analysis/tbss/dwi \
     --dry-run
 ```
 
@@ -191,7 +191,7 @@ The WM analysis mask is built conservatively to avoid partial-volume contaminati
 ### Output
 
 ```
-analysis/tbss/
+analysis/tbss/dwi/
 ├── subject_manifest.json       # Included/excluded subjects with reasons
 ├── subject_list.txt            # Included subjects in processing order
 ├── FA/, MD/, AD/, RD/          # Per-subject metric symlinks
@@ -218,8 +218,8 @@ Create FSL-format design matrices and contrast files for statistical testing:
 ```bash
 uv run python scripts/prepare_tbss_designs.py \
     --study-tracker /path/to/study_tracker.csv \
-    --tbss-dir /path/to/study/analysis/tbss \
-    --output-dir /path/to/study/analysis/tbss/designs
+    --tbss-dir /path/to/study/analysis/tbss/dwi \
+    --output-dir /path/to/study/analysis/tbss/dwi/designs
 ```
 
 ### Design Structure
@@ -272,20 +272,20 @@ Run FSL randomise with TFCE correction for each design and metric:
 ```bash
 # Run all 4 analyses
 PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /path/to/study/analysis/tbss \
+    --tbss-dir /path/to/study/analysis/tbss/dwi \
     --config /path/to/study/config.yaml \
     --n-permutations 5000
 
 # Run a single analysis
 uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /path/to/study/analysis/tbss \
+    --tbss-dir /path/to/study/analysis/tbss/dwi \
     --config config.yaml \
     --analyses per_pnd_p60 \
     --n-permutations 5000
 
 # Quick test (fewer permutations)
 uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /path/to/study/analysis/tbss \
+    --tbss-dir /path/to/study/analysis/tbss/dwi \
     --config config.yaml \
     --analyses per_pnd_p30 \
     --n-permutations 100 --seed 42
@@ -300,11 +300,11 @@ Each analysis is independent and can be run simultaneously:
 ```bash
 for analysis in per_pnd_p30 per_pnd_p60 per_pnd_p90 pooled; do
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
-        --tbss-dir /study/analysis/tbss \
+        --tbss-dir /study/analysis/tbss/dwi \
         --config config.yaml \
         --analyses $analysis \
         --n-permutations 5000 \
-        2>&1 | tee /study/analysis/tbss/logs/randomise_${analysis}.log &
+        2>&1 | tee /study/analysis/tbss/dwi/logs/randomise_${analysis}.log &
 done
 ```
 
@@ -376,8 +376,8 @@ The TBSS prep script builds 4D volumes from the `subject_list.txt` generated dur
 
 ```bash
 # After changing exclusions, re-run both:
-uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml --output-dir /study/analysis/tbss --exclude-file exclude.txt
-uv run python scripts/prepare_tbss_designs.py --study-tracker tracker.csv --tbss-dir /study/analysis/tbss --output-dir /study/analysis/tbss/designs
+uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml --output-dir /study/analysis/tbss/dwi --exclude-file exclude.txt
+uv run python scripts/prepare_tbss_designs.py --study-tracker tracker.csv --tbss-dir /study/analysis/tbss/dwi --output-dir /study/analysis/tbss/dwi/designs
 ```
 
 ### No significant results
@@ -423,23 +423,23 @@ uv run python scripts/batch_register_dwi.py \
 # 4. Prepare TBSS data (with exclusions)
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
     --config configs/bpa_rat_example.yaml \
-    --output-dir /mnt/arborea/bpa-rat/analysis/tbss \
-    --exclude-file /mnt/arborea/bpa-rat/analysis/tbss/exclude_bad_dti.txt
+    --output-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi \
+    --exclude-file /mnt/arborea/bpa-rat/analysis/tbss/dwi/exclude_bad_dti.txt
 
 # 5. Create design matrices
 uv run python scripts/prepare_tbss_designs.py \
     --study-tracker /mnt/arborea/bpa-rat/study_tracker_combined_250916.csv \
-    --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
-    --output-dir /mnt/arborea/bpa-rat/analysis/tbss/designs
+    --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi \
+    --output-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi/designs
 
 # 6. Run all analyses (parallel)
 for analysis in per_pnd_p30 per_pnd_p60 per_pnd_p90 pooled; do
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
-        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss \
+        --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi \
         --config configs/bpa_rat_example.yaml \
         --analyses $analysis \
         --n-permutations 5000 \
-        2>&1 | tee /mnt/arborea/bpa-rat/analysis/tbss/logs/randomise_${analysis}.log &
+        2>&1 | tee /mnt/arborea/bpa-rat/analysis/tbss/dwi/logs/randomise_${analysis}.log &
 done
 ```
 

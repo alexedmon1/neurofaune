@@ -17,10 +17,9 @@ Prerequisites:
 
 Usage:
     python -m neurofaune.analysis.tbss.run_tbss_stats \\
-        --tbss-dir /study/analysis/tbss/ \\
+        --tbss-dir /study/analysis/tbss/dwi/ \\
         --design-dir /study/designs/model1/ \\
-        --analysis-name dose_response \\
-        --metrics FA MD AD RD
+        --analysis-name dose_response
 """
 
 import argparse
@@ -224,7 +223,7 @@ def run_tbss_statistical_analysis(
         design_dir: Directory with pre-generated design matrices
         output_dir: Output directory for this analysis
         analysis_name: Name for this analysis run
-        metrics: Metrics to analyze (default: ['FA', 'MD', 'AD', 'RD'])
+        metrics: Metrics to analyze (auto-detected from tbss_config.json if None)
         n_permutations: Number of permutations for randomise
         tfce: Use TFCE (default: True)
         cluster_threshold: Threshold for cluster extraction (0.95 = p<0.05)
@@ -236,7 +235,14 @@ def run_tbss_statistical_analysis(
         Dictionary with analysis results
     """
     if metrics is None:
-        metrics = ['FA', 'MD', 'AD', 'RD']
+        # Auto-detect from tbss_config.json if available
+        config_file = Path(tbss_dir) / 'tbss_config.json'
+        if config_file.exists():
+            with open(config_file) as f:
+                tbss_cfg = json.load(f)
+            metrics = tbss_cfg.get('metrics', ['FA', 'MD', 'AD', 'RD'])
+        else:
+            metrics = ['FA', 'MD', 'AD', 'RD']
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -380,16 +386,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run analysis with pre-generated design from neuroaider
+  # Run DTI analysis with pre-generated design
   uv run python -m neurofaune.analysis.tbss.run_tbss_stats \\
-      --tbss-dir /study/analysis/tbss/ \\
+      --tbss-dir /study/analysis/tbss/dwi/ \\
       --design-dir /study/designs/dose_response/ \\
-      --analysis-name dose_p60 \\
-      --metrics FA MD AD RD
+      --analysis-name dose_p60
+
+  # Run MSME analysis (metrics auto-detected from tbss_config.json)
+  uv run python -m neurofaune.analysis.tbss.run_tbss_stats \\
+      --tbss-dir /study/analysis/tbss/msme/ \\
+      --design-dir /study/designs/dose_response/ \\
+      --analysis-name dose_p60
 
   # Quick test with fewer permutations
   uv run python -m neurofaune.analysis.tbss.run_tbss_stats \\
-      --tbss-dir /study/analysis/tbss/ \\
+      --tbss-dir /study/analysis/tbss/dwi/ \\
       --design-dir /study/designs/dose_response/ \\
       --analysis-name test_run \\
       --n-permutations 100 \\
@@ -407,8 +418,8 @@ Examples:
                         help='Output directory (default: tbss-dir/randomise/analysis-name)')
     parser.add_argument('--config', type=Path,
                         help='Config file (for SIGMA atlas labels)')
-    parser.add_argument('--metrics', nargs='+', default=['FA', 'MD', 'AD', 'RD'],
-                        help='Metrics to analyze (default: FA MD AD RD)')
+    parser.add_argument('--metrics', nargs='+', default=None,
+                        help='Metrics to analyze (auto-detected from tbss_config.json if not specified)')
     parser.add_argument('--n-permutations', type=int, default=5000,
                         help='Number of permutations (default: 5000)')
     parser.add_argument('--no-tfce', action='store_true',

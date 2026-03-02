@@ -13,16 +13,15 @@ Prerequisites:
     - Design matrix files (design.mat, design.con) from neuroaider
 
 Usage:
-    # Run analysis with pre-generated design
+    # Run DTI analysis with pre-generated design
     uv run python scripts/run_tbss_stats.py \\
-        --tbss-dir /study/analysis/tbss/ \\
+        --tbss-dir /study/analysis/tbss/dwi/ \\
         --design-dir /study/designs/dose_response/ \\
-        --analysis-name dose_p60 \\
-        --metrics FA MD AD RD
+        --analysis-name dose_p60
 
     # Quick test with fewer permutations
     uv run python scripts/run_tbss_stats.py \\
-        --tbss-dir /study/analysis/tbss/ \\
+        --tbss-dir /study/analysis/tbss/dwi/ \\
         --design-dir /study/designs/dose_response/ \\
         --analysis-name test_run \\
         --n-permutations 100 \\
@@ -30,7 +29,7 @@ Usage:
 
     # With SIGMA atlas labels (requires config with atlas paths)
     uv run python scripts/run_tbss_stats.py \\
-        --tbss-dir /study/analysis/tbss/ \\
+        --tbss-dir /study/analysis/tbss/dwi/ \\
         --design-dir /study/designs/dose_response/ \\
         --analysis-name dose_p60 \\
         --config config.yaml

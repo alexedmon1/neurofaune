@@ -13,7 +13,7 @@ Usage:
     from neurofaune.analysis.tbss.slice_qc import apply_slice_masking
 
     result = apply_slice_masking(
-        tbss_dir=Path('/study/analysis/tbss'),
+        tbss_dir=Path('/study/analysis/tbss/dwi'),
         slice_exclusions_file=Path('/study/qc/dwi_batch_summary/slice_qc/slice_exclusions.json'),
         min_valid_fraction=0.8
     )
@@ -266,7 +266,9 @@ def apply_slice_masking(
     tbss_dir: Path,
     slice_exclusions_file: Path,
     min_valid_fraction: float = 0.8,
-    metrics: List[str] = None
+    metrics: List[str] = None,
+    qc_dir: Optional[Path] = None,
+    modality: Optional[str] = None,
 ) -> Dict:
     """
     Apply slice-level masking to prepared TBSS data.
@@ -278,7 +280,11 @@ def apply_slice_masking(
         tbss_dir: TBSS output directory from prepare_tbss.py
         slice_exclusions_file: Path to slice_exclusions.json from batch QC
         min_valid_fraction: Minimum valid fraction (default: 0.8)
-        metrics: Metrics to process (default: ['FA', 'MD', 'AD', 'RD'])
+        metrics: Metrics to process (auto-detected from tbss_config.json if None)
+        qc_dir: Optional study-level QC root. When provided, writes to
+            ``{qc_dir}/tbss/{modality}/`` instead of ``{tbss_dir}/slice_qc/``.
+        modality: Modality name for QC subdirectory (e.g. 'dwi', 'msme').
+            Required when *qc_dir* is given.
 
     Returns:
         Dict with paths to imputed data and analysis masks
@@ -286,10 +292,24 @@ def apply_slice_masking(
     logger = logging.getLogger("neurofaune.tbss")
 
     if metrics is None:
-        metrics = ['FA', 'MD', 'AD', 'RD']
+        # Auto-detect from tbss_config.json
+        config_file = Path(tbss_dir) / 'tbss_config.json'
+        if config_file.exists():
+            import json as _json
+            with open(config_file) as _f:
+                _cfg = _json.load(_f)
+            metrics = _cfg.get('metrics', ['FA', 'MD', 'AD', 'RD'])
+        else:
+            metrics = ['FA', 'MD', 'AD', 'RD']
 
     tbss_dir = Path(tbss_dir)
-    slice_qc_dir = tbss_dir / 'slice_qc'
+
+    if qc_dir is not None:
+        if modality is None:
+            raise ValueError("modality is required when qc_dir is provided")
+        slice_qc_dir = Path(qc_dir) / 'tbss' / modality
+    else:
+        slice_qc_dir = tbss_dir / 'slice_qc'
 
     logger.info("=" * 80)
     logger.info("Applying Slice-Level Masking for TBSS")
@@ -370,7 +390,9 @@ def apply_slice_masking(
 def generate_slice_qc_heatmap(
     slice_exclusions_file: Path,
     output_file: Path,
-    n_slices: int = 11
+    n_slices: int = 11,
+    qc_dir: Optional[Path] = None,
+    modality: Optional[str] = None,
 ) -> Path:
     """
     Generate a visual heatmap of slice quality across subjects.
@@ -379,12 +401,21 @@ def generate_slice_qc_heatmap(
 
     Args:
         slice_exclusions_file: Path to slice_exclusions.json
-        output_file: Output PNG path
+        output_file: Output PNG path. When *qc_dir* is given, the heatmap
+            is written to ``{qc_dir}/tbss/{modality}/`` instead.
         n_slices: Number of slices per subject (default: 11 for DTI)
+        qc_dir: Optional study-level QC root for centralized output.
+        modality: Modality name (required when *qc_dir* is given).
 
     Returns:
         Path to generated heatmap
     """
+    # Redirect to centralized QC directory if requested
+    if qc_dir is not None:
+        if modality is None:
+            raise ValueError("modality is required when qc_dir is provided")
+        output_file = Path(qc_dir) / 'tbss' / modality / output_file.name
+
     try:
         import matplotlib
         matplotlib.use('Agg')
