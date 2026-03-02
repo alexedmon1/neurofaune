@@ -1,10 +1,58 @@
 # Project Status
 
-**Last Updated:** 2026-02-23
+**Last Updated:** 2026-03-02
 
 ---
 
-## Current Phase: 17 - Cross-Timepoint CovNet & Results Review
+## Current Phase: 18 - MCCA & Functional Network Analyses
+
+### Session Summary (2026-03-02)
+
+**Completed this session:**
+
+1. **Implemented MCCA module** — `neurofaune/network/mcca.py` (NEW)
+   - Custom regularized MCCA via generalized eigenvalue problem (scipy.linalg.eigh)
+   - Ledoit-Wolf shrinkage regularization (sklearn LedoitWolf)
+   - PCA dimensionality reduction (783→90 dims) for fast permutation testing
+   - Back-projection of PCA-space weights to original feature space
+   - `load_multiview_data()`, `run_mcca()`, `permutation_test_mcca()`, `test_dose_association()`, `test_group_differences()`
+   - Note: mvlearn was incompatible (requires matplotlib<=3.3.4), so implemented from scratch
+
+2. **MCCA visualization** — `neurofaune/network/mcca_visualization.py` (NEW)
+   - 6 plotting functions: canonical correlations, scores by dose/cohort, loading heatmaps, cross-view loadings, permutation null distributions
+
+3. **MCCA runner script** — `scripts/run_mcca_analysis.py` (NEW)
+   - CLI: `--views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF`
+   - Loops over cohorts (pooled, p30, p60, p90), saves JSON results + PNG visualizations
+   - Provenance tracking and reporting dashboard registration
+
+4. **MCCA analysis completed** — All 4 cohorts, bilateral ROIs, 3 views (DWI/MSME/func)
+   - Performance: 5000 permutations in ~2.5 min per cohort (optimized from ~8.5 hours)
+
+5. **Launched functional classification + regression** (background, running)
+   - fALFF, ReHo, ALFF × 4 cohorts × 2 feature sets = 24 combos each
+   - 1000 permutations per combo
+
+**MCCA Results:**
+
+| Cohort | n | Sig CVs | CV1~dose ρ (p) | CV2~dose ρ (p) | PERMANOVA p |
+|--------|---|---------|----------------|----------------|-------------|
+| Pooled | 131 | 5/5*** | -0.42 (0.0002) | 0.39 (0.0002) | 0.0002 |
+| P30 | 37 | 5/5*** | -0.47 (0.003) | 0.32 (0.048) | 0.014 |
+| P60 | 33 | 3/5*** | -0.47 (0.008) | 0.08 (ns) | 0.026 |
+| P90 | 61 | 3/5*** | -0.10 (ns) | 0.50 (<0.001) | 0.001 |
+
+Key findings:
+- Strong cross-modality dose effects at all ages (PERMANOVA p<0.03 for all cohorts)
+- Dose information distributed across multiple canonical variates (not a single axis)
+- Complementary age patterns: CV1 carries dose at p30/p60, CV2 at p90
+
+**Running in background:**
+
+| Analysis | Status | Output |
+|----------|--------|--------|
+| Functional classification (fALFF/ReHo/ALFF, 1000 perms) | Running | `network/classification/func/` |
+| Functional regression (fALFF/ReHo/ALFF, 1000 perms) | Running | `network/regression/func/` |
 
 ### Session Summary (2026-02-23)
 
@@ -358,41 +406,37 @@ Monitor with: `tail -f fc_batch_overnight.log`
 
 ### High Priority — Review Running Analyses
 
-1. **Check CovNet DTI results** — `network/connectome/dwi/`
+1. **Check functional classification/regression results** — `network/classification/func/` and `network/regression/func/`
+   - fALFF, ReHo, ALFF × 4 cohorts × 2 feature sets, 1000 permutations
+   - Launched 2026-03-02, running in background
+
+2. **Check CovNet DTI results** — `network/connectome/dwi/`
    - FA/MD/AD/RD × 21 comparisons (9 dose-vs-control + 12 cross-timepoint)
    - NBS, territory Fisher z, graph metrics, whole-network (5000 perms each)
-   - Log: `analysis/logs/covnet_dti_full.log`
 
-2. **Check ReHo voxelwise results** — `analysis/reho/randomise/`
+3. **Check ReHo voxelwise results** — `analysis/reho/randomise/`
    - 8 designs (4 categorical + 4 dose-response), 5000 perms, 3D TFCE
-   - Log: `analysis/reho/logs/orchestrator.log`
 
-3. **Review DTI/MSME classification & regression results** — completed in earlier sessions, not yet reviewed
-   - DTI classification: `network/classification/dwi/` (complete)
-   - DTI regression: `network/regression/dwi/` (complete)
-   - MSME classification: `network/classification/msme/` (complete)
-   - MSME regression: `network/regression/msme/` (complete)
+4. **Review DTI/MSME classification & regression results** — completed in earlier sessions, not yet reviewed
 
 ### Medium Priority
 
-4. **Consolidate all results into cross-modality summary**
-   - DTI TBSS + MSME TBSS + voxelwise fMRI + CovNet
-   - Key pattern: no effects at p30, emerging at p60, strongest at p90
+5. **Consolidate all results into cross-modality summary**
+   - DTI TBSS + MSME TBSS + voxelwise fMRI + CovNet + MCCA
+   - Key pattern: no effects at p30 (univariate), emerging at p60, strongest at p90
+   - MCCA detects effects at all timepoints including p30
    - Effect size: fALFF >> MSME >> DTI
 
-5. **Run BOLD preprocessing batch** — Only 1/294 BOLD scans fully preprocessed with new pipeline
+6. **Run BOLD preprocessing batch** — Only 1/294 BOLD scans fully preprocessed with new pipeline
    - New pipeline includes nuisance regression + corrected FD
-   - Consider running batch for p90 cohort first (matches MSME/DTI findings)
 
-6. **Fix MSME analysis_summary.json overwrite bug** — each summary only records last metric processed, not all 4
-
-7. **Re-run CovNet graph metrics with optimized comparisons** — Graph metric permutation testing (`compare_metrics`) currently does all C(12,2)=66 pairwise comparisons instead of the 21 meaningful ones (9 dose-vs-control + 12 cross-timepoint). Each pair takes ~2.75h (5000 perms × 4 densities × networkx ops on 93-node graphs). Need to either pass explicit comparison list or optimize the inner loop. Skipped for now (`--skip-graph`) to unblock whole-network tests.
+7. **Re-run CovNet graph metrics with optimized comparisons** — Graph metric permutation testing currently does all C(12,2)=66 pairwise comparisons instead of the 21 meaningful ones
 
 ### Low Priority
 
-7. **Fix 3 subjects with unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30)
-8. **Generate batch QC summary for 3D subjects**
-9. **Refactor scripts into importable functions/classes** — Many `scripts/` are monolithic `main()` scripts with logic embedded in the argument parsing block. Audit all scripts and redesign into reusable functions (or classes where appropriate) that can be imported and composed, with thin CLI wrappers. CovNet scripts already follow this pattern after the prepare/test refactor.
+8. **Fix 3 subjects with unscaled BOLD headers** (Rat209/ses-p60, Rat228/ses-p60, Rat41/ses-p30)
+9. **Generate batch QC summary for 3D subjects**
+10. **Refactor scripts into importable functions/classes**
 
 ---
 
@@ -564,13 +608,35 @@ fALFF shows the most widespread effects of any modality. Positive dose-response 
 - **Complete:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets
 - Same pipeline as DTI regression
 
+### Functional Classification (`/network/classification/func/`)
+- **Running:** fALFF, ReHo, ALFF × 4 cohorts × 2 feature sets = 24 combos
+- 1000 permutations, PERMANOVA + PCA + LDA + SVM + logistic LOOCV
+
+### Functional Regression (`/network/regression/func/`)
+- **Running:** fALFF, ReHo, ALFF × 4 cohorts × 2 feature sets
+- SVR, Ridge, PLS with LOOCV + 1000 permutations
+
+### MCCA (`/network/mcca/`)
+- **Complete:** 3 views (DWI: FA/MD/AD/RD, MSME: MWF/IWF/CSFF/T2, Func: fALFF/ReHo/ALFF)
+- **Feature set:** bilateral ROIs, z-scored per view
+- **Method:** Regularized MCCA (Ledoit-Wolf shrinkage, PCA reduction)
+- **Permutations:** 5000 per cohort
+
+| Cohort | n | Sig CVs (p<0.001) | Best dose ρ | PERMANOVA p |
+|--------|---|-------------------|-------------|-------------|
+| Pooled | 131 | 5/5 | CV1: -0.42 | 0.0002 |
+| P30 | 37 | 5/5 | CV1: -0.47 | 0.014 |
+| P60 | 33 | 3/5 | CV1: -0.47 | 0.026 |
+| P90 | 61 | 3/5 | CV2: 0.50 | 0.001 |
+
 ### Cross-Modality Summary
 
 Consistent pattern across all modalities:
-- **P30:** No significant dose effects in any modality
-- **P60:** Strong effects in fALFF and MSME; absent in DTI
-- **P90:** Effects in all modalities (fALFF > MSME > DTI)
+- **P30:** No significant dose effects in voxelwise analyses; MCCA detects multivariate dose separation (p=0.014)
+- **P60:** Strong effects in fALFF and MSME; absent in DTI; MCCA confirms (p=0.026)
+- **P90:** Effects in all modalities (fALFF > MSME > DTI); strongest MCCA dose effect (p=0.001)
 - **Effect size hierarchy:** Voxelwise fMRI (fALFF) >> MSME TBSS >> DTI TBSS
+- **MCCA contribution:** Detects dose effects invisible to single-modality analyses (especially at p30)
 - **Direction:** All dose groups show elevated values vs controls (not just high dose)
 
 ---
@@ -669,11 +735,18 @@ Unified dispatcher with automatic method selection based on image geometry:
 │   │   └── msme/                   #     MSME (MWF, IWF, CSFF, T2)
 │   ├── classification/             #   Multivariate classification
 │   │   ├── dwi/                    #     DTI
-│   │   └── msme/                   #     MSME
+│   │   ├── msme/                   #     MSME
+│   │   └── func/                   #     Functional (fALFF, ReHo, ALFF)
 │   ├── regression/                 #   Dose-response regression
 │   │   ├── dwi/                    #     DTI
-│   │   └── msme/                   #     MSME
-│   └── roi/                        #   ROI extractions (DTI + MSME CSVs)
+│   │   ├── msme/                   #     MSME
+│   │   └── func/                   #     Functional (fALFF, ReHo, ALFF)
+│   ├── mcca/                       #   Multi-modal CCA (DWI × MSME × func)
+│   │   ├── pooled/bilateral/       #     All subjects
+│   │   ├── p30/bilateral/          #     PND30 cohort
+│   │   ├── p60/bilateral/          #     PND60 cohort
+│   │   └── p90/bilateral/          #     PND90 cohort
+│   └── roi/                        #   ROI extractions (DTI + MSME + func CSVs)
 ├── qc/                             # Quality control reports
 └── work/                           # Temporary files
 
@@ -708,6 +781,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/run_covnet_analysis.py` | CovNet full pipeline wrapper (calls prepare + all test scripts) |
 | `scripts/run_classification_analysis.py` | ROI-level multivariate classification (PERMANOVA, PCA, LDA, SVM) |
 | `scripts/run_regression_analysis.py` | ROI-level dose-response regression (SVR, Ridge, PLS) |
+| `scripts/run_mcca_analysis.py` | Cross-modality MCCA (DWI × MSME × func, permutation testing) |
 | `scripts/batch_falff_analysis.py` | Batch fALFF/ALFF computation + SIGMA warping |
 | `scripts/batch_reho_analysis.py` | Batch ReHo computation + SIGMA warping |
 | `scripts/batch_fc_analysis.py` | Batch ROI-to-ROI functional connectivity in SIGMA space |

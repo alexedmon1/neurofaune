@@ -26,8 +26,8 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
 5. Connectome              → ROI extraction, FC matrices, covariance networks
 6. Analysis (voxelwise)    → TBSS, voxelwise fMRI (fALFF, ReHo), MVPA
-7. Network (ROI-based)     → Classification, regression, connectome
-7. Reporting               → Unified dashboard across all analysis types
+7. Network (ROI-based)     → Classification, regression, connectome, MCCA
+8. Reporting               → Unified dashboard across all analysis types
 ```
 
 ### Normalization Strategy
@@ -322,10 +322,23 @@ uv run python scripts/run_voxelwise_fmri_analysis.py \
 PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
 
 ```bash
+# DTI
 uv run python scripts/run_classification_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/classification/dwi \
     --metrics FA MD AD RD --n-permutations 5000
+
+# MSME
+uv run python scripts/run_classification_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/classification/msme \
+    --metrics MWF IWF CSFF T2 --n-permutations 5000
+
+# Functional (fALFF, ReHo, ALFF)
+uv run python scripts/run_classification_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/classification/func \
+    --metrics fALFF ReHo ALFF --n-permutations 1000
 ```
 
 ### Regression
@@ -333,10 +346,57 @@ uv run python scripts/run_classification_analysis.py \
 Dose-response regression with SVR, Ridge, and PLS:
 
 ```bash
+# DTI
 uv run python scripts/run_regression_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/regression/dwi \
     --metrics FA MD AD RD --n-permutations 5000
+
+# MSME
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/regression/msme \
+    --metrics MWF IWF CSFF T2 --n-permutations 5000
+
+# Functional
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/regression/func \
+    --metrics fALFF ReHo ALFF --n-permutations 1000
+```
+
+### MCCA (Multiset Canonical Correlation Analysis)
+
+Cross-modality integration that finds linear combinations of ROI features maximizing correlation across modality views. Uses regularized generalized eigenvalue decomposition with Ledoit-Wolf shrinkage and PCA dimensionality reduction for fast permutation testing.
+
+```bash
+uv run python scripts/run_mcca_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/mcca \
+    --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
+    --feature-set bilateral \
+    --n-components 5 \
+    --regs lw \
+    --n-permutations 5000 --seed 42
+```
+
+Per cohort (pooled, p30, p60, p90), the pipeline runs:
+1. Load and intersect subjects across all views (bilateral ROIs, z-scored per view)
+2. Fit regularized MCCA via generalized eigenvalue problem
+3. Permutation test for significance of canonical correlations (5000 perms)
+4. Dose-response association (Spearman correlation with ordinal dose per canonical variate)
+5. PERMANOVA on MCCA score space (group separability)
+6. Generate visualizations (canonical correlations, score scatter plots, loading heatmaps, null distributions)
+
+```python
+from neurofaune.network.mcca import load_multiview_data, run_mcca, permutation_test_mcca
+
+Xs, view_names, metadata = load_multiview_data(
+    roi_dir, views={"dwi": ["FA", "MD"], "msme": ["MWF", "T2"]},
+    feature_set="bilateral",
+)
+result = run_mcca(Xs, n_components=5, regs="lw")
+perm = permutation_test_mcca(Xs, result.canonical_correlations, n_permutations=5000)
 ```
 
 ### MVPA (Multi-Voxel Pattern Analysis)
@@ -396,7 +456,7 @@ n_added = backfill_registry(Path("/study/analysis"), study_name="BPA Rat Study")
 generate_index_html(Path("/study/analysis"))
 ```
 
-Supported analysis types: `tbss`, `roi_extraction`, `covnet`, `connectome`, `classification`, `regression`, `mvpa`, `batch_qc`.
+Supported analysis types: `tbss`, `roi_extraction`, `covnet`, `connectome`, `classification`, `regression`, `mcca`, `mvpa`, `batch_qc`.
 
 ---
 
@@ -584,6 +644,9 @@ neurofaune/
 │   ├── discover.py                  # Backfill existing results into registry
 │   ├── section_renderers.py         # Per-type HTML section builders
 │   └── index_generator.py           # Self-contained HTML dashboard generator
+├── network/                         # Multi-modal network analyses
+│   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA
+│   └── mcca_visualization.py        # Canonical correlations, scores, loadings plots
 ├── analysis/                        # Group-level statistical analysis
 │   ├── func/                        # ReHo, fALFF (voxel-level resting-state)
 │   ├── tbss/                        # Tract-Based Spatial Statistics
