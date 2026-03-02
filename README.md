@@ -25,7 +25,8 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
 4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
 5. Connectome              → ROI extraction, FC matrices, covariance networks
-6. Analysis                → TBSS, classification, regression, MVPA
+6. Analysis (voxelwise)    → TBSS, voxelwise fMRI (fALFF, ReHo), MVPA
+7. Network (ROI-based)     → Classification, regression, connectome
 7. Reporting               → Unified dashboard across all analysis types
 ```
 
@@ -178,7 +179,7 @@ uv run python scripts/extract_roi_means.py \
     --labels-csv /path/to/atlases/SIGMA/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv \
     --study-tracker /path/to/tracker.csv \
     --modality dwi --metrics FA MD AD RD \
-    --output-dir /path/to/study/analysis/roi
+    --output-dir /path/to/study/network/roi
 ```
 
 Produces wide and long CSVs with per-region and per-territory means (234 regions, 11 territories).
@@ -213,9 +214,9 @@ Builds Spearman correlation matrices per experimental group and compares them us
 
 ```bash
 uv run python scripts/run_covnet_analysis.py \
-    --roi-dir /path/to/analysis/roi \
+    --roi-dir /path/to/network/roi \
     --exclusion-csv /path/to/exclusions.csv \
-    --output-dir /path/to/analysis/covnet \
+    --output-dir /path/to/network/connectome/dwi \
     --metrics FA MD AD RD \
     --n-permutations 5000 --seed 42
 ```
@@ -225,29 +226,29 @@ uv run python scripts/run_covnet_analysis.py \
 ```bash
 # Step 1: Prepare data and correlation matrices
 uv run python scripts/covnet_prepare.py \
-    --roi-dir /path/to/analysis/roi \
-    --output-dir /path/to/analysis/covnet \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/connectome/dwi \
     --metrics FA MD AD RD
 
 # Step 2: Network-Based Statistic (edge-level permutation testing)
 uv run python scripts/covnet_nbs.py \
-    --prep-dir /path/to/analysis/covnet \
+    --prep-dir /path/to/network/connectome/dwi \
     --metrics FA MD --comparisons dose cross-timepoint \
     --n-permutations 5000 --nbs-threshold 3.0 --n-workers 8
 
 # Step 3: Territory-level Fisher z-tests with FDR correction
 uv run python scripts/covnet_territory.py \
-    --prep-dir /path/to/analysis/covnet \
+    --prep-dir /path/to/network/connectome/dwi \
     --metrics FA MD --comparisons dose cross-timepoint
 
 # Step 4: Graph metrics (efficiency, clustering, modularity, small-worldness)
 uv run python scripts/covnet_graph_metrics.py \
-    --prep-dir /path/to/analysis/covnet \
+    --prep-dir /path/to/network/connectome/dwi \
     --metrics FA MD --densities 0.10 0.15 0.20 0.25 --n-permutations 5000
 
 # Step 5: Whole-network similarity (Mantel, Frobenius, spectral divergence)
 uv run python scripts/covnet_whole_network.py \
-    --prep-dir /path/to/analysis/covnet \
+    --prep-dir /path/to/network/connectome/dwi \
     --metrics FA MD --comparisons dose cross-timepoint --n-workers 8
 ```
 
@@ -275,23 +276,23 @@ Group-level statistical analysis tools in `neurofaune/analysis/`. All operate on
 WM-skeleton voxel-wise analysis for DTI and MSME metrics using FSL randomise with 2D TFCE:
 
 ```bash
-# Prepare TBSS skeleton
+# Prepare TBSS skeleton (DTI)
 uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml \
-    --output-dir /path/to/analysis/tbss
+    --output-dir /path/to/analysis/tbss/dwi
 
 # Prepare designs (group contrasts + dose-response)
 uv run python scripts/prepare_tbss_designs.py \
     --study-tracker /path/to/tracker.csv \
-    --tbss-dir /path/to/analysis/tbss \
-    --output-dir /path/to/analysis/tbss/designs
+    --tbss-dir /path/to/analysis/tbss/dwi \
+    --output-dir /path/to/analysis/tbss/dwi/designs
 uv run python scripts/prepare_tbss_dose_response_designs.py \
     --study-tracker /path/to/tracker.csv \
-    --tbss-dir /path/to/analysis/tbss \
-    --output-dir /path/to/analysis/tbss/designs
+    --tbss-dir /path/to/analysis/tbss/dwi \
+    --output-dir /path/to/analysis/tbss/dwi/designs
 
 # Run randomise (permutation testing)
 uv run python scripts/run_tbss_analysis.py \
-    --tbss-dir /path/to/analysis/tbss --config config.yaml
+    --tbss-dir /path/to/analysis/tbss/dwi --config config.yaml
 ```
 
 ### Voxelwise fMRI Analysis
@@ -299,12 +300,21 @@ uv run python scripts/run_tbss_analysis.py \
 Whole-brain voxel-wise analysis for fALFF and ReHo using FSL randomise with 3D TFCE:
 
 ```bash
+# Prepare and run ReHo
 uv run python scripts/prepare_fmri_voxelwise.py \
-    --study-root /path/to/study \
-    --output-dir /path/to/analysis/voxelwise_fmri
+    --study-root $STUDY_ROOT \
+    --output-dir $STUDY_ROOT/analysis/reho --metrics ReHo
 
 uv run python scripts/run_voxelwise_fmri_analysis.py \
-    --analysis-dir /path/to/analysis/voxelwise_fmri --config config.yaml
+    --analysis-dir $STUDY_ROOT/analysis/reho --metrics ReHo --config config.yaml
+
+# Prepare and run fALFF
+uv run python scripts/prepare_fmri_voxelwise.py \
+    --study-root $STUDY_ROOT \
+    --output-dir $STUDY_ROOT/analysis/falff --metrics fALFF
+
+uv run python scripts/run_voxelwise_fmri_analysis.py \
+    --analysis-dir $STUDY_ROOT/analysis/falff --metrics fALFF --config config.yaml
 ```
 
 ### Classification
@@ -313,8 +323,8 @@ PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
 
 ```bash
 uv run python scripts/run_classification_analysis.py \
-    --roi-dir /path/to/analysis/roi \
-    --output-dir /path/to/analysis/classification \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/classification/dwi \
     --metrics FA MD AD RD --n-permutations 5000
 ```
 
@@ -324,8 +334,8 @@ Dose-response regression with SVR, Ridge, and PLS:
 
 ```bash
 uv run python scripts/run_regression_analysis.py \
-    --roi-dir /path/to/analysis/roi \
-    --output-dir /path/to/analysis/regression \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/regression/dwi \
     --metrics FA MD AD RD --n-permutations 5000
 ```
 
@@ -375,7 +385,7 @@ register(
     entry_id="tbss_per_pnd_p60",
     analysis_type="tbss",
     display_name="TBSS: PND60 Dose Response",
-    output_dir="tbss/randomise/per_pnd_p60",
+    output_dir="tbss/dwi/randomise/per_pnd_p60",
     summary_stats={"n_subjects": 49, "metrics": ["FA", "MD", "AD", "RD"]},
 )
 

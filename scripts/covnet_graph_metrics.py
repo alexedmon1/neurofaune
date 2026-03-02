@@ -8,7 +8,7 @@ and runs permutation-based pairwise group comparisons.
 
 Usage:
     uv run python scripts/covnet_graph_metrics.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD \
         --densities 0.10 0.15 0.20 0.25 \
         --n-permutations 5000 \

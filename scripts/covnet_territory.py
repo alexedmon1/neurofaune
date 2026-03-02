@@ -7,7 +7,7 @@ Fisher z-tests for each comparison, with Benjamini-Hochberg FDR correction.
 
 Usage:
     uv run python scripts/covnet_territory.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD \
         --comparisons dose cross-timepoint cross-dose-timepoint
 """

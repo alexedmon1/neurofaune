@@ -8,7 +8,7 @@ with permutation-based p-values.
 
 Usage:
     uv run python scripts/covnet_whole_network.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD \
         --comparisons dose cross-timepoint cross-dose-timepoint \
         --n-permutations 5000 \
@@ -17,7 +17,7 @@ Usage:
 
     # Or with explicit pairs:
     uv run python scripts/covnet_whole_network.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA \
         --groups p30_L p30_C \
         --n-workers 4

@@ -25,8 +25,8 @@
 
 | Analysis | PID | Output | Monitor |
 |----------|-----|--------|---------|
-| CovNet DTI (FA/MD/AD/RD, 21 comparisons, 5000 perms) | 541319 | `analysis/covnet_dti/` | `tail -f .../logs/covnet_dti_full.log` |
-| ReHo categorical (p30/p60/p90/pooled, 5000 perms) | 543627 | `analysis/voxelwise_fmri/randomise/` | `tail -f .../voxelwise_fmri/logs/orchestrator.log` |
+| CovNet DTI (FA/MD/AD/RD, 21 comparisons, 5000 perms) | 541319 | `network/connectome/dwi/` | `tail -f .../logs/covnet_dti_full.log` |
+| ReHo categorical (p30/p60/p90/pooled, 5000 perms) | 543627 | `analysis/reho/randomise/` | `tail -f .../reho/logs/orchestrator.log` |
 | ReHo dose-response (p30/p60/p90/pooled) | — | queued after categorical | same orchestrator log |
 
 ### Session Summary (2026-02-18)
@@ -41,7 +41,7 @@
 
 2. **Added 3D TFCE support to `randomise_wrapper.py`** — New `tfce_2d` parameter (default `True` for backward compat). When `False`, uses `-T` (3D TFCE) instead of `--T2` (2D skeleton TFCE).
 
-3. **Created `scripts/run_voxelwise_fmri_analysis.py`** — Runner for whole-brain analysis, calls `run_randomise(..., tfce_2d=False)`. Handles all 8 designs × 2 metrics with subsetting, cluster reporting, and provenance validation.
+3. **Created `scripts/run_voxelwise_fmri_analysis.py`** — Runner for whole-brain analysis, calls `run_randomise(..., tfce_2d=False)`. Handles all 8 designs per metric with subsetting, cluster reporting, and provenance validation. Each metric has its own analysis dir (`analysis/reho/`, `analysis/falff/`).
 
 4. **Generated all design matrices** — 8 design directories (4 categorical + 4 dose-response), all full-rank, all with provenance tracking. Design scripts are modality-agnostic — just need `subject_list.txt`.
 
@@ -56,7 +56,7 @@
 | 3 | per_pnd_p30, p60, p90, pooled | ReHo | Queued |
 | 4 | dose_response_p30, p60, p90, pooled | ReHo | Queued |
 
-Monitor: `tail -f /mnt/arborea/bpa-rat/analysis/voxelwise_fmri/logs/orchestrator.log`
+Monitor: `tail -f /mnt/arborea/bpa-rat/analysis/reho/logs/orchestrator.log`
 
 ### Session Summary (2026-02-17b)
 
@@ -164,7 +164,7 @@ Monitor with: `tail -f fc_batch_overnight.log`
 | Analysis | PID | Log file | Status |
 |----------|-----|----------|--------|
 | DTI Regression (FA/MD/AD/RD, 1000 perms) | 432913 | `analysis/regression_run.log` | Running |
-| MSME TBSS categorical (p60/p90/pooled, 5000 perms) | 433751 | `analysis/logs/tbss_msme_categorical.log` | Running |
+| MSME TBSS categorical (p60/p90/pooled, 5000 perms) | 433751 | `analysis/logs/tbss_msme_categorical.log` | Running (tbss/msme) |
 | MSME Classification (MWF/T2/IWF/CSFF, 1000 perms) | 433774 | `analysis/logs/classification_msme.log` | Running |
 | MSME Regression (MWF/T2/IWF/CSFF, 1000 perms) | 433807 | `analysis/logs/regression_msme.log` | Running |
 | MSME TBSS per_pnd_p30 CSFF (5000 perms) | 429130 | (from earlier run) | randomise running |
@@ -246,7 +246,7 @@ Monitor with: `tail -f fc_batch_overnight.log`
 
 **Completed this session:**
 
-1. **MSME TBSS pipeline** — Created `scripts/prepare_msme_tbss.py`
+1. **MSME TBSS pipeline** — Created `scripts/prepare_modality_tbss.py`
    - Discovers MSME SIGMA-space maps (MWF, IWF, CSFF, T2) from derivatives
    - Merges with study tracker: 183 subjects found, 181 matched (2 not in tracker)
    - Stacks into masked 4D volumes (128×128×218×181) using DTI-derived WM analysis mask (92,435 voxels)
@@ -358,20 +358,20 @@ Monitor with: `tail -f fc_batch_overnight.log`
 
 ### High Priority — Review Running Analyses
 
-1. **Check CovNet DTI results** — `analysis/covnet_dti/`
+1. **Check CovNet DTI results** — `network/connectome/dwi/`
    - FA/MD/AD/RD × 21 comparisons (9 dose-vs-control + 12 cross-timepoint)
    - NBS, territory Fisher z, graph metrics, whole-network (5000 perms each)
    - Log: `analysis/logs/covnet_dti_full.log`
 
-2. **Check ReHo voxelwise results** — `analysis/voxelwise_fmri/randomise/`
+2. **Check ReHo voxelwise results** — `analysis/reho/randomise/`
    - 8 designs (4 categorical + 4 dose-response), 5000 perms, 3D TFCE
-   - Log: `analysis/voxelwise_fmri/logs/orchestrator.log`
+   - Log: `analysis/reho/logs/orchestrator.log`
 
 3. **Review DTI/MSME classification & regression results** — completed in earlier sessions, not yet reviewed
-   - DTI classification: `analysis/classification/` (complete)
-   - DTI regression: `analysis/regression/` (complete)
-   - MSME classification: `analysis/classification_msme/` (complete)
-   - MSME regression: `analysis/regression_msme/` (complete)
+   - DTI classification: `network/classification/dwi/` (complete)
+   - DTI regression: `network/regression/dwi/` (complete)
+   - MSME classification: `network/classification/msme/` (complete)
+   - MSME regression: `network/regression/msme/` (complete)
 
 ### Medium Priority
 
@@ -498,7 +498,7 @@ Subject FA/BOLD/MSME -> Subject T2w -> Cohort Template -> SIGMA Atlas
 
 DTI effects are the weakest across modalities. Sparse findings concentrated at p90.
 
-### MSME TBSS (`/analysis/tbss_msme/`)
+### MSME TBSS (`/analysis/tbss/msme/`)
 - **Subjects:** 181
 - **Metrics:** MWF, IWF, CSFF, T2
 - **Analysis mask:** Same DTI-derived mask (92,435 voxels)
@@ -516,7 +516,7 @@ DTI effects are the weakest across modalities. Sparse findings concentrated at p
 
 Strong dose-related effects at p60 and p90 across all MSME metrics. No effects at p30.
 
-### Voxelwise fMRI (`/analysis/voxelwise_fmri/`)
+### Voxelwise fMRI (`/analysis/reho/`, `/analysis/falff/`)
 - **Subjects:** 131 (with complete fALFF + ReHo in SIGMA space)
 - **Metrics:** fALFF, ReHo
 - **Analysis mask:** 751,262 whole-brain voxels (SIGMA brain mask)
@@ -534,7 +534,7 @@ Strong dose-related effects at p60 and p90 across all MSME metrics. No effects a
 
 fALFF shows the most widespread effects of any modality. Positive dose-response at all ages.
 
-### CovNet (`/analysis/covnet_dti/`)
+### CovNet (`/network/connectome/dwi/`)
 - **Subjects:** 148
 - **Metrics:** FA, MD, AD, RD
 - **ROIs:** 93 bilateral + 11 territory
@@ -548,19 +548,19 @@ fALFF shows the most widespread effects of any modality. Positive dose-response 
 | Graph metrics (5000 perms) | Queued |
 | Whole-network (5000 perms) | Queued |
 
-### DTI Classification (`/analysis/classification/`)
+### DTI Classification (`/network/classification/dwi/`)
 - **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets = 32 combos
 - 1000 permutations, PERMANOVA + PCA + LDA + SVM + logistic LOOCV
 
-### DTI Regression (`/analysis/regression/`)
+### DTI Regression (`/network/regression/dwi/`)
 - **Complete:** FA, MD, AD, RD × 4 cohorts × 2 feature sets
 - SVR, Ridge, PLS with LOOCV + 1000 permutations
 
-### MSME Classification (`/analysis/classification_msme/`)
+### MSME Classification (`/network/classification/msme/`)
 - **Complete:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets = 32 combos
 - Same pipeline as DTI classification
 
-### MSME Regression (`/analysis/regression_msme/`)
+### MSME Regression (`/network/regression/msme/`)
 - **Complete:** MWF, T2, IWF, CSFF × 4 cohorts × 2 feature sets
 - Same pipeline as DTI regression
 
@@ -655,16 +655,25 @@ Unified dispatcher with automatic method selection based on image geometry:
 ├── templates/anat/{cohort}/        # Age-specific T2w templates
 ├── atlas/SIGMA_study_space/        # Study-space SIGMA atlas (reoriented)
 ├── transforms/{subject}/{session}/ # Subject transforms (FA->T2w, BOLD->T2w, T2w->Template)
-├── analysis/                       # Group analysis outputs
-│   ├── tbss/                       #   DTI voxel-wise TBSS
-│   ├── tbss_msme/                  #   MSME voxel-wise TBSS
-│   ├── roi/                        #   ROI extractions (DTI + MSME CSVs)
-│   ├── classification/             #   DTI classification (complete)
-│   ├── classification_msme/        #   MSME classification (running)
-│   ├── regression/                 #   DTI regression (running)
-│   ├── regression_msme/            #   MSME regression (running)
-│   ├── voxelwise_fmri/            #   Whole-brain fALFF/ReHo (3D TFCE)
+├── analysis/                       # Voxelwise group analyses
+│   ├── tbss/                       #   Voxel-wise TBSS
+│   │   ├── dwi/                    #     DTI metrics (FA, MD, AD, RD)
+│   │   ├── msme/                   #     MSME metrics (MWF, IWF, CSFF, T2)
+│   │   └── template/               #     Template-space TBSS (per-cohort)
+│   ├── reho/                       #   Whole-brain ReHo (3D TFCE)
+│   ├── falff/                      #   Whole-brain fALFF (3D TFCE)
 │   └── logs/                       #   Analysis log files
+├── network/                        # ROI/atlas-based analyses
+│   ├── connectome/                 #   Covariance network analysis
+│   │   ├── dwi/                    #     DTI (FA, MD, AD, RD)
+│   │   └── msme/                   #     MSME (MWF, IWF, CSFF, T2)
+│   ├── classification/             #   Multivariate classification
+│   │   ├── dwi/                    #     DTI
+│   │   └── msme/                   #     MSME
+│   ├── regression/                 #   Dose-response regression
+│   │   ├── dwi/                    #     DTI
+│   │   └── msme/                   #     MSME
+│   └── roi/                        #   ROI extractions (DTI + MSME CSVs)
 ├── qc/                             # Quality control reports
 └── work/                           # Temporary files
 
@@ -685,7 +694,7 @@ Unified dispatcher with automatic method selection based on image geometry:
 | `scripts/init_study.py` | Initialize study: directory structure, config generation, BIDS discovery |
 | `scripts/convert_3d_rare_to_bids.py` | Convert 3D isotropic RARE to BIDS T2w |
 | `scripts/list_3d_subjects.py` | List 3D-only subjects (text or JSON output) |
-| `scripts/prepare_msme_tbss.py` | Prepare MSME metrics for TBSS (4D volumes + provenance) |
+| `scripts/prepare_modality_tbss.py` | Prepare non-DWI modality metrics for TBSS (4D volumes + provenance) |
 | `scripts/prepare_tbss_designs.py` | Create categorical design matrices with provenance |
 | `scripts/prepare_tbss_dose_response_designs.py` | Create ordinal dose-response designs with provenance |
 | `scripts/run_tbss_analysis.py` | Run FSL randomise with 2D TFCE for TBSS (DTI + MSME) |

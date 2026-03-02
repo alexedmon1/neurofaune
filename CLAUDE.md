@@ -125,6 +125,12 @@ results = run_anatomical_preprocessing(
 ├── derivatives/sub-{subject}/       # Preprocessed outputs by modality
 ├── templates/{modality}/{cohort}/   # Age-specific templates
 ├── transforms/sub-{subject}/        # Transform registry
+├── analysis/                        # Voxelwise group analyses (TBSS, fALFF, ReHo, MVPA)
+├── network/                         # ROI/atlas-based analyses
+│   ├── connectome/{dwi,msme}/       #   Covariance network analysis
+│   ├── classification/{dwi,msme}/   #   Multivariate classification
+│   ├── regression/{dwi,msme}/       #   Dose-response regression
+│   └── roi/                         #   ROI extractions (wide/long CSVs)
 ├── qc/sub-{subject}/                # Quality control reports
 └── work/                            # Temporary Nipype files (deletable)
 ```

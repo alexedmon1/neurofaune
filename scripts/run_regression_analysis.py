@@ -9,11 +9,11 @@ ordinal dose level (C=0, L=1, M=2, H=3), complementing classification
 
 Usage:
     uv run python scripts/run_regression_analysis.py \
-        --roi-dir /mnt/arborea/bpa-rat/analysis/roi \
-        --output-dir /mnt/arborea/bpa-rat/analysis/regression \
+        --roi-dir $STUDY_ROOT/network/roi \
+        --output-dir $STUDY_ROOT/network/regression/dwi \
         --metrics FA MD AD RD \
         --feature-sets bilateral territory \
-        --exclusion-csv /mnt/arborea/bpa-rat/dti_nonstandard_slices.csv \
+        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
         --n-permutations 1000 \
         --seed 42
 """
@@ -331,11 +331,27 @@ def main():
         json.dump(overall, f, indent=2, default=str)
     logger.info("Saved overall summary: %s", summary_path)
 
+    # Write provenance tracking
+    try:
+        from neurofaune.analysis.provenance import write_roi_provenance
+
+        write_roi_provenance(
+            output_dir=args.output_dir,
+            roi_dir=args.roi_dir,
+            metrics=args.metrics,
+            exclusion_csv=args.exclusion_csv,
+            n_subjects=total_n_subjects,
+            analysis_type="regression",
+            extra={"feature_sets": args.feature_sets},
+        )
+    except Exception as exc:
+        logger.warning("Failed to write provenance: %s", exc)
+
     # Register with unified reporting system
     try:
         from neurofaune.reporting import register as report_register
 
-        analysis_root = args.output_dir.parent
+        analysis_root = args.output_dir.parents[1]
 
         # Collect figure paths
         figures = []

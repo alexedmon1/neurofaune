@@ -8,9 +8,9 @@ use the thin wrappers (covnet_prepare.py, covnet_nbs.py, etc.).
 
 Usage:
     uv run python scripts/run_covnet_analysis.py \
-        --roi-dir /mnt/arborea/bpa-rat/analysis/roi \
-        --exclusion-csv /mnt/arborea/bpa-rat/dti_nonstandard_slices.csv \
-        --output-dir /mnt/arborea/bpa-rat/analysis/covnet \
+        --roi-dir $STUDY_ROOT/network/roi \
+        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
+        --output-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD \
         --n-permutations 5000 \
         --seed 42
@@ -326,11 +326,29 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
+    # Write provenance tracking
+    try:
+        from neurofaune.analysis.provenance import write_roi_provenance
+
+        write_roi_provenance(
+            output_dir=args.output_dir,
+            roi_dir=args.roi_dir,
+            metrics=args.metrics,
+            exclusion_csv=args.exclusion_csv,
+            n_subjects=max(
+                (s.get("n_subjects", 0) for s in all_summaries.values() if isinstance(s, dict)),
+                default=0,
+            ),
+            analysis_type="connectome",
+        )
+    except Exception as exc:
+        logger.warning("Failed to write provenance: %s", exc)
+
     # Register with unified reporting system
     try:
         from neurofaune.reporting import register as report_register
 
-        analysis_root = args.output_dir.parent
+        analysis_root = args.output_dir.parents[1]
         n_subjects = max(
             (s.get("n_subjects", 0) for s in all_summaries.values() if isinstance(s, dict)),
             default=0,
@@ -352,7 +370,7 @@ def main():
 
         report_register(
             analysis_root=analysis_root,
-            entry_id="covnet",
+            entry_id=f"connectome_{args.output_dir.name}",
             analysis_type="covnet",
             display_name=f"CovNet Analysis ({', '.join(args.metrics)})",
             output_dir=str(args.output_dir.relative_to(analysis_root)),

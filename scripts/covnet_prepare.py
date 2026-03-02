@@ -11,9 +11,9 @@ Runs Phases 1-4 of the CovNet pipeline:
 
 Usage:
     uv run python scripts/covnet_prepare.py \
-        --roi-dir /mnt/arborea/bpa-rat/analysis/roi \
-        --exclusion-csv /mnt/arborea/bpa-rat/dti_nonstandard_slices.csv \
-        --output-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --roi-dir $STUDY_ROOT/network/roi \
+        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
+        --output-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD
 """
 

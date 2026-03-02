@@ -8,7 +8,7 @@ or explicit group pairs via --groups.
 
 Usage:
     uv run python scripts/covnet_nbs.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA MD AD RD \
         --comparisons dose cross-timepoint cross-dose-timepoint \
         --n-permutations 5000 \
@@ -18,7 +18,7 @@ Usage:
 
     # Or with explicit pairs:
     uv run python scripts/covnet_nbs.py \
-        --prep-dir /mnt/arborea/bpa-rat/analysis/covnet_dti \
+        --prep-dir $STUDY_ROOT/network/connectome/dwi \
         --metrics FA \
         --groups p30_L p30_C p60_H p60_C \
         --n-workers 8

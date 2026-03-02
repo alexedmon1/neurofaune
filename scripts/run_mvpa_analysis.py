@@ -9,10 +9,10 @@ the derivatives tree.
 
 Usage:
     uv run python scripts/run_mvpa_analysis.py \
-        --design-dir /mnt/arborea/bpa-rat/analysis/mvpa/designs \
-        --derivatives-root /mnt/arborea/bpa-rat/derivatives \
-        --output-dir /mnt/arborea/bpa-rat/analysis/mvpa \
-        --mask /mnt/arborea/bpa-rat/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Template_Masked.nii.gz \
+        --design-dir $STUDY_ROOT/analysis/mvpa/designs \
+        --derivatives-root $STUDY_ROOT/derivatives \
+        --output-dir $STUDY_ROOT/analysis/mvpa \
+        --mask $STUDY_ROOT/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Template_Masked.nii.gz \
         --metrics FA MD AD RD \
         --n-permutations 1000
 
@@ -516,6 +516,27 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(overall, f, indent=2, default=str)
     logger.info("Saved overall summary: %s", summary_path)
+
+    # Write provenance tracking (MVPA uses NIfTIs, not ROI CSVs — track mask hash)
+    try:
+        from neurofaune.analysis.provenance import sha256_file
+
+        prov = {
+            "analysis_type": "mvpa",
+            "mask": str(args.mask),
+            "mask_sha256": sha256_file(args.mask),
+            "design_dir": str(args.design_dir),
+            "metrics": args.metrics,
+            "n_subjects": total_n_subjects,
+            "n_permutations": args.n_permutations,
+            "date_created": datetime.now().isoformat(),
+        }
+        prov_path = args.output_dir / "provenance.json"
+        with open(prov_path, "w") as f:
+            json.dump(prov, f, indent=2)
+        logger.info("Wrote provenance.json → %s", prov_path)
+    except Exception as exc:
+        logger.warning("Failed to write provenance: %s", exc)
 
     # Register with unified reporting system
     try:
