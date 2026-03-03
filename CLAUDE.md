@@ -131,7 +131,7 @@ results = run_anatomical_preprocessing(
 ├── transforms/sub-{subject}/        # Transform registry
 ├── analysis/                        # Voxelwise group analyses (TBSS, fALFF, ReHo, MVPA)
 ├── network/                         # ROI/atlas-based analyses
-│   ├── connectome/{dwi,msme,func}/  #   Covariance network analysis
+│   ├── covnet/{test}/{modality}/{metric}/ # Covariance network analysis
 │   ├── classification/{dwi,msme,func}/ # Multivariate classification
 │   ├── regression/{dwi,msme,func}/ #   Dose-response regression
 │   ├── mcca/                        #   Multi-modal CCA

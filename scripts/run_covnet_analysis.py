@@ -10,7 +10,8 @@ Usage:
     uv run python scripts/run_covnet_analysis.py \
         --roi-dir $STUDY_ROOT/network/roi \
         --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
-        --output-dir $STUDY_ROOT/network/connectome/dwi \
+        --output-dir $STUDY_ROOT/network/covnet \
+        --modality dwi \
         --metrics FA MD AD RD \
         --n-permutations 5000 \
         --seed 42
@@ -230,11 +231,15 @@ def main():
     )
     parser.add_argument(
         "--output-dir", type=Path, required=True,
-        help="Output directory for CovNet results",
+        help="Root output directory for CovNet results (covnet root)",
+    )
+    parser.add_argument(
+        "--modality", type=str, required=True,
+        help="Modality name (e.g. dwi, msme, func)",
     )
     parser.add_argument(
         "--metrics", nargs="+", default=["FA", "MD", "AD", "RD"],
-        help="DTI metrics to analyze (default: FA MD AD RD)",
+        help="Metrics to analyze (default: FA MD AD RD)",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=5000,
@@ -293,11 +298,12 @@ def main():
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save analysis configuration
+    # Save analysis configuration (per-modality)
     config = {
         "roi_dir": str(args.roi_dir),
         "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
         "output_dir": str(args.output_dir),
+        "modality": args.modality,
         "metrics": args.metrics,
         "n_permutations": args.n_permutations,
         "nbs_threshold": args.nbs_threshold,
@@ -309,10 +315,10 @@ def main():
         "n_workers": args.n_workers,
         "timestamp": datetime.now().isoformat(),
     }
-    with open(args.output_dir / "analysis_config.json", "w") as f:
+    with open(args.output_dir / f"covnet_config_{args.modality}.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    write_design_description(args, args.output_dir / "design_description.txt")
+    write_design_description(args, args.output_dir / f"design_description_{args.modality}.txt")
 
     # Load AUC data if needed
     auc_lookup = None
@@ -333,7 +339,7 @@ def main():
 
     # Run for each metric
     all_summaries = {}
-    progress = AnalysisProgress(args.output_dir, "run_covnet_analysis.py", len(args.metrics))
+    progress = AnalysisProgress(args.output_dir, f"run_covnet_analysis.py ({args.modality})", len(args.metrics))
     completed = 0
     failed = 0
 
@@ -346,8 +352,8 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir, metric,
-                labels_csv=args.labels_csv,
+                args.roi_dir, args.exclusion_csv, args.output_dir,
+                args.modality, metric, labels_csv=args.labels_csv,
             )
             analysis.save()
 
@@ -392,8 +398,8 @@ def main():
             failed += 1
             continue
 
-    # Save overall summary
-    summary_path = args.output_dir / "covnet_summary.json"
+    # Save overall summary (per-modality)
+    summary_path = args.output_dir / f"covnet_summary_{args.modality}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
@@ -412,7 +418,7 @@ def main():
                 (s.get("n_subjects", 0) for s in all_summaries.values() if isinstance(s, dict)),
                 default=0,
             ),
-            analysis_type="connectome",
+            analysis_type="covnet",
         )
     except Exception as exc:
         logger.warning("Failed to write provenance: %s", exc)
@@ -421,7 +427,7 @@ def main():
     try:
         from neurofaune.reporting import register as report_register
 
-        analysis_root = args.output_dir.parents[1]
+        analysis_root = args.output_dir.parent
         n_subjects = max(
             (s.get("n_subjects", 0) for s in all_summaries.values() if isinstance(s, dict)),
             default=0,
@@ -431,7 +437,7 @@ def main():
             default=0,
         )
 
-        # Collect figure paths
+        # Collect figure paths from figures/{modality}/ subtree
         figures = []
         fig_dir = args.output_dir / "figures"
         if fig_dir.is_dir():
@@ -443,11 +449,12 @@ def main():
 
         report_register(
             analysis_root=analysis_root,
-            entry_id=f"connectome_{args.output_dir.name}",
+            entry_id=f"covnet_{args.modality}",
             analysis_type="covnet",
-            display_name=f"CovNet Analysis ({', '.join(args.metrics)})",
+            display_name=f"CovNet Analysis {args.modality} ({', '.join(args.metrics)})",
             output_dir=str(args.output_dir.relative_to(analysis_root)),
             summary_stats={
+                "modality": args.modality,
                 "metrics": args.metrics,
                 "n_subjects": n_subjects,
                 "n_bilateral_rois": n_rois,

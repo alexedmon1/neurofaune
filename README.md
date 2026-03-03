@@ -61,7 +61,7 @@ This creates the directory structure, generates `config.yaml` with all preproces
 ├── templates/                   # Age-specific templates
 ├── transforms/                  # Cross-modal transforms
 ├── analysis/                    # Voxelwise group analyses (TBSS, VBM, fMRI, MVPA)
-├── network/                     # ROI-based analyses (connectome, classification, MCCA)
+├── network/                     # ROI-based analyses (covnet, classification, MCCA)
 ├── qc/                          # Quality control reports
 └── work/                        # Temporary files (deletable)
 ```
@@ -227,14 +227,16 @@ Builds Spearman correlation matrices per experimental group and compares them us
 uv run python scripts/run_covnet_analysis.py \
     --roi-dir /path/to/network/roi \
     --exclusion-csv /path/to/exclusions.csv \
-    --output-dir /path/to/network/connectome/dwi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD AD RD \
     --n-permutations 5000 --seed 42
 
 # Edge-level regression with continuous AUC covariate
 uv run python scripts/run_covnet_analysis.py \
     --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/connectome_auc/dwi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD AD RD \
     --target auc --auc-csv /path/to/auc_lookup.csv \
     --n-permutations 5000
@@ -246,39 +248,44 @@ uv run python scripts/run_covnet_analysis.py \
 # Step 1: Prepare data and correlation matrices
 uv run python scripts/covnet_prepare.py \
     --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/connectome/dwi \
+    --covnet-root /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD AD RD
 
 # Step 2: Network-Based Statistic (edge-level permutation testing)
 uv run python scripts/covnet_nbs.py \
-    --prep-dir /path/to/network/connectome/dwi \
+    --covnet-root /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD --comparisons dose cross-timepoint \
     --n-permutations 5000 --nbs-threshold 3.0 --n-workers 8
 
 # Step 3: Territory-level Fisher z-tests with FDR correction
 uv run python scripts/covnet_territory.py \
-    --prep-dir /path/to/network/connectome/dwi \
+    --covnet-root /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD --comparisons dose cross-timepoint
 
 # Step 4: Graph metrics (efficiency, clustering, modularity, small-worldness)
 uv run python scripts/covnet_graph_metrics.py \
-    --prep-dir /path/to/network/connectome/dwi \
+    --covnet-root /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD --densities 0.10 0.15 0.20 0.25 --n-permutations 5000
 
 # Step 5: Whole-network similarity (Mantel, Frobenius, spectral divergence)
 uv run python scripts/covnet_whole_network.py \
-    --prep-dir /path/to/network/connectome/dwi \
+    --covnet-root /path/to/network/covnet \
+    --modality dwi \
     --metrics FA MD --comparisons dose cross-timepoint --n-workers 8
 ```
 
 ```python
 from neurofaune.connectome import CovNetAnalysis
 
-analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, output_dir, "FA")
+analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
 analysis.save()
 
 # Group-based comparisons
-analysis = CovNetAnalysis.load(output_dir, "FA")
+analysis = CovNetAnalysis.load(covnet_root, "dwi", "FA")
 analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
 analysis.run_territory()
 analysis.run_graph_metrics()

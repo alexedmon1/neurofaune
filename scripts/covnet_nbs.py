@@ -8,7 +8,8 @@ or explicit group pairs via --groups.
 
 Usage:
     uv run python scripts/covnet_nbs.py \
-        --prep-dir $STUDY_ROOT/network/connectome/dwi \
+        --covnet-root $STUDY_ROOT/network/covnet \
+        --modality dwi \
         --metrics FA MD AD RD \
         --comparisons dose cross-timepoint cross-dose-timepoint \
         --n-permutations 5000 \
@@ -18,7 +19,8 @@ Usage:
 
     # Or with explicit pairs:
     uv run python scripts/covnet_nbs.py \
-        --prep-dir $STUDY_ROOT/network/connectome/dwi \
+        --covnet-root $STUDY_ROOT/network/covnet \
+        --modality dwi \
         --metrics FA \
         --groups p30_L p30_C p60_H p60_C \
         --n-workers 8
@@ -61,12 +63,12 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.prep_dir.exists():
-        logger.error(f"Prep directory not found: {args.prep_dir}")
+    if not args.covnet_root.exists():
+        logger.error(f"CovNet root not found: {args.covnet_root}")
         sys.exit(1)
 
     for metric in args.metrics:
-        analysis = CovNetAnalysis.load(args.prep_dir, metric)
+        analysis = CovNetAnalysis.load(args.covnet_root, args.modality, metric)
         comparisons = parse_comparisons(args, analysis)
         analysis.run_nbs(
             comparisons, args.n_permutations, args.nbs_threshold,

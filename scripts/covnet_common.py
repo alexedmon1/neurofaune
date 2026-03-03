@@ -9,18 +9,24 @@ from pathlib import Path
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add --prep-dir, --metrics, --seed arguments."""
+    """Add --covnet-root, --modality, --metrics, --seed arguments."""
     parser.add_argument(
-        "--prep-dir",
+        "--covnet-root",
         type=Path,
         required=True,
-        help="Directory with prepared CovNet data (from covnet_prepare.py)",
+        help="Root directory for CovNet results (from covnet_prepare.py)",
+    )
+    parser.add_argument(
+        "--modality",
+        type=str,
+        required=True,
+        help="Modality name (e.g. dwi, msme, func)",
     )
     parser.add_argument(
         "--metrics",
         nargs="+",
         default=["FA", "MD", "AD", "RD"],
-        help="DTI metrics to process (default: FA MD AD RD)",
+        help="Metrics to process (default: FA MD AD RD)",
     )
     parser.add_argument(
         "--seed",

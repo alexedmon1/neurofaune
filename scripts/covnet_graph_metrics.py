@@ -8,7 +8,8 @@ and runs permutation-based pairwise group comparisons.
 
 Usage:
     uv run python scripts/covnet_graph_metrics.py \
-        --prep-dir $STUDY_ROOT/network/connectome/dwi \
+        --covnet-root $STUDY_ROOT/network/covnet \
+        --modality dwi \
         --metrics FA MD AD RD \
         --densities 0.10 0.15 0.20 0.25 \
         --n-permutations 5000 \
@@ -48,12 +49,12 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.prep_dir.exists():
-        logger.error(f"Prep directory not found: {args.prep_dir}")
+    if not args.covnet_root.exists():
+        logger.error(f"CovNet root not found: {args.covnet_root}")
         sys.exit(1)
 
     for metric in args.metrics:
-        analysis = CovNetAnalysis.load(args.prep_dir, metric)
+        analysis = CovNetAnalysis.load(args.covnet_root, args.modality, metric)
         analysis.run_graph_metrics(args.densities, args.n_permutations, args.seed)
 
     logger.info("\nGraph metrics analysis complete.")

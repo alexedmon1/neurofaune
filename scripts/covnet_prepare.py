@@ -13,7 +13,8 @@ Usage:
     uv run python scripts/covnet_prepare.py \
         --roi-dir $STUDY_ROOT/network/roi \
         --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
-        --output-dir $STUDY_ROOT/network/connectome/dwi \
+        --covnet-root $STUDY_ROOT/network/covnet \
+        --modality dwi \
         --metrics FA MD AD RD
 """
 
@@ -46,12 +47,16 @@ def main():
         help="CSV of sessions to exclude (must have subject, session columns)",
     )
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
-        help="Output directory for CovNet results",
+        "--covnet-root", type=Path, required=True,
+        help="Root output directory for CovNet results",
+    )
+    parser.add_argument(
+        "--modality", type=str, required=True,
+        help="Modality name (e.g. dwi, msme, func)",
     )
     parser.add_argument(
         "--metrics", nargs="+", default=["FA", "MD", "AD", "RD"],
-        help="DTI metrics to prepare (default: FA MD AD RD)",
+        help="Metrics to prepare (default: FA MD AD RD)",
     )
     parser.add_argument(
         "--labels-csv", type=Path, default=None,
@@ -63,19 +68,19 @@ def main():
         logger.error(f"ROI directory not found: {args.roi_dir}")
         sys.exit(1)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    args.covnet_root.mkdir(parents=True, exist_ok=True)
 
     for metric in args.metrics:
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir, metric,
-                labels_csv=args.labels_csv,
+                args.roi_dir, args.exclusion_csv, args.covnet_root,
+                args.modality, metric, labels_csv=args.labels_csv,
             )
             analysis.save()
         except FileNotFoundError as e:
             logger.warning(str(e))
 
-    logger.info(f"\nPreparation complete. Results in: {args.output_dir}")
+    logger.info(f"\nPreparation complete. Results in: {args.covnet_root}")
 
 
 if __name__ == "__main__":

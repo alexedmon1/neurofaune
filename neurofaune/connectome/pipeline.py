@@ -7,11 +7,11 @@ Serializable to / from disk so each test can run independently.
 Typical usage::
 
     # Prepare and save
-    analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, output_dir, "FA")
+    analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
     analysis.save()
 
     # Load and run individual tests
-    analysis = CovNetAnalysis.load(output_dir, "FA")
+    analysis = CovNetAnalysis.load(covnet_root, "dwi", "FA")
     analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
     analysis.run_territory()
     analysis.run_graph_metrics()
@@ -83,16 +83,16 @@ def fdr_correct_matrix(p_values: np.ndarray) -> np.ndarray:
 
 
 def _save_matrices(
-    matrices: dict[str, dict], base_dir: Path, sub_name: str
+    matrices: dict[str, dict], mat_dir: Path, sub_name: str
 ) -> None:
     """Save per-group correlation matrices as CSV files."""
-    mat_dir = base_dir / "matrices" / sub_name
-    mat_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = mat_dir / sub_name
+    out_dir.mkdir(parents=True, exist_ok=True)
     for label, data in matrices.items():
         corr_df = pd.DataFrame(
             data["corr"], index=data["rois"], columns=data["rois"]
         )
-        corr_df.to_csv(mat_dir / f"{label}_corr.csv")
+        corr_df.to_csv(out_dir / f"{label}_corr.csv")
 
 
 def _load_matrices(mat_dir: Path) -> dict[str, dict]:
@@ -307,15 +307,17 @@ def compute_territory_means(
 
 
 class CovNetAnalysis:
-    """CovNet analysis for a single DTI metric.
+    """CovNet analysis for a single modality/metric.
 
     Holds prepared data (group arrays, correlation matrices) and runs
     statistical tests. Serializable to / from disk via save() / load().
     """
 
-    def __init__(self, output_dir: Path, metric: str):
-        self.output_dir = Path(output_dir)
+    def __init__(self, covnet_root: Path, modality: str, metric: str):
+        self.covnet_root = Path(covnet_root)
+        self.modality = modality
         self.metric = metric
+        self.roi_dir: Path | None = None
 
         # Populated by prepare() or load()
         self.n_subjects: int = 0
@@ -331,10 +333,9 @@ class CovNetAnalysis:
         self.roi_to_territory: dict[str, str] = {}
         self.labels_csv: str = ""
 
-    @property
-    def metric_dir(self) -> Path:
-        """Per-metric output directory: ``{output_dir}/{metric}/``."""
-        return self.output_dir / self.metric
+    def _test_dir(self, test_name: str) -> Path:
+        """Per-test output directory: ``{covnet_root}/{test_name}/{modality}/{metric}/``."""
+        return self.covnet_root / test_name / self.modality / self.metric
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -345,7 +346,8 @@ class CovNetAnalysis:
         cls,
         roi_dir: Path,
         exclusion_csv: Path | None,
-        output_dir: Path,
+        covnet_root: Path,
+        modality: str,
         metric: str,
         labels_csv: Path | None = None,
     ) -> "CovNetAnalysis":
@@ -357,10 +359,12 @@ class CovNetAnalysis:
             Directory containing ``roi_<metric>_wide.csv`` files.
         exclusion_csv : Path or None
             CSV of sessions to exclude.
-        output_dir : Path
-            Base output directory for CovNet results.
+        covnet_root : Path
+            Root output directory for CovNet results.
+        modality : str
+            Modality name (e.g. ``"dwi"``, ``"msme"``, ``"func"``).
         metric : str
-            DTI metric name (e.g. ``"FA"``).
+            Metric name (e.g. ``"FA"``).
         labels_csv : Path or None
             SIGMA atlas labels CSV for hybrid territory mapping.  If None,
             falls back to the default path on arborea.
@@ -368,7 +372,7 @@ class CovNetAnalysis:
         Returns a populated instance ready for save() and run_*() methods.
         """
         roi_dir = Path(roi_dir)
-        output_dir = Path(output_dir)
+        covnet_root = Path(covnet_root)
 
         if labels_csv is None:
             labels_csv = Path(
@@ -381,7 +385,8 @@ class CovNetAnalysis:
         if not wide_csv.exists():
             raise FileNotFoundError(f"Wide CSV not found: {wide_csv}")
 
-        inst = cls(output_dir, metric)
+        inst = cls(covnet_root, modality, metric)
+        inst.roi_dir = roi_dir
 
         # Phase 1: Load and prepare data
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
@@ -452,12 +457,13 @@ class CovNetAnalysis:
         Saves metadata, group arrays, territory arrays, and correlation
         matrices. Optionally generates heatmap figures.
         """
-        prep_dir = self.metric_dir / "prep"
+        prep_dir = self._test_dir("prep")
         prep_dir.mkdir(parents=True, exist_ok=True)
 
         # Metadata
         metadata = {
             "metric": self.metric,
+            "modality": self.modality,
             "n_subjects": self.n_subjects,
             "bilateral_region_cols": self.bilateral_region_cols,
             "territory_cols": self.territory_cols,
@@ -467,6 +473,7 @@ class CovNetAnalysis:
             "n_territory_rois": len(self.territory_cols),
             "roi_to_territory": self.roi_to_territory,
             "labels_csv": self.labels_csv,
+            "roi_dir": str(self.roi_dir) if self.roi_dir else "",
         }
         with open(prep_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -484,10 +491,11 @@ class CovNetAnalysis:
             np.save(terr_dir / f"{label}.npy", arr)
 
         # Correlation matrices as CSV
-        _save_matrices(self.matrices_pnd_dose, self.metric_dir, self.metric)
-        _save_matrices(self.matrices_full, self.metric_dir, f"{self.metric}_full")
+        mat_dir = self._test_dir("matrices")
+        _save_matrices(self.matrices_pnd_dose, mat_dir, self.metric)
+        _save_matrices(self.matrices_full, mat_dir, f"{self.metric}_full")
         _save_matrices(
-            self.matrices_territory, self.metric_dir, f"{self.metric}_territory"
+            self.matrices_territory, mat_dir, f"{self.metric}_territory"
         )
 
         # Heatmaps
@@ -498,7 +506,7 @@ class CovNetAnalysis:
 
     def _save_heatmaps(self) -> None:
         """Generate and save correlation heatmap figures."""
-        fig_dir = self.metric_dir / "figures"
+        fig_dir = self._test_dir("figures")
 
         plot_all_group_heatmaps(
             self.matrices_pnd_dose,
@@ -521,19 +529,18 @@ class CovNetAnalysis:
                 data["corr"],
                 data["rois"],
                 title=f"{self.metric} \u2014 {label} (n={data['n']})",
-                out_path=self.metric_dir
-                / "matrices"
+                out_path=self._test_dir("matrices")
                 / self.metric
                 / f"{label}_corr_heatmap.png",
             )
 
     @classmethod
-    def load(cls, output_dir: Path, metric: str) -> "CovNetAnalysis":
-        """Deserialize from ``{output_dir}/{metric}/prep/``."""
-        output_dir = Path(output_dir)
-        inst = cls(output_dir, metric)
+    def load(cls, covnet_root: Path, modality: str, metric: str) -> "CovNetAnalysis":
+        """Deserialize from ``{covnet_root}/prep/{modality}/{metric}/``."""
+        covnet_root = Path(covnet_root)
+        inst = cls(covnet_root, modality, metric)
 
-        meta_path = inst.metric_dir / "prep" / "metadata.json"
+        meta_path = inst._test_dir("prep") / "metadata.json"
         if not meta_path.exists():
             raise FileNotFoundError(
                 f"Prep metadata not found: {meta_path}\n"
@@ -550,9 +557,11 @@ class CovNetAnalysis:
         inst.group_sizes = metadata["group_sizes"]
         inst.roi_to_territory = metadata.get("roi_to_territory", {})
         inst.labels_csv = metadata.get("labels_csv", "")
+        roi_dir_str = metadata.get("roi_dir", "")
+        inst.roi_dir = Path(roi_dir_str) if roi_dir_str else None
 
         # Group arrays
-        arr_dir = inst.metric_dir / "prep" / "group_arrays"
+        arr_dir = inst._test_dir("prep") / "group_arrays"
         for label in inst.group_labels:
             arr_path = arr_dir / f"{label}.npy"
             if arr_path.exists():
@@ -561,7 +570,7 @@ class CovNetAnalysis:
                 logger.warning(f"Missing group array: {arr_path}")
 
         # Territory arrays
-        terr_dir = inst.metric_dir / "prep" / "territory_arrays"
+        terr_dir = inst._test_dir("prep") / "territory_arrays"
         if terr_dir.exists():
             for label in inst.group_labels:
                 arr_path = terr_dir / f"{label}.npy"
@@ -569,15 +578,10 @@ class CovNetAnalysis:
                     inst.territory_arrays[label] = np.load(arr_path)
 
         # Correlation matrices from CSV
-        inst.matrices_pnd_dose = _load_matrices(
-            inst.metric_dir / "matrices" / metric
-        )
-        inst.matrices_full = _load_matrices(
-            inst.metric_dir / "matrices" / f"{metric}_full"
-        )
-        inst.matrices_territory = _load_matrices(
-            inst.metric_dir / "matrices" / f"{metric}_territory"
-        )
+        mat_dir = inst._test_dir("matrices")
+        inst.matrices_pnd_dose = _load_matrices(mat_dir / metric)
+        inst.matrices_full = _load_matrices(mat_dir / f"{metric}_full")
+        inst.matrices_territory = _load_matrices(mat_dir / f"{metric}_territory")
 
         # Patch group sizes into loaded matrices
         for matrices in (inst.matrices_pnd_dose, inst.matrices_territory):
@@ -634,7 +638,7 @@ class CovNetAnalysis:
         seed: int = 42,
         n_workers: int = 1,
     ) -> dict:
-        """Run NBS. Results saved to ``{metric_dir}/nbs/``.
+        """Run NBS. Results saved to ``nbs/{modality}/{metric}/``.
 
         Parameters
         ----------
@@ -673,7 +677,7 @@ class CovNetAnalysis:
         )
 
         # Save results
-        nbs_dir = self.metric_dir / "nbs"
+        nbs_dir = self._test_dir("nbs")
         _save_nbs_results(nbs_results, nbs_dir)
 
         # Visualizations
@@ -716,7 +720,7 @@ class CovNetAnalysis:
     ) -> pd.DataFrame:
         """Run territory-level Fisher z + FDR.
 
-        Results saved to ``{metric_dir}/territory/``.
+        Results saved to ``territory/{modality}/{metric}/``.
 
         Parameters
         ----------
@@ -765,7 +769,7 @@ class CovNetAnalysis:
         if territory_results:
             return _save_territory_results(
                 territory_results,
-                self.metric_dir / "territory",
+                self._test_dir("territory"),
                 self.territory_cols,
             )
         return pd.DataFrame()
@@ -776,7 +780,7 @@ class CovNetAnalysis:
         n_perm: int = 5000,
         seed: int = 42,
     ) -> pd.DataFrame:
-        """Run graph metrics. Results saved to ``{metric_dir}/graph_metrics/``.
+        """Run graph metrics. Results saved to ``graph_metrics/{modality}/{metric}/``.
 
         Parameters
         ----------
@@ -799,7 +803,7 @@ class CovNetAnalysis:
             f"densities={densities})"
         )
 
-        graph_dir = self.metric_dir / "graph_metrics"
+        graph_dir = self._test_dir("graph_metrics")
         graph_dir.mkdir(parents=True, exist_ok=True)
 
         # Per-group metrics at multiple densities
@@ -828,7 +832,7 @@ class CovNetAnalysis:
         # Visualization
         plot_graph_metrics_comparison(
             comparison_df,
-            out_path=self.metric_dir / "figures" / "graph_metrics_bars.png",
+            out_path=self._test_dir("figures") / "graph_metrics_bars.png",
         )
 
         n_sig = int((comparison_df["p_value"] < 0.05).sum())
@@ -842,7 +846,7 @@ class CovNetAnalysis:
         seed: int = 42,
         n_workers: int = 1,
     ) -> tuple[pd.DataFrame, dict]:
-        """Run whole-network tests. Results saved to ``{metric_dir}/whole_network/``.
+        """Run whole-network tests. Results saved to ``whole_network/{modality}/{metric}/``.
 
         Parameters
         ----------
@@ -867,7 +871,7 @@ class CovNetAnalysis:
             f"{len(comparisons)} comparisons)"
         )
 
-        wn_dir = self.metric_dir / "whole_network"
+        wn_dir = self._test_dir("whole_network")
         wn_dir.mkdir(parents=True, exist_ok=True)
 
         wn_df, wn_nulls = _run_whole_network_comparisons(
@@ -974,18 +978,13 @@ class CovNetAnalysis:
 
         from .matrices import bilateral_average, load_and_prepare_data
 
-        wide_csv = Path(self.output_dir).parent / "roi" / f"roi_{self.metric}_wide.csv"
-        if not wide_csv.exists():
-            # Try the roi_dir pattern used by the script
-            for candidate in [
-                Path(self.output_dir).parent.parent / "roi" / f"roi_{self.metric}_wide.csv",
-            ]:
-                if candidate.exists():
-                    wide_csv = candidate
-                    break
+        if self.roi_dir is None:
+            logger.error("roi_dir not set — needed for edge regression (re-run prepare or check metadata)")
+            return {}
 
+        wide_csv = self.roi_dir / f"roi_{self.metric}_wide.csv"
         if not wide_csv.exists():
-            logger.error("Cannot find wide CSV for %s — needed for edge regression", self.metric)
+            logger.error("Cannot find wide CSV for %s at %s", self.metric, wide_csv)
             return {}
 
         exclusion_csv = None  # Already filtered during prepare()
@@ -1029,7 +1028,7 @@ class CovNetAnalysis:
         )
 
         # Save results
-        reg_dir = self.metric_dir / "edge_regression" / cohort_label
+        reg_dir = self._test_dir("edge_regression") / cohort_label
         reg_dir.mkdir(parents=True, exist_ok=True)
 
         stat_df = pd.DataFrame(
