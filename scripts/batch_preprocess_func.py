@@ -92,22 +92,29 @@ def find_all_bold_scans(bids_root: Path, min_volumes: int = 2):
     return scans
 
 
-def find_t2w_file(output_root: Path, subject: str, session: str) -> Path:
+def find_template_file(output_root: Path, session: str) -> Path:
     """
-    Find preprocessed T2w file for BOLD registration.
+    Find cohort template for BOLD-to-template registration.
 
-    Looks for preprocessed T2w in derivatives first, then raw BIDS.
+    Parameters
+    ----------
+    output_root : Path
+        Study root directory
+    session : str
+        Session identifier (e.g., 'ses-p60') — cohort extracted from this
+
+    Returns
+    -------
+    Path or None
+        Path to cohort template, or None if not found
     """
-    # First check derivatives for preprocessed T2w
-    preproc_t2w = output_root / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
-    if preproc_t2w.exists():
-        return preproc_t2w
+    cohort = session.split('-')[1] if '-' in session else None
+    if cohort is None:
+        return None
 
-    # Fallback: check raw BIDS (may have multiple runs, take first)
-    bids_root = output_root / 'raw' / 'bids'
-    t2w_files = list(bids_root.glob(f'{subject}/{session}/anat/*_T2w.nii.gz'))
-    if t2w_files:
-        return sorted(t2w_files)[0]
+    template = output_root / 'templates' / 'anat' / cohort / f'tpl-BPARat_{cohort}_T2w.nii.gz'
+    if template.exists():
+        return template
 
     return None
 
@@ -148,8 +155,8 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
         # Create transform registry
         registry = create_transform_registry(config, subject, cohort=cohort)
 
-        # Find T2w file for registration
-        t2w_file = find_t2w_file(output_root, subject, session)
+        # Find cohort template for direct BOLD→Template registration
+        template_file = find_template_file(output_root, session)
 
         # Run preprocessing
         results = run_functional_preprocessing(
@@ -159,7 +166,7 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
             bold_file=bold_file,
             output_dir=output_root,
             transform_registry=registry,
-            t2w_file=t2w_file,
+            template_file=template_file,
             n_discard=n_discard
         )
 
@@ -171,7 +178,7 @@ def process_single_scan(scan_info: dict, config_path: Path, output_root: Path,
             'preprocessed_bold': str(results.get('preprocessed_bold', '')),
             'brain_mask': str(results.get('brain_mask', '')),
             'confounds': str(results.get('confounds', '')),
-            't2w_file': str(t2w_file) if t2w_file else None
+            'template_file': str(template_file) if template_file else None
         }
 
         # Add registration info if available

@@ -189,21 +189,12 @@ registry.save_ants_composite_transform(
 ```python
 # neurofaune/preprocess/workflows/func_preprocess.py
 
-# Reuse anatomical→atlas transform:
-anat_to_atlas_transform = registry.get_ants_composite_transform(
-    source='T2w',
-    target='SIGMA',
-    cohort=cohort
-)
-
-# Chain: BOLD→T2w (boundary-based registration) → template → SIGMA
-bold_to_atlas = compose_transforms(
-    bold_to_t2w_transform,
-    anat_to_atlas_transform
-)
+# Chain: BOLD → Template (rigid) → SIGMA (SyN warp)
+bold_to_template = registry.get_transform('BOLD', 'template', cohort=cohort)
+template_to_sigma = registry.get_transform('template', 'SIGMA', cohort=cohort)
 
 # Apply to preprocessed BOLD
-warp_to_atlas(preprocessed_bold, bold_to_atlas, sigma_space)
+warp_to_atlas(preprocessed_bold, [template_to_sigma, bold_to_template], sigma_space)
 ```
 
 **C. DTI Workflow Updates:**

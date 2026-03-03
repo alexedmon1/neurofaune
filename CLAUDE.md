@@ -236,7 +236,7 @@ Tests use synthetic data generation - no external data files required. Integrati
 
 Development scripts in `scripts/dev_registration/` follow numbered naming for workflow order:
 - `001_explore_geometry.py` - Investigate image geometries
-- `003_register_dwi_to_t2w.py` - FA→T2w registration
+- `003_register_dwi_to_t2w.py` - FA→T2w registration (deprecated, see register_fa_to_template)
 - `007_register_subject_to_template.py` - Subject→template registration
 - `008_register_template_to_sigma.py` - Template→SIGMA registration
 

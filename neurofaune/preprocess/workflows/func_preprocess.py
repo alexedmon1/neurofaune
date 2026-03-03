@@ -1362,7 +1362,7 @@ def run_functional_preprocessing(
     n_discard : int
         Number of initial volumes to discard (default: 0)
     run_registration : bool
-        Whether to register BOLD to template (default: True, requires template_file or t2w_file)
+        Whether to register BOLD to template (default: True, requires template_file)
     echo_times : list of float, optional
         Echo times in milliseconds. Required for multi-echo data.
 

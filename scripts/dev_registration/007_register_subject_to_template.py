@@ -4,8 +4,8 @@
 
 Register subject T2w to age-matched cohort template.
 
-This creates the middle link in the registration chain:
-    Subject FA → Subject T2w → Template T2w → SIGMA
+This creates the T2w-to-template link in the registration chain:
+    Subject T2w → Template T2w → SIGMA
 
 Usage:
     python 007_register_subject_to_template.py /path/to/bpa-rat sub-Rat1 ses-p60

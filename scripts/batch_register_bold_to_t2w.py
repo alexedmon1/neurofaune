@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use batch_preprocess_func.py with --force instead.
+BOLD now registers directly to cohort template (BOLD→Template→SIGMA),
+not through T2w (old: BOLD→T2w→Template→SIGMA).
+
 Batch BOLD-to-T2w registration for all subjects with motion-corrected BOLD and preprocessed T2w.
 
 Computes the temporal mean of the motion-corrected BOLD, applies the brain mask,

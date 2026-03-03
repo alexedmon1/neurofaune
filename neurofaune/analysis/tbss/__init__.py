@@ -2,7 +2,7 @@
 TBSS Analysis Pipeline for Rodent DTI
 
 Implements Tract-Based Spatial Statistics adapted for rodent brains:
-- Custom registration chain (FA→T2w→Template→SIGMA) instead of FSL tbss_2_reg
+- Custom registration chain (FA→Template→SIGMA) instead of FSL tbss_2_reg
 - Tissue-informed WM masking to remove exterior WM artifacts
 - SIGMA atlas for anatomical labeling
 - Slice-level QC with validity masks for partial-coverage DTI

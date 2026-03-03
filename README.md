@@ -17,13 +17,13 @@ uv pip install -e ".[dev]"
 
 ## Workflow Overview
 
-Processing follows a strict order. Anatomical preprocessing must complete first because all other modalities register through T2w to reach SIGMA atlas space.
+Processing follows a strict order. Anatomical preprocessing must complete first to build age-cohort templates; all modalities then register directly to template before warping to SIGMA atlas space.
 
 ```
 1. Initialize Study        → directory structure, config, study-space atlas
 2. Bruker → BIDS           → convert raw scanner data to standard format
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
-4. Other Modalities        → DTI, fMRI, MSME (all require T2w transforms)
+4. Other Modalities        → DTI, fMRI, MSME (each registers directly to template)
 5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo), MVPA
 6. Network (ROI-based)     → ROI extraction, CovNet, classification, regression, MCCA
 7. Reporting               → Unified dashboard across all analysis types

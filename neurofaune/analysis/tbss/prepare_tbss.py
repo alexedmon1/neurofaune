@@ -3,7 +3,7 @@
 TBSS Data Preparation Workflow for Rodent DTI
 
 Prepares DTI data for group-level TBSS analysis using the neurofaune
-registration chain (FA→T2w→Template→SIGMA) instead of FSL's standard
+registration chain (FA→Template→SIGMA) instead of FSL's standard
 tbss_2_reg pipeline.
 
 This workflow:

@@ -1162,17 +1162,7 @@ def warp_bold_to_sigma(
 
     The transform chain is passed as an ordered list of transform file
     paths (ANTs convention: listed outermost-first, applied last-first).
-    For the typical 3-hop chain (BOLD -> T2w -> Template -> SIGMA)::
-
-        transforms = [
-            tpl-to-SIGMA_1Warp.nii.gz,       # SyN warp
-            tpl-to-SIGMA_0GenericAffine.mat,  # affine
-            T2w_to_template_1Warp.nii.gz,     # SyN warp
-            T2w_to_template_0GenericAffine.mat,# affine
-            BOLD_to_T2w_0GenericAffine.mat,   # rigid
-        ]
-
-    For a 2-hop chain (BOLD -> Template -> SIGMA)::
+    For the standard 2-hop chain (BOLD -> Template -> SIGMA)::
 
         transforms = [
             tpl-to-SIGMA_1Warp.nii.gz,
