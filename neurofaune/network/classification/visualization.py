@@ -3,10 +3,12 @@ Shared plotting utilities for multivariate classification and regression analysi
 
 Provides scatter plots with confidence ellipses, confusion matrix heatmaps,
 permutation null distribution histograms, scree plots, feature loading
-bar charts, and predicted-vs-actual regression scatter plots.
+bar charts, predicted-vs-actual regression scatter plots, and
+territory-grouped model weight visualizations.
 """
 
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -407,4 +409,126 @@ def plot_predicted_vs_actual(
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=_DPI, bbox_inches="tight")
         logger.info("Saved predicted vs actual: %s", out_path)
+    plt.close(fig)
+
+
+# -- Territory colour palette for grouped weight plots --
+_TERRITORY_COLORS = [
+    "#1a5276", "#c62828", "#2E7D32", "#6A1B9A",
+    "#E65100", "#00695C", "#AD1457", "#283593",
+]
+
+
+def plot_territory_weights(
+    roi_weights: np.ndarray,
+    feature_names: Sequence[str],
+    roi_to_territory: dict[str, str],
+    title: str = "Model Weights by Territory",
+    out_path: Optional[Path] = None,
+    n_top_territories: int = 8,
+    n_top_rois_per_territory: int = 5,
+) -> None:
+    """Horizontal bar chart of model weights grouped by atlas territory.
+
+    Territory-level bars show mean absolute weight; individual ROI bars
+    within each territory show the top contributors with signed weights.
+
+    Parameters
+    ----------
+    roi_weights : ndarray, shape (n_features,)
+        Model weights mapped back to ROI space.
+    feature_names : sequence of str
+        ROI names corresponding to ``roi_weights``.
+    roi_to_territory : dict
+        Mapping from ROI name to territory group name.
+    title : str
+        Plot title.
+    out_path : Path, optional
+        Save figure to this path.
+    n_top_territories : int
+        Maximum number of territories to display (sorted by mean |weight|).
+    n_top_rois_per_territory : int
+        Maximum number of individual ROIs shown per territory.
+    """
+    # Group ROIs by territory
+    territories: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for i, name in enumerate(feature_names):
+        terr = roi_to_territory.get(name, "Unknown")
+        territories[terr].append((name, float(roi_weights[i])))
+
+    # Sort territories by mean absolute weight (descending)
+    terr_summary = []
+    for terr, rois in territories.items():
+        mean_abs = float(np.mean([abs(w) for _, w in rois]))
+        # Sort ROIs within territory by absolute weight
+        rois_sorted = sorted(rois, key=lambda x: abs(x[1]), reverse=True)
+        terr_summary.append((terr, mean_abs, rois_sorted))
+    terr_summary.sort(key=lambda x: x[1], reverse=True)
+    terr_summary = terr_summary[:n_top_territories]
+
+    # Build bar data: territory header bar + indented ROI bars
+    bar_labels = []
+    bar_values = []
+    bar_colors = []
+    bar_bold = []
+
+    for t_idx, (terr, mean_abs, rois_sorted) in enumerate(terr_summary):
+        color = _TERRITORY_COLORS[t_idx % len(_TERRITORY_COLORS)]
+
+        # Territory summary bar (mean absolute weight)
+        bar_labels.append(terr)
+        bar_values.append(mean_abs)
+        bar_colors.append(color)
+        bar_bold.append(True)
+
+        # Individual ROI bars (signed weight, lighter shade)
+        for roi_name, weight in rois_sorted[:n_top_rois_per_territory]:
+            # Shorten ROI name: strip _L/_R suffix for display, add hemisphere tag
+            display = roi_name
+            if roi_name.endswith("_L"):
+                display = f"  {roi_name[:-2]} (L)"
+            elif roi_name.endswith("_R"):
+                display = f"  {roi_name[:-2]} (R)"
+            else:
+                display = f"  {roi_name}"
+            bar_labels.append(display)
+            bar_values.append(weight)
+            bar_colors.append(color)
+            bar_bold.append(False)
+
+    # Reverse for bottom-to-top plotting (most important at top)
+    bar_labels = bar_labels[::-1]
+    bar_values = bar_values[::-1]
+    bar_colors = bar_colors[::-1]
+    bar_bold = bar_bold[::-1]
+
+    n_bars = len(bar_labels)
+    fig_height = max(4, 0.28 * n_bars)
+    fig, ax = plt.subplots(figsize=(8, fig_height))
+
+    y_pos = np.arange(n_bars)
+    alphas = [0.9 if b else 0.5 for b in bar_bold]
+
+    for i in range(n_bars):
+        ax.barh(y_pos[i], bar_values[i], color=bar_colors[i], alpha=alphas[i],
+                height=0.7, edgecolor="white", linewidth=0.3)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(bar_labels, fontsize=7)
+    # Bold territory labels
+    for i, label in enumerate(ax.get_yticklabels()):
+        if bar_bold[i]:
+            label.set_fontweight("bold")
+            label.set_fontsize(8)
+
+    ax.set_xlabel("Model Weight (mean |w| for territories, signed w for ROIs)")
+    ax.axvline(0, color="black", linewidth=0.5)
+    if title:
+        ax.set_title(title, fontsize=11)
+    fig.tight_layout()
+
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=_DPI, bbox_inches="tight")
+        logger.info("Saved territory weights: %s", out_path)
     plt.close(fig)

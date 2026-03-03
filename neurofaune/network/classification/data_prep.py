@@ -39,6 +39,7 @@ def prepare_classification_data(
         Which features to use:
         - ``'bilateral'``: bilateral-averaged region ROIs (~50 features)
         - ``'territory'``: territory aggregate ROIs (~15 features)
+        - ``'all'``: all individual L/R ROIs (~234 features)
     cohort_filter : str, optional
         Restrict to a single cohort (e.g. ``'p30'``). If None, pool all
         known cohorts (p30, p60, p90).
@@ -78,8 +79,14 @@ def prepare_classification_data(
         feature_names = [c for c in roi_cols if c.startswith("territory_")]
         if not feature_names:
             raise ValueError("No territory columns found in data")
+    elif feature_set == "all":
+        feature_names = [c for c in roi_cols if not c.startswith("territory_")]
+        if not feature_names:
+            raise ValueError("No individual ROI columns found in data")
     else:
-        raise ValueError(f"Unknown feature_set: {feature_set!r}. Use 'bilateral' or 'territory'.")
+        raise ValueError(
+            f"Unknown feature_set: {feature_set!r}. Use 'bilateral', 'territory', or 'all'."
+        )
 
     logger.info("Feature set '%s': %d features", feature_set, len(feature_names))
 

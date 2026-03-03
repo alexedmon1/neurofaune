@@ -12,7 +12,7 @@ Usage:
         --roi-dir $STUDY_ROOT/network/roi \
         --output-dir $STUDY_ROOT/network/regression/dwi \
         --metrics FA MD AD RD \
-        --feature-sets bilateral territory \
+        --feature-sets all \
         --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
         --n-permutations 1000 \
         --seed 42
@@ -29,9 +29,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.classification.data_prep import prepare_classification_data
+from neurofaune.network.classification.data_prep import prepare_classification_data
 from neurofaune.analysis.progress import AnalysisProgress
-from neurofaune.analysis.regression.dose_response import run_regression
+from neurofaune.network.regression.dose_response import run_regression
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +49,7 @@ def run_single_regression(
     output_dir: Path,
     n_permutations: int,
     seed: int,
+    atlas_labels: Path = None,
 ) -> dict:
     """Run regression pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
@@ -99,6 +100,7 @@ def run_single_regression(
     }
 
     # Phase 2: Regression (dose-response)
+    use_pca = feature_set == "all"
     logger.info("[Phase 2] Regression (LOOCV dose-response + permutation)...")
     reg_dir = combo_dir / "regression"
     y_ordinal = y.astype(float)
@@ -107,6 +109,7 @@ def run_single_regression(
         n_permutations=n_permutations,
         seed=seed,
         output_dir=reg_dir,
+        use_pca=use_pca,
     )
 
     # Serialise regression results
@@ -118,12 +121,32 @@ def run_single_regression(
             "spearman_rho": result["spearman_rho"],
             "permutation_p_value": result["permutation_p_value"],
         }
+        if "pca_n_components" in result:
+            reg_json[reg_name]["pca_n_components"] = result["pca_n_components"]
+            reg_json[reg_name]["top_features"] = result["top_features"]
         summary[f"regression_{reg_name}"] = {
             "r_squared": result["r_squared"],
             "mae": result["mae"],
             "spearman_rho": result["spearman_rho"],
             "permutation_p_value": result["permutation_p_value"],
         }
+        if "pca_n_components" in result:
+            summary[f"regression_{reg_name}"]["pca_n_components"] = result["pca_n_components"]
+
+        # Territory-grouped weight plot
+        if "roi_weights" in result and atlas_labels is not None:
+            try:
+                from neurofaune.connectome.pipeline import build_territory_mapping
+                from neurofaune.network.classification.visualization import plot_territory_weights
+
+                roi_to_territory = build_territory_mapping(list(feature_names), atlas_labels)
+                plot_territory_weights(
+                    result["roi_weights"], feature_names, roi_to_territory,
+                    title=f"{reg_name.upper()} — {metric} {cohort_label} weights",
+                    out_path=reg_dir / f"{reg_name}_territory_weights.png",
+                )
+            except Exception as exc:
+                logger.warning("Failed to plot territory weights for %s: %s", reg_name, exc)
 
     with open(reg_dir / "regression.json", "w") as f:
         json.dump(reg_json, f, indent=2)
@@ -167,6 +190,11 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
     if "territory" in args.feature_sets:
         lines.append("- territory: Territory aggregate ROIs (~15 features)")
         lines.append("  Coarser anatomical groupings")
+
+    if "all" in args.feature_sets:
+        lines.append("- all: All individual L/R ROIs (~234 features)")
+        lines.append("  PCA reduction to 95% variance inside each LOOCV fold")
+        lines.append("  Model weights mapped back to ROI space for interpretation")
 
     lines.extend([
         "",
@@ -230,13 +258,18 @@ def main():
         help="DTI metrics to analyse (default: FA MD AD RD)",
     )
     parser.add_argument(
-        "--feature-sets", nargs="+", default=["bilateral", "territory"],
-        choices=["bilateral", "territory"],
-        help="Feature sets to analyse (default: bilateral territory)",
+        "--feature-sets", nargs="+", default=["all"],
+        choices=["bilateral", "territory", "all"],
+        help="Feature sets to analyse (default: all)",
     )
     parser.add_argument(
         "--exclusion-csv", type=Path, default=None,
         help="CSV of sessions to exclude (must have subject, session columns)",
+    )
+    parser.add_argument(
+        "--atlas-labels", type=Path,
+        default=Path("/mnt/arborea/atlases/SIGMA/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"),
+        help="SIGMA atlas labels CSV for territory mapping in weight plots",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=1000,
@@ -263,6 +296,7 @@ def main():
         "output_dir": str(args.output_dir),
         "metrics": args.metrics,
         "feature_sets": args.feature_sets,
+        "atlas_labels": str(args.atlas_labels),
         "n_permutations": args.n_permutations,
         "seed": args.seed,
         "timestamp": datetime.now().isoformat(),
@@ -316,6 +350,7 @@ def main():
                     output_dir=args.output_dir,
                     n_permutations=args.n_permutations,
                     seed=args.seed,
+                    atlas_labels=args.atlas_labels,
                 )
                 metric_summaries[key] = summary
                 completed += 1

@@ -12,7 +12,7 @@ from typing import Sequence
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
-from neurofaune.analysis.classification.visualization import (
+from neurofaune.network.classification.visualization import (
     plot_feature_loadings,
     plot_scatter_2d,
 )

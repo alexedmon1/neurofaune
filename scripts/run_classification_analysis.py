@@ -14,7 +14,7 @@ Usage:
         --roi-dir $STUDY_ROOT/network/roi \
         --output-dir $STUDY_ROOT/network/classification/dwi \
         --metrics FA MD AD RD \
-        --feature-sets bilateral territory \
+        --feature-sets all \
         --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
         --n-permutations 1000 \
         --seed 42
@@ -31,11 +31,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.analysis.classification.classifiers import run_classification
-from neurofaune.analysis.classification.data_prep import prepare_classification_data
-from neurofaune.analysis.classification.lda import run_lda
-from neurofaune.analysis.classification.omnibus import run_manova, run_permanova
-from neurofaune.analysis.classification.pca import run_pca
+from neurofaune.network.classification.classifiers import run_classification
+from neurofaune.network.classification.data_prep import prepare_classification_data
+from neurofaune.network.classification.lda import run_lda
+from neurofaune.network.classification.omnibus import run_manova, run_permanova
+from neurofaune.network.classification.pca import run_pca
 from neurofaune.analysis.progress import AnalysisProgress
 
 logging.basicConfig(
@@ -56,6 +56,7 @@ def run_single_analysis(
     seed: int,
     skip_manova: bool,
     skip_classification: bool,
+    atlas_labels: Path = None,
 ) -> dict:
     """Run full classification pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
@@ -123,7 +124,7 @@ def run_single_analysis(
         json.dump(permanova_out, f, indent=2)
 
     # Permutation null plot
-    from neurofaune.analysis.classification.visualization import plot_permutation_distribution
+    from neurofaune.network.classification.visualization import plot_permutation_distribution
     plot_permutation_distribution(
         permanova["null_distribution"],
         permanova["pseudo_f"],
@@ -172,6 +173,7 @@ def run_single_analysis(
         json.dump(lda_json, f, indent=2)
 
     # Phase 5: Classification
+    use_pca = feature_set == "all"
     if not skip_classification:
         logger.info("[Phase 5] Classification (LOOCV + permutation)...")
         clf_dir = combo_dir / "classification"
@@ -180,6 +182,7 @@ def run_single_analysis(
             n_permutations=n_permutations,
             seed=seed,
             output_dir=clf_dir,
+            use_pca=use_pca,
         )
 
         # Serialise classification results
@@ -192,11 +195,31 @@ def run_single_analysis(
                 "per_class_accuracy": result["per_class_accuracy"],
                 "confusion_matrix": result["confusion_matrix"].tolist(),
             }
+            if "pca_n_components" in result:
+                clf_json[clf_name]["pca_n_components"] = result["pca_n_components"]
+                clf_json[clf_name]["top_features"] = result["top_features"]
             summary[f"classification_{clf_name}"] = {
                 "accuracy": result["accuracy"],
                 "balanced_accuracy": result["balanced_accuracy"],
                 "permutation_p_value": result["permutation_p_value"],
             }
+            if "pca_n_components" in result:
+                summary[f"classification_{clf_name}"]["pca_n_components"] = result["pca_n_components"]
+
+            # Territory-grouped weight plot
+            if "roi_weights" in result and atlas_labels is not None:
+                try:
+                    from neurofaune.connectome.pipeline import build_territory_mapping
+                    from neurofaune.network.classification.visualization import plot_territory_weights
+
+                    roi_to_territory = build_territory_mapping(list(feature_names), atlas_labels)
+                    plot_territory_weights(
+                        result["roi_weights"], feature_names, roi_to_territory,
+                        title=f"{clf_name.upper()} — {metric} {cohort_label} weights",
+                        out_path=clf_dir / f"{clf_name}_territory_weights.png",
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to plot territory weights for %s: %s", clf_name, exc)
 
         with open(clf_dir / "classification.json", "w") as f:
             json.dump(clf_json, f, indent=2)
@@ -241,6 +264,11 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
     if "territory" in args.feature_sets:
         lines.append("- territory: Territory aggregate ROIs (~15 features)")
         lines.append("  Coarser anatomical groupings")
+
+    if "all" in args.feature_sets:
+        lines.append("- all: All individual L/R ROIs (~234 features)")
+        lines.append("  PCA reduction to 95% variance inside each LOOCV fold")
+        lines.append("  Model weights mapped back to ROI space for interpretation")
 
     lines.extend([
         "",
@@ -323,13 +351,18 @@ def main():
         help="DTI metrics to analyse (default: FA MD AD RD)",
     )
     parser.add_argument(
-        "--feature-sets", nargs="+", default=["bilateral", "territory"],
-        choices=["bilateral", "territory"],
-        help="Feature sets to analyse (default: bilateral territory)",
+        "--feature-sets", nargs="+", default=["all"],
+        choices=["bilateral", "territory", "all"],
+        help="Feature sets to analyse (default: all)",
     )
     parser.add_argument(
         "--exclusion-csv", type=Path, default=None,
         help="CSV of sessions to exclude (must have subject, session columns)",
+    )
+    parser.add_argument(
+        "--atlas-labels", type=Path,
+        default=Path("/mnt/arborea/atlases/SIGMA/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"),
+        help="SIGMA atlas labels CSV for territory mapping in weight plots",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=1000,
@@ -364,6 +397,7 @@ def main():
         "output_dir": str(args.output_dir),
         "metrics": args.metrics,
         "feature_sets": args.feature_sets,
+        "atlas_labels": str(args.atlas_labels),
         "n_permutations": args.n_permutations,
         "seed": args.seed,
         "skip_manova": args.skip_manova,
@@ -421,6 +455,7 @@ def main():
                     seed=args.seed,
                     skip_manova=args.skip_manova,
                     skip_classification=args.skip_classification,
+                    atlas_labels=args.atlas_labels,
                 )
                 metric_summaries[key] = summary
                 completed += 1

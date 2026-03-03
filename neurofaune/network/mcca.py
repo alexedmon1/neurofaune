@@ -19,7 +19,7 @@ from scipy import linalg
 from sklearn.covariance import LedoitWolf
 from sklearn.preprocessing import StandardScaler
 
-from neurofaune.analysis.classification.data_prep import prepare_classification_data
+from neurofaune.network.classification.data_prep import prepare_classification_data
 
 logger = logging.getLogger(__name__)
 

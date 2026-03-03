@@ -9,8 +9,8 @@ Complements classification (discrete group discrimination) by testing for
 a graded, continuous dose-response trend.
 """
 
-from neurofaune.analysis.classification.data_prep import prepare_classification_data
-from neurofaune.analysis.regression.dose_response import run_regression
+from neurofaune.network.classification.data_prep import prepare_classification_data
+from neurofaune.network.regression.dose_response import run_regression
 
 __all__ = [
     "prepare_classification_data",
