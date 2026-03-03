@@ -342,17 +342,22 @@ def plot_predicted_vs_actual(
     spearman_rho: float,
     title: str = "Predicted vs Actual",
     out_path: Optional[Path] = None,
+    continuous_target: bool = False,
+    dose_labels: Optional[np.ndarray] = None,
 ) -> None:
-    """Scatter plot of predicted vs actual dose (ordinal) with identity line.
+    """Scatter plot of predicted vs actual values with identity line.
 
-    Points are jittered horizontally and coloured by true dose group.
+    When ``continuous_target=False`` (default): points are jittered at
+    integer positions and coloured by true dose group.
+    When ``continuous_target=True``: actual continuous values on x-axis
+    (no jitter), coloured by dose group via ``dose_labels``.
 
     Parameters
     ----------
     y_true : ndarray, shape (n_samples,)
-        True ordinal dose values (0, 1, 2, 3).
+        True target values (ordinal ints or continuous floats).
     y_pred : ndarray, shape (n_samples,)
-        Predicted dose values (continuous).
+        Predicted target values (continuous).
     label_names : sequence of str
         Group names for colouring (e.g. ['C', 'L', 'M', 'H']).
     r_squared : float
@@ -363,25 +368,55 @@ def plot_predicted_vs_actual(
         Plot title.
     out_path : Path, optional
         Save figure to this path.
+    continuous_target : bool
+        If True, treat y_true as continuous (no jitter, no integer ticks).
+    dose_labels : ndarray, optional
+        Integer dose group per sample for colouring when using continuous
+        target. If None with ``continuous_target=True``, all points are
+        one colour.
     """
     fig, ax = plt.subplots(figsize=(6, 5))
     colors = _get_colors(label_names)
 
-    # Jitter true values for visibility
-    rng = np.random.default_rng(0)
-    jitter = rng.uniform(-0.15, 0.15, size=len(y_true))
-    x_jittered = y_true + jitter
+    if continuous_target:
+        # Continuous x-axis — colour by dose group
+        if dose_labels is not None:
+            unique_groups = np.unique(dose_labels)
+            for grp in unique_groups:
+                mask = dose_labels == grp
+                name = label_names[grp] if grp < len(label_names) else str(grp)
+                c = colors[grp % len(colors)]
+                ax.scatter(
+                    y_true[mask], y_pred[mask],
+                    c=c, label=name, s=40, alpha=0.7,
+                    edgecolors="white", linewidths=0.5,
+                )
+        else:
+            ax.scatter(
+                y_true, y_pred,
+                c="#1a5276", s=40, alpha=0.7,
+                edgecolors="white", linewidths=0.5,
+            )
+        xlabel = "True AUC"
+        ylabel = "Predicted AUC"
+    else:
+        # Ordinal — jitter at integer positions
+        rng = np.random.default_rng(0)
+        jitter = rng.uniform(-0.15, 0.15, size=len(y_true))
+        x_jittered = y_true + jitter
 
-    unique_vals = np.unique(y_true.astype(int))
-    for val in unique_vals:
-        mask = y_true.astype(int) == val
-        name = label_names[val] if val < len(label_names) else str(val)
-        c = colors[val % len(colors)]
-        ax.scatter(
-            x_jittered[mask], y_pred[mask],
-            c=c, label=name, s=40, alpha=0.7,
-            edgecolors="white", linewidths=0.5,
-        )
+        unique_vals = np.unique(y_true.astype(int))
+        for val in unique_vals:
+            mask = y_true.astype(int) == val
+            name = label_names[val] if val < len(label_names) else str(val)
+            c = colors[val % len(colors)]
+            ax.scatter(
+                x_jittered[mask], y_pred[mask],
+                c=c, label=name, s=40, alpha=0.7,
+                edgecolors="white", linewidths=0.5,
+            )
+        xlabel = "True Dose (ordinal)"
+        ylabel = "Predicted Dose"
 
     # Identity line
     lo = min(y_true.min(), y_pred.min()) - 0.3
@@ -396,10 +431,11 @@ def plot_predicted_vs_actual(
         ax.plot(x_fit, np.polyval(coeffs, x_fit), "-", color="#1a5276",
                 linewidth=1.5, alpha=0.7)
 
-    ax.set_xlabel("True Dose (ordinal)")
-    ax.set_ylabel("Predicted Dose")
-    ax.set_xticks(range(len(label_names)))
-    ax.set_xticklabels(label_names)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if not continuous_target:
+        ax.set_xticks(range(len(label_names)))
+        ax.set_xticklabels(label_names)
     ax.set_title(f"{title}\nR²={r_squared:.3f}   ρ={spearman_rho:.3f}", fontsize=11)
     ax.legend(fontsize=9, loc="upper left")
     ax.grid(True, alpha=0.3)

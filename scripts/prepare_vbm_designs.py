@@ -381,6 +381,99 @@ def create_per_pnd_dose_response_design(
     logger.info(f"Saved to {design_dir}")
 
 
+def _load_auc_lookup(auc_csv_path: Path) -> pd.DataFrame:
+    """Load AUC lookup CSV (subject, session, auc)."""
+    auc_df = pd.read_csv(auc_csv_path)
+    if not {'subject', 'session', 'auc'}.issubset(auc_df.columns):
+        raise ValueError(
+            f"AUC CSV must have columns: subject, session, auc. "
+            f"Found: {list(auc_df.columns)}"
+        )
+    logger.info("Loaded AUC lookup: %d rows from %s", len(auc_df), auc_csv_path)
+    return auc_df
+
+
+def _merge_auc(data: pd.DataFrame, auc_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge AUC values into VBM subject data."""
+    auc_df = auc_df.copy()
+    auc_df['_merge_key'] = auc_df['subject'] + '_' + auc_df['session']
+    auc_lookup = dict(zip(auc_df['_merge_key'], auc_df['auc']))
+
+    data = data.copy()
+    data['auc'] = data['subject_key'].map(auc_lookup)
+
+    n_missing = data['auc'].isna().sum()
+    if n_missing > 0:
+        logger.warning("Dropping %d subjects with no AUC match", n_missing)
+        data = data.dropna(subset=['auc']).reset_index(drop=True)
+
+    return data
+
+
+def create_per_pnd_auc_response_design(
+    data: pd.DataFrame,
+    pnd: str,
+    output_dir: Path,
+    vbm_dir: Path,
+) -> None:
+    """Create AUC-response design for a single PND timepoint."""
+    subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
+    n = len(subset)
+    if n == 0:
+        logger.warning(f"No subjects for {pnd}, skipping AUC design")
+        return
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"AUC-response design: {pnd} (n={n})")
+    logger.info(f"{'='*60}")
+
+    logger.info(f"  AUC range: [{subset['auc'].min():.2f}, {subset['auc'].max():.2f}]")
+
+    design_df = pd.DataFrame({
+        'participant_id': subset['subject_key'].values,
+        'auc': subset['auc'].values,
+        'sex': subset['sex'].values,
+    })
+
+    helper = DesignHelper(design_df, subject_column='participant_id')
+    helper.add_covariate('auc', mean_center=True)
+    helper.add_categorical('sex', coding='effect', reference='F')
+
+    helper.build_design_matrix()
+    logger.info(f"Columns: {helper.design_column_names}")
+
+    helper.add_contrast('auc_pos', covariate='auc', direction='+')
+    helper.add_contrast('auc_neg', covariate='auc', direction='-')
+
+    logger.info(helper.summary())
+
+    # Rank check
+    mat = helper.design_matrix
+    rank = np.linalg.matrix_rank(mat)
+    n_cols = mat.shape[1]
+    if rank < n_cols:
+        logger.warning(f"Design matrix is rank-deficient! rank={rank}, cols={n_cols}")
+    else:
+        logger.info(f"Design matrix is full rank ({rank}/{n_cols})")
+
+    design_dir = output_dir / f'auc_response_{pnd.lower()}'
+    design_dir.mkdir(parents=True, exist_ok=True)
+
+    helper.save(
+        design_mat_file=design_dir / 'design.mat',
+        design_con_file=design_dir / 'design.con',
+        summary_file=design_dir / 'design_summary.json',
+    )
+    helper.write_description(design_dir / 'design_description.txt')
+
+    subset[['subject_key']].to_csv(
+        design_dir / 'subject_order.txt', index=False, header=False
+    )
+
+    write_provenance(design_dir, vbm_dir, n, f'auc_response_{pnd.lower()}')
+    logger.info(f"Saved to {design_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Prepare FSL randomise design matrices for BPA-Rat VBM analysis'
@@ -394,10 +487,21 @@ def main():
         help='Path to study_tracker_combined CSV'
     )
     parser.add_argument(
+        '--target', choices=['dose', 'auc'], default='dose',
+        help="Target variable: 'dose' (ordinal + categorical) or 'auc' (continuous AUC)",
+    )
+    parser.add_argument(
+        '--auc-csv', type=Path, default=None,
+        help='Path to AUC lookup CSV (required when --target auc)',
+    )
+    parser.add_argument(
         '--skip-subset', action='store_true',
         help='Skip pre-creating 4D subsets for each analysis'
     )
     args = parser.parse_args()
+
+    if args.target == 'auc' and args.auc_csv is None:
+        parser.error("--auc-csv is required when --target is 'auc'")
 
     vbm_dir = args.vbm_dir
     designs_dir = vbm_dir / 'designs'
@@ -413,21 +517,34 @@ def main():
         sex_dist = dict(subset['sex'].value_counts().sort_index())
         logger.info(f"  {pnd}: n={len(subset)}, dose={dose_dist}, sex={sex_dist}")
 
-    # Create per-PND categorical designs
-    for pnd in ['P30', 'P60', 'P90']:
-        create_per_pnd_design(data, pnd, designs_dir, vbm_dir)
+    if args.target == 'dose':
+        # Create per-PND categorical designs
+        for pnd in ['P30', 'P60', 'P90']:
+            create_per_pnd_design(data, pnd, designs_dir, vbm_dir)
 
-    # Create per-PND dose-response designs
-    for pnd in ['P30', 'P60', 'P90']:
-        create_per_pnd_dose_response_design(data, pnd, designs_dir, vbm_dir)
+        # Create per-PND dose-response designs
+        for pnd in ['P30', 'P60', 'P90']:
+            create_per_pnd_dose_response_design(data, pnd, designs_dir, vbm_dir)
+
+        design_pattern_list = sorted(designs_dir.glob('per_pnd_*')) + \
+                              sorted(designs_dir.glob('dose_response_*'))
+
+    elif args.target == 'auc':
+        # Merge AUC data
+        auc_df = _load_auc_lookup(args.auc_csv)
+        data_auc = _merge_auc(data, auc_df)
+
+        # Create per-PND AUC-response designs
+        for pnd in ['P30', 'P60', 'P90']:
+            create_per_pnd_auc_response_design(data_auc, pnd, designs_dir, vbm_dir)
+
+        design_pattern_list = sorted(designs_dir.glob('auc_response_*'))
 
     logger.info(f"\nAll designs saved to {designs_dir}")
 
     # Pre-create 4D subsets
     if not args.skip_subset:
-        design_dirs = sorted(designs_dir.glob('per_pnd_*')) + \
-                      sorted(designs_dir.glob('dose_response_*'))
-        design_dirs = [d for d in design_dirs if d.is_dir()]
+        design_dirs = [d for d in design_pattern_list if d.is_dir()]
         pre_subset_4d_volumes(vbm_dir, design_dirs)
     else:
         logger.info("\nSkipping 4D subset creation (--skip-subset)")

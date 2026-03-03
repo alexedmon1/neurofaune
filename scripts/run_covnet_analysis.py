@@ -272,8 +272,19 @@ def main():
         "--labels-csv", type=Path, default=None,
         help="SIGMA atlas labels CSV for hybrid territory mapping (default: arborea path)",
     )
+    parser.add_argument(
+        "--target", choices=["groups", "auc"], default="groups",
+        help="Analysis target: 'groups' (default, group-based NBS) or 'auc' (edge-level regression)",
+    )
+    parser.add_argument(
+        "--auc-csv", type=Path, default=None,
+        help="Path to AUC lookup CSV (required when --target auc)",
+    )
 
     args = parser.parse_args()
+
+    if args.target == "auc" and args.auc_csv is None:
+        parser.error("--auc-csv is required when --target is 'auc'")
 
     # Validate inputs
     if not args.roi_dir.exists():
@@ -303,6 +314,23 @@ def main():
 
     write_design_description(args, args.output_dir / "design_description.txt")
 
+    # Load AUC data if needed
+    auc_lookup = None
+    if args.target == "auc":
+        import pandas as pd
+        auc_df = pd.read_csv(args.auc_csv)
+        if not {'subject', 'session', 'auc'}.issubset(auc_df.columns):
+            logger.error("AUC CSV must have columns: subject, session, auc")
+            sys.exit(1)
+        # Build lookup: "sub-Rat001_ses-p60" -> float
+        auc_lookup = dict(
+            zip(
+                auc_df['subject'] + '_' + auc_df['session'],
+                auc_df['auc'].astype(float),
+            )
+        )
+        logger.info("Loaded %d AUC values from %s", len(auc_lookup), args.auc_csv)
+
     # Run for each metric
     all_summaries = {}
     progress = AnalysisProgress(args.output_dir, "run_covnet_analysis.py", len(args.metrics))
@@ -322,8 +350,41 @@ def main():
                 labels_csv=args.labels_csv,
             )
             analysis.save()
-            progress.update(task=metric, phase="running analyses", completed=completed, failed=failed)
-            summary = run_single_metric(analysis, args)
+
+            if args.target == "groups":
+                progress.update(task=metric, phase="running analyses", completed=completed, failed=failed)
+                summary = run_single_metric(analysis, args)
+            elif args.target == "auc":
+                progress.update(task=metric, phase="running edge regression", completed=completed, failed=failed)
+                summary = {
+                    "metric": metric,
+                    "n_subjects": analysis.n_subjects,
+                    "n_bilateral_rois": len(analysis.bilateral_region_cols),
+                    "target": "auc",
+                }
+                # Run edge regression per cohort + pooled
+                for cohort in [None, "p30", "p60", "p90"]:
+                    cohort_label = cohort if cohort else "pooled"
+                    logger.info("Edge regression: %s / %s", metric, cohort_label)
+                    reg_results = analysis.run_edge_regression(
+                        covariate_map=auc_lookup,
+                        covariate_name="AUC",
+                        cohort_filter=cohort,
+                        n_perm=args.n_permutations,
+                        threshold=args.nbs_threshold,
+                        seed=args.seed,
+                    )
+                    if reg_results:
+                        result = list(reg_results.values())[0]
+                        n_sig = sum(
+                            1 for c in result["significant_components"]
+                            if c["pvalue"] < 0.05
+                        )
+                        summary[f"edge_regression_{cohort_label}"] = {
+                            "n_subjects": result["n_subjects"],
+                            "n_significant_components": n_sig,
+                        }
+
             all_summaries[metric] = summary
             completed += 1
         except FileNotFoundError as e:

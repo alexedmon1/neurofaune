@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 # Reuse shared functions from the categorical design script
 from prepare_tbss_designs import load_and_merge_data, write_provenance, pre_subset_4d_volumes
@@ -42,6 +43,40 @@ logger = logging.getLogger(__name__)
 
 # Ordinal dose mapping
 DOSE_MAP = {'C': 0, 'L': 1, 'M': 2, 'H': 3}
+
+
+def _load_auc_lookup(auc_csv_path: Path) -> pd.DataFrame:
+    """Load AUC lookup CSV (subject, session, auc)."""
+    auc_df = pd.read_csv(auc_csv_path)
+    if not {'subject', 'session', 'auc'}.issubset(auc_df.columns):
+        raise ValueError(
+            f"AUC CSV must have columns: subject, session, auc. "
+            f"Found: {list(auc_df.columns)}"
+        )
+    logger.info("Loaded AUC lookup: %d rows from %s", len(auc_df), auc_csv_path)
+    return auc_df
+
+
+def _merge_auc(data: pd.DataFrame, auc_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge AUC values into TBSS subject data.
+
+    Creates an 'auc' column by matching subject+session keys.
+    Rows with missing AUC are dropped.
+    """
+    # Build subject key from AUC lookup: "sub-Rat001_ses-p60"
+    auc_df = auc_df.copy()
+    auc_df['_merge_key'] = auc_df['subject'] + '_' + auc_df['session']
+    auc_lookup = dict(zip(auc_df['_merge_key'], auc_df['auc']))
+
+    data = data.copy()
+    data['auc'] = data['subject_key'].map(auc_lookup)
+
+    n_missing = data['auc'].isna().sum()
+    if n_missing > 0:
+        logger.warning("Dropping %d subjects with no AUC match", n_missing)
+        data = data.dropna(subset=['auc']).reset_index(drop=True)
+
+    return data
 
 
 def create_per_pnd_dose_design(data, pnd, output_dir, tbss_dir=None):
@@ -211,9 +246,167 @@ def create_pooled_dose_design(data, output_dir, tbss_dir=None):
     logger.info(f"Saved to {design_dir}")
 
 
+def create_per_pnd_auc_design(data, pnd, output_dir, tbss_dir=None):
+    """Create AUC-response design for a single PND timepoint.
+
+    Design columns: [Intercept, auc (mean-centered), sex_M (effect)]
+    Contrasts: auc_pos (+1 on auc), auc_neg (-1 on auc)
+    """
+    subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
+    n = len(subset)
+    if n == 0:
+        logger.warning(f"No subjects for {pnd}, skipping AUC design")
+        return
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"AUC-response design: {pnd} (n={n})")
+    logger.info(f"{'='*60}")
+
+    logger.info(f"  AUC range: [{subset['auc'].min():.2f}, {subset['auc'].max():.2f}]")
+    for dose_label in ['C', 'L', 'M', 'H']:
+        auc_vals = subset.loc[subset['dose'] == dose_label, 'auc']
+        if len(auc_vals) > 0:
+            logger.info(f"  {dose_label}: n={len(auc_vals)}, AUC mean={auc_vals.mean():.2f}")
+
+    design_df = pd.DataFrame({
+        'participant_id': subset['subject_key'].values,
+        'auc': subset['auc'].values,
+        'sex': subset['sex'].values,
+    })
+
+    helper = DesignHelper(design_df, subject_column='participant_id')
+    helper.add_covariate('auc', mean_center=True)
+    helper.add_categorical('sex', coding='effect', reference='F')
+
+    helper.build_design_matrix()
+    logger.info(f"Columns: {helper.design_column_names}")
+
+    helper.add_contrast('auc_pos', covariate='auc', direction='+')
+    helper.add_contrast('auc_neg', covariate='auc', direction='-')
+
+    logger.info(helper.summary())
+
+    design_dir = output_dir / f'auc_response_{pnd.lower()}'
+    design_dir.mkdir(parents=True, exist_ok=True)
+
+    helper.save(
+        design_mat_file=design_dir / 'design.mat',
+        design_con_file=design_dir / 'design.con',
+        summary_file=design_dir / 'design_summary.json',
+    )
+    helper.write_description(design_dir / 'design_description.txt')
+
+    subset[['subject_key']].to_csv(
+        design_dir / 'subject_order.txt', index=False, header=False
+    )
+
+    if tbss_dir is not None:
+        write_provenance(design_dir, tbss_dir, n, f'auc_response_{pnd.lower()}')
+
+    # Rank check
+    mat = helper.design_matrix
+    rank = np.linalg.matrix_rank(mat)
+    n_cols = mat.shape[1]
+    if rank < n_cols:
+        logger.warning(f"Design matrix is rank-deficient! rank={rank}, cols={n_cols}")
+    else:
+        logger.info(f"Design matrix is full rank ({rank}/{n_cols})")
+
+    logger.info(f"Saved to {design_dir}")
+
+
+def create_pooled_auc_design(data, output_dir, tbss_dir=None):
+    """Create pooled AUC-response design with auc x PND interaction.
+
+    Design columns: [Intercept, auc (centered), PND_P60, PND_P90,
+                     sex_M, auc×PND_P60, auc×PND_P90]
+    Contrasts:
+      - auc_pos / auc_neg: main linear AUC trend
+      - auc_x_P60_pos / auc_x_P60_neg: AUC slope differs at P60 vs P30?
+      - auc_x_P90_pos / auc_x_P90_neg: AUC slope differs at P90 vs P30?
+    """
+    n = len(data)
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Pooled AUC-response design (n={n})")
+    logger.info(f"{'='*60}")
+
+    data = data.copy()
+
+    for pnd in ['P30', 'P60', 'P90']:
+        subset = data[data['PND'] == pnd]
+        logger.info(
+            f"  {pnd}: n={len(subset)}, AUC range=[{subset['auc'].min():.2f}, "
+            f"{subset['auc'].max():.2f}], mean={subset['auc'].mean():.2f}"
+        )
+
+    design_df = pd.DataFrame({
+        'participant_id': data['subject_key'].values,
+        'auc': data['auc'].values,
+        'PND': data['PND'].values,
+        'sex': data['sex'].values,
+    })
+
+    helper = DesignHelper(design_df, subject_column='participant_id')
+    helper.add_covariate('auc', mean_center=True)
+    helper.add_categorical('PND', coding='effect', reference='P30')
+    helper.add_categorical('sex', coding='effect', reference='F')
+    helper.add_interaction('auc', 'PND')
+
+    helper.build_design_matrix()
+    logger.info(f"Columns: {helper.design_column_names}")
+
+    # Main AUC trend
+    helper.add_contrast('auc_pos', covariate='auc', direction='+')
+    helper.add_contrast('auc_neg', covariate='auc', direction='-')
+
+    # AUC x PND interactions
+    helper.add_contrast(
+        'auc_x_P60_pos', interaction='auc\u00d7PND', level='P60', direction='+'
+    )
+    helper.add_contrast(
+        'auc_x_P60_neg', interaction='auc\u00d7PND', level='P60', direction='-'
+    )
+    helper.add_contrast(
+        'auc_x_P90_pos', interaction='auc\u00d7PND', level='P90', direction='+'
+    )
+    helper.add_contrast(
+        'auc_x_P90_neg', interaction='auc\u00d7PND', level='P90', direction='-'
+    )
+
+    logger.info(helper.summary())
+
+    # Rank check
+    mat = helper.design_matrix
+    rank = np.linalg.matrix_rank(mat)
+    n_cols = mat.shape[1]
+    if rank < n_cols:
+        logger.warning(f"Design matrix is rank-deficient! rank={rank}, cols={n_cols}")
+    else:
+        logger.info(f"Design matrix is full rank ({rank}/{n_cols})")
+
+    design_dir = output_dir / 'auc_response_pooled'
+    design_dir.mkdir(parents=True, exist_ok=True)
+
+    helper.save(
+        design_mat_file=design_dir / 'design.mat',
+        design_con_file=design_dir / 'design.con',
+        summary_file=design_dir / 'design_summary.json',
+    )
+    helper.write_description(design_dir / 'design_description.txt')
+
+    data[['subject_key']].to_csv(
+        design_dir / 'subject_order.txt', index=False, header=False
+    )
+
+    if tbss_dir is not None:
+        write_provenance(design_dir, tbss_dir, n, 'auc_response_pooled')
+
+    logger.info(f"Saved to {design_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Prepare FSL randomise designs for ordinal dose-response TBSS analysis'
+        description='Prepare FSL randomise designs for dose-response TBSS analysis'
     )
     parser.add_argument(
         '--study-tracker', type=Path, required=True,
@@ -228,10 +421,21 @@ def main():
         help='Output directory for design files'
     )
     parser.add_argument(
+        '--target', choices=['dose', 'auc'], default='dose',
+        help="Target variable: 'dose' (ordinal C=0..H=3) or 'auc' (continuous AUC)",
+    )
+    parser.add_argument(
+        '--auc-csv', type=Path, default=None,
+        help='Path to AUC lookup CSV (required when --target auc)',
+    )
+    parser.add_argument(
         '--skip-subset', action='store_true',
         help='Skip pre-creating 4D subsets for each analysis'
     )
     args = parser.parse_args()
+
+    if args.target == 'auc' and args.auc_csv is None:
+        parser.error("--auc-csv is required when --target is 'auc'")
 
     # Load and merge data (same function as categorical design script)
     data = load_and_merge_data(args.study_tracker, args.tbss_dir)
@@ -244,18 +448,44 @@ def main():
         sex_dist = dict(subset['sex'].value_counts().sort_index())
         logger.info(f"  {pnd}: n={len(subset)}, dose={dose_dist}, sex={sex_dist}")
 
-    # Create per-PND dose-response designs
-    for pnd in ['P30', 'P60', 'P90']:
-        create_per_pnd_dose_design(data, pnd, args.output_dir, tbss_dir=args.tbss_dir)
+    if args.target == 'dose':
+        # Create per-PND dose-response designs
+        for pnd in ['P30', 'P60', 'P90']:
+            create_per_pnd_dose_design(data, pnd, args.output_dir, tbss_dir=args.tbss_dir)
 
-    # Create pooled dose-response design
-    create_pooled_dose_design(data, args.output_dir, tbss_dir=args.tbss_dir)
+        # Create pooled dose-response design
+        create_pooled_dose_design(data, args.output_dir, tbss_dir=args.tbss_dir)
 
-    logger.info(f"\nAll dose-response designs saved to {args.output_dir}")
+        design_pattern = 'dose_response_*'
+
+    elif args.target == 'auc':
+        # Merge AUC data
+        auc_df = _load_auc_lookup(args.auc_csv)
+        data_auc = _merge_auc(data, auc_df)
+
+        logger.info("\nAUC distribution after merge:")
+        for pnd in ['P30', 'P60', 'P90']:
+            subset = data_auc[data_auc['PND'] == pnd]
+            if len(subset) > 0:
+                logger.info(
+                    f"  {pnd}: n={len(subset)}, AUC range=[{subset['auc'].min():.2f}, "
+                    f"{subset['auc'].max():.2f}]"
+                )
+
+        # Create per-PND AUC designs
+        for pnd in ['P30', 'P60', 'P90']:
+            create_per_pnd_auc_design(data_auc, pnd, args.output_dir, tbss_dir=args.tbss_dir)
+
+        # Create pooled AUC design
+        create_pooled_auc_design(data_auc, args.output_dir, tbss_dir=args.tbss_dir)
+
+        design_pattern = 'auc_response_*'
+
+    logger.info(f"\nAll {args.target}-response designs saved to {args.output_dir}")
 
     # Pre-create 4D subsets
     if not args.skip_subset:
-        design_dirs = sorted(args.output_dir.glob('dose_response_*'))
+        design_dirs = sorted(args.output_dir.glob(design_pattern))
         design_dirs = [d for d in design_dirs if d.is_dir()]
         pre_subset_4d_volumes(args.tbss_dir, design_dirs)
     else:

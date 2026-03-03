@@ -29,7 +29,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.network.classification.data_prep import prepare_classification_data
+from neurofaune.network.classification.data_prep import prepare_regression_data
 from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.network.regression.dose_response import run_regression
 
@@ -50,24 +50,26 @@ def run_single_regression(
     n_permutations: int,
     seed: int,
     atlas_labels: Path = None,
+    target: str = "dose",
 ) -> dict:
     """Run regression pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
     combo_dir = output_dir / metric / cohort_label / feature_set
 
     logger.info(
-        "\n%s\n  Metric: %s | Cohort: %s | Features: %s\n%s",
-        "=" * 60, metric, cohort_label, feature_set, "=" * 60,
+        "\n%s\n  Metric: %s | Cohort: %s | Features: %s | Target: %s\n%s",
+        "=" * 60, metric, cohort_label, feature_set, target, "=" * 60,
     )
 
     # Phase 1: Data preparation
     logger.info("[Phase 1] Preparing data...")
     try:
-        data = prepare_classification_data(
+        data = prepare_regression_data(
             wide_csv=wide_csv,
             feature_set=feature_set,
             cohort_filter=cohort if cohort else None,
             exclusion_csv=exclusion_csv,
+            target=target,
         )
     except ValueError as exc:
         logger.warning("Skipping %s/%s/%s: %s", metric, cohort_label, feature_set, exc)
@@ -76,40 +78,46 @@ def run_single_regression(
     X, y = data["X"], data["y"]
     label_names = data["label_names"]
     feature_names = data["feature_names"]
+    dose_labels = data["dose_labels"]
+    target_name = data["target_name"]
     n_samples, n_features = X.shape
+    continuous = target == "auc"
 
     if n_samples < 10:
         logger.warning("Too few samples (n=%d) — skipping", n_samples)
         return {"status": "skipped", "reason": f"n={n_samples} too small"}
 
     if len(np.unique(y)) < 2:
-        logger.warning("Fewer than 2 groups — skipping")
-        return {"status": "skipped", "reason": "fewer than 2 groups"}
+        logger.warning("Fewer than 2 unique target values — skipping")
+        return {"status": "skipped", "reason": "fewer than 2 unique values"}
 
     summary = {
         "status": "completed",
         "metric": metric,
         "cohort": cohort_label,
         "feature_set": feature_set,
+        "target": target,
+        "target_name": target_name,
         "n_samples": n_samples,
         "n_features": n_features,
         "label_names": label_names,
         "group_sizes": {
-            name: int((y == i).sum()) for i, name in enumerate(label_names)
+            name: int((dose_labels == i).sum()) for i, name in enumerate(label_names)
         },
     }
 
-    # Phase 2: Regression (dose-response)
+    # Phase 2: Regression
     use_pca = feature_set == "all"
-    logger.info("[Phase 2] Regression (LOOCV dose-response + permutation)...")
+    logger.info("[Phase 2] Regression (LOOCV %s + permutation)...", target_name)
     reg_dir = combo_dir / "regression"
-    y_ordinal = y.astype(float)
     reg_results = run_regression(
-        X, y_ordinal, label_names, feature_names,
+        X, y, label_names, feature_names,
         n_permutations=n_permutations,
         seed=seed,
         output_dir=reg_dir,
         use_pca=use_pca,
+        continuous_target=continuous,
+        dose_labels=dose_labels,
     )
 
     # Serialise regression results
@@ -161,11 +169,17 @@ def run_single_regression(
 
 def write_design_description(args: argparse.Namespace, output_path: Path) -> None:
     """Write a human-readable description of the regression analysis design."""
+    target = getattr(args, "target", "dose")
+    if target == "auc":
+        target_desc = "AUC (continuous pharmacokinetic exposure, session-matched)"
+    else:
+        target_desc = "Dose as ordinal: C=0, L=1, M=2, H=3"
+
     lines = [
         "ANALYSIS DESCRIPTION",
         "====================",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "Analysis: Dose-Response Regression",
+        f"Analysis: {'AUC' if target == 'auc' else 'Dose'}-Response Regression",
         "",
         "DATA SOURCE",
         "-----------",
@@ -176,7 +190,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         "",
         "EXPERIMENTAL DESIGN",
         "-------------------",
-        "Dose as ordinal: C=0, L=1, M=2, H=3",
+        f"Target: {target_desc}",
         "Cohorts analysed: p30, p60, p90, and pooled",
         "",
         "FEATURE SETS",
@@ -272,6 +286,10 @@ def main():
         help="SIGMA atlas labels CSV for territory mapping in weight plots",
     )
     parser.add_argument(
+        "--target", choices=["dose", "auc"], default="dose",
+        help="Target variable: 'dose' (ordinal C=0..H=3) or 'auc' (continuous AUC)",
+    )
+    parser.add_argument(
         "--n-permutations", type=int, default=1000,
         help="Number of permutations for regression test (default: 1000)",
     )
@@ -296,6 +314,7 @@ def main():
         "output_dir": str(args.output_dir),
         "metrics": args.metrics,
         "feature_sets": args.feature_sets,
+        "target": args.target,
         "atlas_labels": str(args.atlas_labels),
         "n_permutations": args.n_permutations,
         "seed": args.seed,
@@ -351,6 +370,7 @@ def main():
                     n_permutations=args.n_permutations,
                     seed=args.seed,
                     atlas_labels=args.atlas_labels,
+                    target=args.target,
                 )
                 metric_summaries[key] = summary
                 completed += 1

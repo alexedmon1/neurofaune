@@ -169,6 +169,16 @@ uv run python scripts/batch_skull_strip_qc.py --config config.yaml
 
 ROI-based analyses that operate in SIGMA atlas space. Outputs are organized under `{study_root}/network/` with subdirectories per analysis type and modality.
 
+### AUC Lookup Preparation
+
+Generate a session-matched AUC (area under the plasma concentration curve) lookup CSV from the ROI wide CSVs. This is used as a continuous pharmacokinetic exposure target across all applicable analyses (regression, MCCA, TBSS, VBM, MVPA, CovNet):
+
+```bash
+uv run python scripts/prepare_auc_lookup.py \
+    --roi-csv /path/to/network/roi/roi_FA_wide.csv \
+    --output /path/to/study/auc_lookup.csv
+```
+
 ### ROI Extraction
 
 Extract mean metric values (FA, MD, T2, etc.) per SIGMA atlas region across all subjects:
@@ -220,6 +230,14 @@ uv run python scripts/run_covnet_analysis.py \
     --output-dir /path/to/network/connectome/dwi \
     --metrics FA MD AD RD \
     --n-permutations 5000 --seed 42
+
+# Edge-level regression with continuous AUC covariate
+uv run python scripts/run_covnet_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/connectome_auc/dwi \
+    --metrics FA MD AD RD \
+    --target auc --auc-csv /path/to/auc_lookup.csv \
+    --n-permutations 5000
 ```
 
 **Step-by-step** (prepare once, run tests independently):
@@ -259,11 +277,15 @@ from neurofaune.connectome import CovNetAnalysis
 analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, output_dir, "FA")
 analysis.save()
 
+# Group-based comparisons
 analysis = CovNetAnalysis.load(output_dir, "FA")
 analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
 analysis.run_territory()
 analysis.run_graph_metrics()
 analysis.run_whole_network()
+
+# Edge-level regression with continuous covariate (e.g. AUC)
+analysis.run_edge_regression(covariate_map=auc_dict, covariate_name="AUC")
 ```
 
 ### Classification
@@ -284,9 +306,10 @@ Feature sets: `all` (default, all L/R ROIs + PCA), `bilateral` (bilateral-averag
 
 ### Regression
 
-Dose-response regression with SVR, Ridge, and PLS. Same PCA-in-LOOCV pattern and weight inversion as classification.
+Dose-response regression with SVR, Ridge, and PLS. Same PCA-in-LOOCV pattern and weight inversion as classification. Supports both ordinal dose groups (`--target dose`, default) and continuous pharmacokinetic exposure (`--target auc`) as the target variable. AUC values are session-matched from the ROI wide CSVs.
 
 ```bash
+# Ordinal dose-response (default)
 uv run python scripts/run_regression_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/regression/dwi \
@@ -294,11 +317,20 @@ uv run python scripts/run_regression_analysis.py \
     --feature-sets all \
     --atlas-labels /path/to/SIGMA_Labels.csv \
     --n-permutations 5000
+
+# Continuous AUC target
+uv run python scripts/run_regression_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/regression_auc/dwi \
+    --metrics FA MD AD RD \
+    --feature-sets all --target auc \
+    --atlas-labels /path/to/SIGMA_Labels.csv \
+    --n-permutations 5000
 ```
 
 ### MCCA (Multiset Canonical Correlation Analysis)
 
-Cross-modality integration that finds linear combinations of ROI features maximizing correlation across modality views. Uses regularized generalized eigenvalue decomposition with Ledoit-Wolf shrinkage and PCA dimensionality reduction for fast permutation testing.
+Cross-modality integration that finds linear combinations of ROI features maximizing correlation across modality views. Uses regularized generalized eigenvalue decomposition with Ledoit-Wolf shrinkage and PCA dimensionality reduction for fast permutation testing. Supports `--target auc` for continuous AUC-based dose-response association.
 
 ```bash
 uv run python scripts/run_mcca_analysis.py \
@@ -309,13 +341,21 @@ uv run python scripts/run_mcca_analysis.py \
     --n-components 5 \
     --regs lw \
     --n-permutations 5000 --seed 42
+
+# With continuous AUC target
+uv run python scripts/run_mcca_analysis.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/mcca_auc \
+    --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
+    --feature-set bilateral --target auc \
+    --n-components 5 --regs lw --n-permutations 5000
 ```
 
 Per cohort (pooled, p30, p60, p90), the pipeline runs:
 1. Load and intersect subjects across all views (bilateral ROIs, z-scored per view)
 2. Fit regularized MCCA via generalized eigenvalue problem
 3. Permutation test for significance of canonical correlations (5000 perms)
-4. Dose-response association (Spearman correlation with ordinal dose per canonical variate)
+4. Dose-response association (Spearman correlation with ordinal dose or continuous AUC per canonical variate)
 5. PERMANOVA on MCCA score space (group separability)
 6. Generate visualizations (canonical correlations, score scatter plots, loading heatmaps, null distributions)
 
@@ -355,6 +395,13 @@ uv run python scripts/prepare_tbss_dose_response_designs.py \
     --tbss-dir /path/to/analysis/tbss/dwi \
     --output-dir /path/to/analysis/tbss/dwi/designs
 
+# AUC dose-response designs (continuous pharmacokinetic exposure)
+uv run python scripts/prepare_tbss_dose_response_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --tbss-dir /path/to/analysis/tbss/dwi \
+    --output-dir /path/to/analysis/tbss/dwi/designs \
+    --target auc --auc-csv /path/to/auc_lookup.csv
+
 # Run randomise (permutation testing)
 uv run python scripts/run_tbss_analysis.py \
     --tbss-dir /path/to/analysis/tbss/dwi --config config.yaml
@@ -374,15 +421,46 @@ uv run python scripts/run_voxelwise_fmri_analysis.py \
     --analysis-dir $STUDY_ROOT/analysis/reho --metrics ReHo --config config.yaml
 ```
 
+### VBM (Voxel-Based Morphometry)
+
+Voxel-wise analysis of tissue density (GM, WM, CSF) using FSL randomise. Design scripts support both ordinal dose and continuous AUC targets:
+
+```bash
+uv run python scripts/prepare_vbm_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --vbm-dir /path/to/analysis/vbm \
+    --output-dir /path/to/analysis/vbm/designs
+
+# AUC designs
+uv run python scripts/prepare_vbm_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --vbm-dir /path/to/analysis/vbm \
+    --output-dir /path/to/analysis/vbm/designs \
+    --target auc --auc-csv /path/to/auc_lookup.csv
+
+uv run python scripts/run_vbm_analysis.py \
+    --vbm-dir /path/to/analysis/vbm \
+    --analyses auc_response_p30 auc_response_p60 auc_response_p90 \
+    --n-permutations 5000
+```
+
 ### MVPA (Multi-Voxel Pattern Analysis)
 
-Whole-brain decoding and searchlight mapping:
+Whole-brain decoding and searchlight mapping. Supports both categorical group designs and continuous regression targets (ordinal dose or AUC):
 
 ```bash
 uv run python scripts/run_mvpa_analysis.py \
     --study-root /path/to/study \
     --output-dir /path/to/analysis/mvpa \
     --metrics FA --n-permutations 1000
+
+# Prepare AUC regression designs
+uv run python scripts/prepare_mvpa_designs.py \
+    --study-tracker /path/to/tracker.csv \
+    --derivatives-root /path/to/derivatives \
+    --output-dir /path/to/analysis/mvpa/designs \
+    --metrics FA MD AD RD \
+    --target auc --auc-csv /path/to/auc_lookup.csv
 ```
 
 ---

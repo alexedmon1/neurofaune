@@ -159,6 +159,10 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
     with open(subject_order_path) as f:
         subject_order = [line.strip() for line in f if line.strip()]
 
+    # Check for target_values.json (written by AUC design scripts)
+    target_values_path = design_dir / "target_values.json"
+    has_target_values = target_values_path.exists()
+
     # Determine design type from column names or design structure
     columns = summary.get("columns", [])
     design_type = "categorical"
@@ -169,11 +173,25 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
             design_type = "dose_response"
             break
 
+    # Check for AUC-response design (has auc column)
+    for col in columns:
+        if col.get("name", "") == "auc":
+            design_type = "auc_response"
+            break
+
     # Extract group labels from design matrix structure
-    groups = summary.get("groups", {})
     subject_key_to_label = {}
 
-    if design_type == "categorical":
+    if has_target_values:
+        # Use pre-computed target values (float, no rounding)
+        with open(target_values_path) as f:
+            raw_targets = json.load(f)
+        for subj_key in subject_order:
+            subject_key_to_label[subj_key] = float(raw_targets.get(subj_key, 0.0))
+        if design_type == "categorical":
+            design_type = "auc_response"
+
+    elif design_type == "categorical":
         # For categorical designs, reconstruct group membership from
         # the design matrix. The design_summary includes group info.
         design_matrix = summary.get("design_matrix", [])
@@ -197,24 +215,28 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
             else:
                 subject_key_to_label[subj_key] = "C"
 
-    elif design_type == "dose_response":
-        # For dose-response, labels are ordinal numeric values
-        dose_col = None
+    elif design_type in ("dose_response", "auc_response"):
+        # For dose-response or AUC-response, extract numeric values
+        target_col = None
         for col in columns:
-            if col.get("name", "") == "dose_numeric":
-                dose_col = col
+            if col.get("name", "") in ("dose_numeric", "auc"):
+                target_col = col
                 break
 
         design_matrix = summary.get("design_matrix", [])
-        center = dose_col.get("mean", 1.5) if dose_col else 1.5
+        center = target_col.get("mean", 0.0) if target_col else 0.0
 
         for i, subj_key in enumerate(subject_order):
             if i < len(design_matrix):
                 row = design_matrix[i]
-                col_idx = dose_col.get("index", -1) if dose_col else -1
+                col_idx = target_col.get("index", -1) if target_col else -1
                 if col_idx >= 0 and col_idx < len(row):
-                    # Undo mean-centering to get ordinal value
-                    subject_key_to_label[subj_key] = round(row[col_idx] + center)
+                    raw_val = row[col_idx] + center
+                    # Round to int only for ordinal dose, keep float for AUC
+                    if design_type == "dose_response":
+                        subject_key_to_label[subj_key] = round(raw_val)
+                    else:
+                        subject_key_to_label[subj_key] = float(raw_val)
                 else:
                     subject_key_to_label[subj_key] = 0
             else:

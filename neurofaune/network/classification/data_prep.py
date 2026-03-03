@@ -1,9 +1,9 @@
 """
-Data preparation for multivariate classification analysis.
+Data preparation for multivariate classification and regression analysis.
 
 Loads ROI-level wide CSVs (reusing covnet data loading), applies cohort
 filtering, selects bilateral or territory feature sets, and standardises
-features for downstream classifiers.
+features for downstream classifiers/regressors.
 """
 
 import logging
@@ -21,44 +21,25 @@ from neurofaune.connectome.matrices import (
 
 logger = logging.getLogger(__name__)
 
+# Session -> AUC column mapping
+_SESSION_TO_AUC = {
+    "ses-p30": "AUC_p30",
+    "ses-p60": "AUC_p60",
+    "ses-p90": "AUC_p90",
+}
 
-def prepare_classification_data(
+
+def _load_filter_select(
     wide_csv: Union[str, Path],
     feature_set: str = "bilateral",
     cohort_filter: Optional[str] = None,
     exclusion_csv: Optional[Union[str, Path]] = None,
     standardize: bool = True,
 ) -> dict:
-    """Load, filter, and scale ROI data for classification.
+    """Shared data loading, filtering, feature selection, and scaling.
 
-    Parameters
-    ----------
-    wide_csv : Path
-        Path to wide-format ROI CSV (from extract_roi_means.py).
-    feature_set : str
-        Which features to use:
-        - ``'bilateral'``: bilateral-averaged region ROIs (~50 features)
-        - ``'territory'``: territory aggregate ROIs (~15 features)
-        - ``'all'``: all individual L/R ROIs (~234 features)
-    cohort_filter : str, optional
-        Restrict to a single cohort (e.g. ``'p30'``). If None, pool all
-        known cohorts (p30, p60, p90).
-    exclusion_csv : Path, optional
-        Path to exclusion CSV (subject, session columns).
-    standardize : bool
-        Whether to z-score features (recommended for SVM/LDA).
-
-    Returns
-    -------
-    dict with keys:
-        X : ndarray, shape (n_samples, n_features)
-        y : ndarray, shape (n_samples,) — integer dose labels
-        label_names : list[str] — ordered dose group names
-        feature_names : list[str]
-        sample_info : DataFrame — subject, session, dose, cohort per row
-        scaler : StandardScaler or None
+    Returns dict with: df, X, feature_names, scaler.
     """
-    # Load and prepare (reuse covnet pipeline)
     df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
 
     # Filter to known cohorts (drop ses-unknown)
@@ -102,6 +83,63 @@ def prepare_classification_data(
         for j in range(X.shape[1]):
             X[nan_mask[:, j], j] = col_medians[j]
 
+    # Standardize
+    scaler = None
+    if standardize:
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+
+    return {
+        "df": df,
+        "X": X,
+        "feature_names": feature_names,
+        "scaler": scaler,
+    }
+
+
+def prepare_classification_data(
+    wide_csv: Union[str, Path],
+    feature_set: str = "bilateral",
+    cohort_filter: Optional[str] = None,
+    exclusion_csv: Optional[Union[str, Path]] = None,
+    standardize: bool = True,
+) -> dict:
+    """Load, filter, and scale ROI data for classification.
+
+    Parameters
+    ----------
+    wide_csv : Path
+        Path to wide-format ROI CSV (from extract_roi_means.py).
+    feature_set : str
+        Which features to use:
+        - ``'bilateral'``: bilateral-averaged region ROIs (~50 features)
+        - ``'territory'``: territory aggregate ROIs (~15 features)
+        - ``'all'``: all individual L/R ROIs (~234 features)
+    cohort_filter : str, optional
+        Restrict to a single cohort (e.g. ``'p30'``). If None, pool all
+        known cohorts (p30, p60, p90).
+    exclusion_csv : Path, optional
+        Path to exclusion CSV (subject, session columns).
+    standardize : bool
+        Whether to z-score features (recommended for SVM/LDA).
+
+    Returns
+    -------
+    dict with keys:
+        X : ndarray, shape (n_samples, n_features)
+        y : ndarray, shape (n_samples,) — integer dose labels
+        label_names : list[str] — ordered dose group names
+        feature_names : list[str]
+        sample_info : DataFrame — subject, session, dose, cohort per row
+        scaler : StandardScaler or None
+    """
+    loaded = _load_filter_select(
+        wide_csv, feature_set, cohort_filter, exclusion_csv, standardize,
+    )
+    df = loaded["df"]
+    X = loaded["X"]
+    feature_names = loaded["feature_names"]
+
     # Encode dose as integer labels
     dose_order = ["C", "L", "M", "H"]
     dose_col = df["dose"].values
@@ -122,12 +160,6 @@ def prepare_classification_data(
         new_map = {d: i for i, d in enumerate(label_names)}
         y = np.array([new_map[d] for d in dose_col], dtype=int)
 
-    # Standardize
-    scaler = None
-    if standardize:
-        scaler = StandardScaler()
-        X = scaler.fit_transform(X)
-
     info_cols = ["subject", "session", "dose", "cohort"]
     if "sex" in df.columns:
         info_cols.append("sex")
@@ -145,5 +177,125 @@ def prepare_classification_data(
         "label_names": label_names,
         "feature_names": feature_names,
         "sample_info": sample_info,
-        "scaler": scaler,
+        "scaler": loaded["scaler"],
+    }
+
+
+def prepare_regression_data(
+    wide_csv: Union[str, Path],
+    feature_set: str = "bilateral",
+    cohort_filter: Optional[str] = None,
+    exclusion_csv: Optional[Union[str, Path]] = None,
+    standardize: bool = True,
+    target: str = "dose",
+) -> dict:
+    """Load, filter, and scale ROI data for regression.
+
+    Parameters
+    ----------
+    wide_csv : Path
+        Path to wide-format ROI CSV (from extract_roi_means.py).
+    feature_set : str
+        Which features to use:
+        - ``'bilateral'``: bilateral-averaged region ROIs (~50 features)
+        - ``'territory'``: territory aggregate ROIs (~15 features)
+        - ``'all'``: all individual L/R ROIs (~234 features)
+    cohort_filter : str, optional
+        Restrict to a single cohort (e.g. ``'p30'``). If None, pool all
+        known cohorts (p30, p60, p90).
+    exclusion_csv : Path, optional
+        Path to exclusion CSV (subject, session columns).
+    standardize : bool
+        Whether to z-score features (recommended for SVR/Ridge).
+    target : str
+        Target variable:
+        - ``'dose'``: ordinal encoding (C=0, L=1, M=2, H=3)
+        - ``'auc'``: session-matched AUC from ROI CSV columns
+
+    Returns
+    -------
+    dict with keys:
+        X : ndarray, shape (n_samples, n_features)
+        y : ndarray, shape (n_samples,) — float target values
+        feature_names : list[str]
+        dose_labels : ndarray, shape (n_samples,) — int group per sample for coloring
+        label_names : list[str] — dose group names (C, L, M, H)
+        target_name : str — e.g. "AUC" or "Dose (ordinal)"
+        sample_info : DataFrame — subject, session, dose, cohort per row
+        scaler : StandardScaler or None
+    """
+    loaded = _load_filter_select(
+        wide_csv, feature_set, cohort_filter, exclusion_csv, standardize,
+    )
+    df = loaded["df"]
+    X = loaded["X"]
+    feature_names = loaded["feature_names"]
+
+    # Filter to valid dose labels
+    dose_order = ["C", "L", "M", "H"]
+    label_map = {d: i for i, d in enumerate(dose_order)}
+    dose_col = df["dose"].values
+    valid_mask = np.array([d in label_map for d in dose_col])
+    if not valid_mask.all():
+        n_dropped = (~valid_mask).sum()
+        logger.warning("Dropping %d samples with unrecognised dose labels", n_dropped)
+        X = X[valid_mask]
+        df = df[valid_mask].copy()
+        dose_col = dose_col[valid_mask]
+
+    # Integer dose labels (always needed for plot coloring)
+    label_names = [d for d in dose_order if d in set(dose_col)]
+    contiguous_map = {d: i for i, d in enumerate(label_names)}
+    dose_labels = np.array([contiguous_map[d] for d in dose_col], dtype=int)
+
+    if target == "dose":
+        y = dose_labels.astype(float)
+        target_name = "Dose (ordinal)"
+
+    elif target == "auc":
+        # Extract session-matched AUC
+        auc_values = []
+        for _, row in df.iterrows():
+            session = row["session"]
+            auc_col = _SESSION_TO_AUC.get(session)
+            if auc_col is not None and auc_col in df.columns:
+                auc_values.append(row.get(auc_col, np.nan))
+            else:
+                auc_values.append(np.nan)
+        auc_arr = np.array(auc_values, dtype=float)
+
+        # Drop rows with NaN AUC
+        valid_auc = ~np.isnan(auc_arr)
+        if not valid_auc.all():
+            n_dropped = (~valid_auc).sum()
+            logger.warning("Dropping %d samples with NaN AUC", n_dropped)
+            X = X[valid_auc]
+            df = df[valid_auc].copy()
+            dose_labels = dose_labels[valid_auc]
+            auc_arr = auc_arr[valid_auc]
+
+        y = auc_arr
+        target_name = "AUC"
+    else:
+        raise ValueError(f"Unknown target: {target!r}. Use 'dose' or 'auc'.")
+
+    info_cols = ["subject", "session", "dose", "cohort"]
+    if "sex" in df.columns:
+        info_cols.append("sex")
+    sample_info = df[info_cols].reset_index(drop=True)
+
+    logger.info(
+        "Regression data: n=%d, features=%d, target=%s, y range=[%.2f, %.2f]",
+        X.shape[0], X.shape[1], target_name, y.min(), y.max(),
+    )
+
+    return {
+        "X": X,
+        "y": y,
+        "feature_names": feature_names,
+        "dose_labels": dose_labels,
+        "label_names": label_names,
+        "target_name": target_name,
+        "sample_info": sample_info,
+        "scaler": loaded["scaler"],
     }

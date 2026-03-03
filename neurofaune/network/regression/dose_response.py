@@ -127,18 +127,17 @@ def run_regression(
     seed: int = 42,
     output_dir: Optional[Path] = None,
     use_pca: bool = False,
+    continuous_target: bool = False,
+    dose_labels: Optional[np.ndarray] = None,
 ) -> dict:
     """LOOCV regression with SVR, Ridge, and PLS + permutation test.
-
-    Treats dose as ordinal (C=0, L=1, M=2, H=3) and fits regressors to
-    predict dose from ROI feature patterns.
 
     Parameters
     ----------
     X : ndarray, shape (n_samples, n_features)
         Standardised feature matrix.
     y : ndarray, shape (n_samples,)
-        Ordinal dose values (0, 1, 2, 3).
+        Target values (ordinal ints or continuous floats).
     label_names : sequence of str
         Group names (e.g. ['C', 'L', 'M', 'H']).
     feature_names : sequence of str
@@ -153,6 +152,12 @@ def run_regression(
         Whether to apply PCA dimensionality reduction (fit per LOOCV fold).
         When True, model weights are mapped back to ROI space for
         interpretation.
+    continuous_target : bool
+        If True, pass continuous_target to plot_predicted_vs_actual for
+        proper axis handling (no jitter, continuous x-axis).
+    dose_labels : ndarray, optional
+        Integer dose group per sample for plot colouring when using a
+        continuous target.
 
     Returns
     -------
@@ -241,6 +246,8 @@ def run_regression(
                 r_squared=r2, spearman_rho=rho,
                 title=f"{reg_name.upper()} — Predicted vs Actual",
                 out_path=output_dir / f"{reg_name}_predicted_vs_actual.png",
+                continuous_target=continuous_target,
+                dose_labels=dose_labels,
             )
             plot_permutation_distribution(
                 null_r2, r2, perm_p,

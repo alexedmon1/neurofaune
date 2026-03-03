@@ -91,6 +91,7 @@ def run_cohort_mcca(
     seed: int,
     exclusion_csv: Path,
     confounds: list = None,
+    target: str = "dose",
 ) -> dict:
     """Run MCCA pipeline for a single cohort (or pooled)."""
     cohort_label = cohort if cohort else "pooled"
@@ -122,7 +123,7 @@ def run_cohort_mcca(
         logger.warning("Too few samples (n=%d) — skipping", n_samples)
         return {"status": "skipped", "reason": f"n={n_samples} too small"}
 
-    # Encode dose labels
+    # Encode dose labels (always needed for coloring/group sizes)
     dose_order = ["C", "L", "M", "H"]
     dose_map = {d: i for i, d in enumerate(dose_order)}
     dose_labels = np.array([dose_map.get(d, -1) for d in metadata["dose"].values])
@@ -136,10 +137,42 @@ def run_cohort_mcca(
 
     label_names = [d for d in dose_order if d in set(metadata["dose"].values)]
 
+    # Build target array for dose association test
+    _session_to_auc = {
+        "ses-p30": "AUC_p30",
+        "ses-p60": "AUC_p60",
+        "ses-p90": "AUC_p90",
+    }
+    if target == "auc":
+        # Session-matched AUC
+        auc_values = []
+        for _, row in metadata.iterrows():
+            auc_col = _session_to_auc.get(row["session"])
+            if auc_col and auc_col in metadata.columns:
+                auc_values.append(row.get(auc_col, np.nan))
+            else:
+                auc_values.append(np.nan)
+        target_values = np.array(auc_values, dtype=float)
+        valid_target = ~np.isnan(target_values)
+        if not valid_target.all():
+            n_drop = (~valid_target).sum()
+            logger.warning("Dropping %d samples with NaN AUC", n_drop)
+            Xs = [X[valid_target] for X in Xs]
+            metadata = metadata[valid_target].reset_index(drop=True)
+            dose_labels = dose_labels[valid_target]
+            target_values = target_values[valid_target]
+            n_samples = len(target_values)
+        target_name = "AUC"
+    else:
+        target_values = dose_labels.astype(float)
+        target_name = "Ordinal dose"
+
     summary = {
         "status": "completed",
         "cohort": cohort_label,
         "feature_set": feature_set,
+        "target": target,
+        "target_name": target_name,
         "n_samples": n_samples,
         "view_dims": {vn: X.shape[1] for vn, X in zip(view_names, Xs)},
         "group_sizes": {
@@ -181,13 +214,14 @@ def run_cohort_mcca(
             " *" if perm_result.p_values[i] < 0.05 else "",
         )
 
-    # Phase 4: Dose association
-    logger.info("[Phase 4] Testing dose association in canonical variate space...")
+    # Phase 4: Target association (dose or AUC)
+    logger.info("[Phase 4] Testing %s association in canonical variate space...", target_name)
     dose_result = test_dose_association(
-        result.scores, dose_labels,
+        result.scores, target_values,
         n_permutations=n_permutations, seed=seed,
     )
-    summary["dose_association"] = {
+    assoc_key = "auc_association" if target == "auc" else "dose_association"
+    summary[assoc_key] = {
         f"CV{i+1}": {
             "spearman_rho": float(dose_result.spearman_rho[i]),
             "p_value": float(dose_result.p_values[i]),
@@ -197,8 +231,8 @@ def run_cohort_mcca(
 
     for i in range(result.n_components):
         logger.info(
-            "  CV%d ~ dose: rho=%.4f, p=%.4f%s",
-            i + 1, dose_result.spearman_rho[i], dose_result.p_values[i],
+            "  CV%d ~ %s: rho=%.4f, p=%.4f%s",
+            i + 1, target_name, dose_result.spearman_rho[i], dose_result.p_values[i],
             " *" if dose_result.p_values[i] < 0.05 else "",
         )
 
@@ -294,7 +328,7 @@ def run_cohort_mcca(
         "view_dims": {vn: X.shape[1] for vn, X in zip(view_names, Xs)},
         "canonical_correlations": result.canonical_correlations.tolist(),
         "permutation_p_values": perm_result.p_values.tolist(),
-        "dose_association": summary["dose_association"],
+        assoc_key: summary[assoc_key],
         "permanova": permanova,
         "group_sizes": summary["group_sizes"],
     }
@@ -350,9 +384,9 @@ def write_design_description(args: argparse.Namespace, views: dict, output_path:
         f"   - {args.n_permutations} permutations (shuffle views 1..K, fix view 0)",
         "   - Empirical p-value per component",
         "",
-        "3. Dose association test",
+        f"3. {'AUC' if getattr(args, 'target', 'dose') == 'auc' else 'Dose'} association test",
         "   - Average MCCA scores across views per component",
-        "   - Spearman correlation with ordinal dose (C=0, L=1, M=2, H=3)",
+        f"   - Spearman correlation with {'continuous AUC (session-matched)' if getattr(args, 'target', 'dose') == 'auc' else 'ordinal dose (C=0, L=1, M=2, H=3)'}",
         f"   - {args.n_permutations} permutation p-values (two-tailed)",
         "",
         "4. PERMANOVA on MCCA score space",
@@ -413,6 +447,10 @@ def main():
         help="Regularisation method: 'lw' (Ledoit-Wolf), 'identity', or float (default: lw)",
     )
     parser.add_argument(
+        "--target", choices=["dose", "auc"], default="dose",
+        help="Target for dose association: 'dose' (ordinal C=0..H=3) or 'auc' (continuous AUC)",
+    )
+    parser.add_argument(
         "--confounds", nargs="*", default=None,
         help="Metadata columns to residualize before MCCA (e.g. 'sex')",
     )
@@ -452,6 +490,7 @@ def main():
         "roi_dir": str(args.roi_dir),
         "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
         "confounds": args.confounds,
+        "target": args.target,
         "output_dir": str(args.output_dir),
         "views": {k: v for k, v in views.items()},
         "feature_set": args.feature_set,
@@ -494,6 +533,7 @@ def main():
             seed=args.seed,
             exclusion_csv=args.exclusion_csv,
             confounds=args.confounds,
+            target=args.target,
         )
         all_summaries[cohort_label] = summary
         completed += 1
@@ -502,9 +542,10 @@ def main():
             total_n_subjects = max(total_n_subjects, summary.get("n_samples", 0))
             perm_ps = summary.get("permutation_p_values", [])
             n_significant_cv += sum(1 for p in perm_ps if p < 0.05)
-            dose_assoc = summary.get("dose_association", {})
+            # Look for dose_association or auc_association
+            assoc = summary.get("dose_association") or summary.get("auc_association", {})
             n_significant_dose += sum(
-                1 for v in dose_assoc.values() if v.get("p_value", 1.0) < 0.05
+                1 for v in assoc.values() if v.get("p_value", 1.0) < 0.05
             )
 
     # Save overall summary

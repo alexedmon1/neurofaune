@@ -418,14 +418,14 @@ def main():
 
     logger.info("Found %d designs: %s", len(design_dirs), list(design_dirs.keys()))
 
-    # Separate categorical and dose-response designs
+    # Separate categorical and dose-response/AUC-response designs
     categorical_designs = {
         k: v for k, v in design_dirs.items()
-        if not k.startswith("dose_response")
+        if not k.startswith("dose_response") and not k.startswith("auc_response")
     }
     dose_response_designs = {
         k: v for k, v in design_dirs.items()
-        if k.startswith("dose_response")
+        if k.startswith("dose_response") or k.startswith("auc_response")
     }
 
     all_summaries = {}

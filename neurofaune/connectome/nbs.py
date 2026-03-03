@@ -282,6 +282,148 @@ def run_all_comparisons(
     return results
 
 
+def network_based_regression(
+    data: np.ndarray,
+    covariate: np.ndarray,
+    n_perm: int = 5000,
+    threshold: float = 3.0,
+    seed: int = 42,
+    confounds: np.ndarray = None,
+) -> dict:
+    """Network-based regression: test whether edge co-variation scales with a covariate.
+
+    For each edge (i,j), computes the subject-level product of z-scored
+    ROI values (each subject's contribution to the Pearson correlation),
+    then regresses these products on the covariate using OLS. The
+    t-statistic for the covariate coefficient is used as the test
+    statistic per edge.
+
+    Connected suprathreshold components are identified and assessed via
+    permutation testing (shuffling covariate labels) with FWER correction
+    based on the maximum component size null distribution.
+
+    Parameters
+    ----------
+    data : ndarray, shape (n_subjects, n_rois)
+        ROI values per subject.
+    covariate : ndarray, shape (n_subjects,)
+        Continuous covariate (e.g. AUC values).
+    n_perm : int
+        Number of permutations for null distribution.
+    threshold : float
+        |t|-statistic threshold for suprathreshold edges.
+    seed : int
+        Random seed for reproducibility.
+    confounds : ndarray, shape (n_subjects, n_confounds), optional
+        Optional confound matrix (e.g. sex). If provided, included in the
+        OLS model and the covariate t-stat is extracted.
+
+    Returns
+    -------
+    result : dict
+        Keys:
+        - ``test_stat``: ndarray (n_rois, n_rois) of t-statistics
+        - ``significant_components``: list of component dicts with p-values
+        - ``null_distribution``: ndarray of max component sizes per permutation
+        - ``n_subjects``: int
+    """
+    rng = np.random.default_rng(seed)
+    n_subjects, n_rois = data.shape
+
+    logger.info(
+        "Edge regression: n=%d, n_rois=%d, threshold=%.1f, n_perm=%d",
+        n_subjects, n_rois, threshold, n_perm,
+    )
+
+    # Z-score each ROI column across subjects
+    z_data = np.empty_like(data, dtype=float)
+    for j in range(n_rois):
+        col = data[:, j].astype(float)
+        mu, sd = col.mean(), col.std(ddof=1)
+        if sd < 1e-12:
+            z_data[:, j] = 0.0
+        else:
+            z_data[:, j] = (col - mu) / sd
+
+    def _compute_edge_tstats(cov_vec):
+        """Compute per-edge t-statistics for the covariate."""
+        # Build design matrix: [intercept, covariate, confounds...]
+        X_cols = [np.ones(n_subjects), cov_vec]
+        if confounds is not None:
+            if confounds.ndim == 1:
+                X_cols.append(confounds)
+            else:
+                for c in range(confounds.shape[1]):
+                    X_cols.append(confounds[:, c])
+        X_design = np.column_stack(X_cols)
+        cov_idx = 1  # covariate is the second column
+
+        # Precompute (X^T X)^{-1} X^T and hat diagonal
+        try:
+            XtX_inv = np.linalg.inv(X_design.T @ X_design)
+        except np.linalg.LinAlgError:
+            return np.zeros((n_rois, n_rois))
+        proj = XtX_inv @ X_design.T  # (p, n)
+        p = X_design.shape[1]
+        df_resid = n_subjects - p
+
+        t_mat = np.zeros((n_rois, n_rois))
+        for i in range(n_rois):
+            for j in range(i + 1, n_rois):
+                # Subject-level edge product: z(ROI_i) * z(ROI_j)
+                y_edge = z_data[:, i] * z_data[:, j]
+
+                # OLS: beta = (X^T X)^{-1} X^T y
+                beta = proj @ y_edge
+                resid = y_edge - X_design @ beta
+                mse = (resid ** 2).sum() / df_resid if df_resid > 0 else 1e-12
+                se_beta = np.sqrt(max(mse * XtX_inv[cov_idx, cov_idx], 1e-20))
+                t_val = beta[cov_idx] / se_beta
+                t_mat[i, j] = t_mat[j, i] = t_val
+
+        return t_mat
+
+    # Observed test statistics
+    test_stat = _compute_edge_tstats(covariate)
+
+    # Suprathreshold adjacency and observed components
+    supra = (np.abs(test_stat) >= threshold).astype(float)
+    np.fill_diagonal(supra, 0)
+    observed_components = _get_components(supra)
+    observed_max = _largest_component_size(supra)
+
+    logger.info(
+        "Observed: %d suprathreshold edges, %d components (max size=%d)",
+        int(supra.sum() / 2), len(observed_components), observed_max,
+    )
+
+    # Permutation null distribution
+    null_dist = np.zeros(n_perm)
+    for p_idx in range(n_perm):
+        perm_cov = rng.permutation(covariate)
+        perm_stat = _compute_edge_tstats(perm_cov)
+        perm_supra = (np.abs(perm_stat) >= threshold).astype(float)
+        np.fill_diagonal(perm_supra, 0)
+        null_dist[p_idx] = _largest_component_size(perm_supra)
+
+        if (p_idx + 1) % 500 == 0:
+            logger.info("  Permutation %d/%d", p_idx + 1, n_perm)
+
+    # Assign p-values to observed components
+    for comp in observed_components:
+        comp["pvalue"] = float(np.mean(null_dist >= comp["size"]))
+
+    n_sig = sum(1 for c in observed_components if c["pvalue"] < 0.05)
+    logger.info("Edge regression NBS complete: %d significant components (p < 0.05)", n_sig)
+
+    return {
+        "test_stat": test_stat,
+        "significant_components": observed_components,
+        "null_distribution": null_dist,
+        "n_subjects": n_subjects,
+    }
+
+
 def fisher_z_edge_test(
     corr_a: np.ndarray,
     n_a: int,
