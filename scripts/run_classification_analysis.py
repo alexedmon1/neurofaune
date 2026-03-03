@@ -466,9 +466,8 @@ def main():
                     perm_p = summary.get("permanova", {}).get("p_value", 1.0)
                     if perm_p < 0.05:
                         n_significant_permanova += 1
-                    for clf_key in ["classification_svm", "classification_logistic"]:
-                        acc = summary.get(clf_key, {}).get("accuracy", 0.0)
-                        best_accuracy = max(best_accuracy, acc)
+                    acc = summary.get("classification_svm", {}).get("accuracy", 0.0)
+                    best_accuracy = max(best_accuracy, acc)
 
         all_summaries[metric] = metric_summaries
 
