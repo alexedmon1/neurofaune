@@ -72,6 +72,10 @@ neurofaune/
 ├── registration/             # Cross-modal registration utilities
 │   ├── slice_correspondence.py  # Partial-to-full volume slice matching
 │   └── qc_visualization.py      # Registration QC figures (checkerboard, edge overlay)
+├── network/                  # ROI-based analyses
+│   ├── classification/       # PERMANOVA, PCA, LDA, SVM + PCA weight inversion
+│   ├── regression/           # Dose-response regression (SVR, Ridge, PLS)
+│   └── mcca.py               # Multi-modal CCA
 ├── templates/                # Template building and registration
 │   ├── builder.py            # ANTs template construction
 │   ├── registration.py       # Subject-to-template, atlas propagation

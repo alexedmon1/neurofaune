@@ -268,24 +268,32 @@ analysis.run_whole_network()
 
 ### Classification
 
-PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV:
+PERMANOVA, PCA, LDA, SVM/logistic regression with LOOCV. The default `all` feature set uses all individual L/R ROIs (~234 features) with PCA dimensionality reduction (95% variance, fit inside each LOOCV fold to avoid data leakage). Model weights are mapped back to ROI space via weight inversion (`coef_ @ pca.components_`) and visualized grouped by atlas territory.
 
 ```bash
 uv run python scripts/run_classification_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/classification/dwi \
-    --metrics FA MD AD RD --n-permutations 5000
+    --metrics FA MD AD RD \
+    --feature-sets all \
+    --atlas-labels /path/to/SIGMA_Labels.csv \
+    --n-permutations 5000
 ```
+
+Feature sets: `all` (default, all L/R ROIs + PCA), `bilateral` (bilateral-averaged ~50 features), `territory` (coarse aggregates ~15 features).
 
 ### Regression
 
-Dose-response regression with SVR, Ridge, and PLS:
+Dose-response regression with SVR, Ridge, and PLS. Same PCA-in-LOOCV pattern and weight inversion as classification.
 
 ```bash
 uv run python scripts/run_regression_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/regression/dwi \
-    --metrics FA MD AD RD --n-permutations 5000
+    --metrics FA MD AD RD \
+    --feature-sets all \
+    --atlas-labels /path/to/SIGMA_Labels.csv \
+    --n-permutations 5000
 ```
 
 ### MCCA (Multiset Canonical Correlation Analysis)
@@ -606,12 +614,12 @@ neurofaune/
 │   ├── whole_network.py             # Mantel, Frobenius, spectral divergence
 │   ├── visualization.py             # Heatmaps, network plots, comparison charts
 │   └── pipeline.py                  # CovNetAnalysis orchestrator class
-├── network/                         # Multi-modal network analyses
+├── network/                         # ROI-based analyses (classification, regression, MCCA)
+│   ├── classification/              # PERMANOVA, PCA, LDA, SVM + PCA weight inversion
+│   ├── regression/                  # Dose-response regression (SVR, Ridge, PLS)
 │   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA
 │   └── mcca_visualization.py        # Canonical correlations, scores, loadings plots
-├── analysis/                        # Group-level statistical analysis
-│   ├── classification/              # PERMANOVA, PCA, LDA, SVM
-│   ├── regression/                  # Dose-response regression
+├── analysis/                        # Voxelwise group-level statistical analysis
 │   ├── stats/                       # FSL randomise wrapper, cluster reporting
 │   ├── mvpa/                        # Multi-voxel pattern analysis
 │   ├── progress.py                  # Lightweight progress tracking for runner scripts
