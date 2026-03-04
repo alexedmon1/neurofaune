@@ -21,6 +21,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -122,6 +123,19 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
         })
 
     return sessions
+
+
+def load_qc_exclusions(qc_csv: Path) -> set:
+    """Load (subject, session) pairs that failed QC from the summary CSV."""
+    df = pd.read_csv(qc_csv)
+    failed = df[~df["qc_pass"]]
+    exclusions = set()
+    for _, row in failed.iterrows():
+        exclusions.add((row["subject"], row["session"]))
+    print(f"QC exclusions: {len(exclusions)} sessions will skip SIGMA warping")
+    for subj, ses in sorted(exclusions):
+        print(f"  {subj}/{ses}")
+    return exclusions
 
 
 def process_session(session_info: dict, config: dict,
@@ -356,8 +370,20 @@ def main():
         action="store_true",
         help="Skip SIGMA-space warping (only compute ReHo in native space)",
     )
+    parser.add_argument(
+        "--qc-csv",
+        type=Path,
+        default=None,
+        help="QC summary CSV (from generate_func_registration_qc.py). "
+             "Sessions with qc_pass=False skip SIGMA warping.",
+    )
 
     args = parser.parse_args()
+
+    # Load QC exclusions if provided
+    qc_exclusions = set()
+    if args.qc_csv:
+        qc_exclusions = load_qc_exclusions(args.qc_csv)
 
     print(f"Scanning for preprocessed BOLD in {args.study_root / 'derivatives'}...")
     sessions = find_preprocessed_sessions(args.study_root, subjects=args.subjects)
@@ -419,6 +445,7 @@ def main():
     print(f"  Workers: {args.n_workers}")
     print(f"  Force: {args.force}")
     print(f"  Skip SIGMA: {args.skip_sigma}")
+    print(f"  QC exclusions: {len(qc_exclusions)} sessions")
     print(f"  ReHo neighborhood: {get_config_value(config, 'functional.analysis.reho.neighborhood', 27)}")
 
     # Process sessions
@@ -426,11 +453,13 @@ def main():
     completed = 0
     failed = 0
 
-    # Build args for workers
-    work_args = [
-        (s, args.config, args.force, args.skip_sigma)
-        for s in sessions
-    ]
+    # Build args for workers — QC-excluded sessions skip SIGMA warping
+    work_args = []
+    for s in sessions:
+        session_skip_sigma = args.skip_sigma
+        if (s["subject"], s["session"]) in qc_exclusions:
+            session_skip_sigma = True
+        work_args.append((s, args.config, args.force, session_skip_sigma))
 
     if args.n_workers == 1:
         # Sequential — easier debugging
