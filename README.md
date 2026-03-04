@@ -196,7 +196,7 @@ uv run python scripts/extract_roi_means.py \
 Produces wide and long CSVs with per-region and per-territory means (234 regions, 11 territories).
 
 ```python
-from neurofaune.connectome.roi_extraction import load_parcellation, extract_all_subjects
+from neurofaune.network.roi_extraction import load_parcellation, extract_all_subjects
 
 parcellation, labels = load_parcellation(parcellation_path, labels_csv_path)
 wide_df, long_df = extract_all_subjects(derivatives_dir, parcellation, labels, modality="dwi")
@@ -211,7 +211,7 @@ uv run python scripts/batch_fc_analysis.py --config config.yaml --n-workers 6
 ```
 
 ```python
-from neurofaune.connectome.functional import extract_roi_timeseries, compute_fc_matrix
+from neurofaune.network.functional import extract_roi_timeseries, compute_fc_matrix
 
 timeseries, labels = extract_roi_timeseries(bold_4d, atlas, mask=brain_mask)
 fc_matrix = compute_fc_matrix(timeseries)  # Pearson r → Fisher z
@@ -279,7 +279,7 @@ uv run python scripts/covnet_whole_network.py \
 ```
 
 ```python
-from neurofaune.connectome import CovNetAnalysis
+from neurofaune.network.covnet import CovNetAnalysis
 
 analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
 analysis.save()
@@ -690,16 +690,17 @@ neurofaune/
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
 │       └── skull_strip.py           # Unified skull stripping dispatcher
-├── connectome/                      # Covariance network analysis (CovNet)
+├── connectome/                      # Deprecated shims → neurofaune.network
+├── network/                         # ROI-based analyses
+│   ├── matrices.py                  # Spearman correlation matrices per group
 │   ├── roi_extraction.py            # Atlas-based ROI means and territory aggregation
 │   ├── functional.py                # BOLD FC matrices (Pearson, Fisher z)
-│   ├── matrices.py                  # Spearman correlation matrices per group
-│   ├── nbs.py                       # Network-Based Statistic (permutation testing)
-│   ├── graph_metrics.py             # Efficiency, clustering, modularity
-│   ├── whole_network.py             # Mantel, Frobenius, spectral divergence
-│   ├── visualization.py             # Heatmaps, network plots, comparison charts
-│   └── pipeline.py                  # CovNetAnalysis orchestrator class
-├── network/                         # ROI-based analyses (classification, regression, MCCA)
+│   ├── covnet/                      # Covariance network analysis (CovNet)
+│   │   ├── pipeline.py              # CovNetAnalysis orchestrator class
+│   │   ├── nbs.py                   # Network-Based Statistic (permutation testing)
+│   │   ├── graph_metrics.py         # Efficiency, clustering, modularity
+│   │   ├── whole_network.py         # Mantel, Frobenius, spectral divergence
+│   │   └── visualization.py         # Heatmaps, network plots, comparison charts
 │   ├── classification/              # PERMANOVA, PCA, LDA, SVM + PCA weight inversion
 │   ├── regression/                  # Dose-response regression (SVR, Ridge, PLS)
 │   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA

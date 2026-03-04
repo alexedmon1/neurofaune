@@ -9,7 +9,7 @@ and the permutation-based whole_network_test function.
 import numpy as np
 import pytest
 
-from neurofaune.connectome.whole_network import (
+from neurofaune.network.covnet.whole_network import (
     _upper_tri,
     frobenius_distance,
     mantel_test,

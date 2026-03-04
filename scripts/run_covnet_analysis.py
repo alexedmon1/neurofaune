@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.analysis.progress import AnalysisProgress
-from neurofaune.connectome import CovNetAnalysis
+from neurofaune.network.covnet import CovNetAnalysis
 
 logging.basicConfig(
     level=logging.INFO,

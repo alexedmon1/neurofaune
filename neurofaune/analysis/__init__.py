@@ -12,7 +12,7 @@ Submodules:
     mvpa: Multi-Voxel Pattern Analysis (whole-brain decoding, searchlight)
 
 Moved to top-level modules (re-export shims remain here):
-    covnet -> neurofaune.connectome
-    roi -> neurofaune.connectome.roi_extraction
+    covnet -> neurofaune.network.covnet
+    roi -> neurofaune.network.roi_extraction
     reporting -> neurofaune.reporting
 """

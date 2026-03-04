@@ -148,7 +148,7 @@ def run_single_regression(
         # Territory-grouped weight plot
         if "roi_weights" in result and atlas_labels is not None:
             try:
-                from neurofaune.connectome.pipeline import build_territory_mapping
+                from neurofaune.network.covnet.pipeline import build_territory_mapping
                 from neurofaune.network.classification.visualization import plot_territory_weights
 
                 roi_to_territory = build_territory_mapping(list(feature_names), atlas_labels)

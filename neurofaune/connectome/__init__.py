@@ -1,16 +1,5 @@
-"""Connectome module: ROI extraction, connectivity matrices, and network analysis.
+"""Deprecated: use neurofaune.network.covnet instead."""
 
-Submodules:
-    roi_extraction  — Atlas-based ROI value and timeseries extraction
-    functional      — BOLD functional connectivity (Pearson, Fisher z)
-    matrices        — Covariance network correlation matrices (Spearman, bilateral averaging)
-    nbs             — Network-Based Statistic (edge-level permutation testing)
-    graph_metrics   — Graph theory metrics (efficiency, clustering, modularity)
-    whole_network   — Whole-network similarity (Mantel, Frobenius, spectral)
-    visualization   — Heatmaps, difference matrices, network plots
-    pipeline        — CovNetAnalysis orchestrator class
-"""
-
-from .pipeline import CovNetAnalysis
+from neurofaune.network.covnet import CovNetAnalysis  # noqa: F401
 
 __all__ = ["CovNetAnalysis"]

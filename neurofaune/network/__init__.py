@@ -1,1 +1,1 @@
-"""Multi-modal network analyses (MCCA, cross-view integration)."""
+"""Network analyses: CovNet, classification, regression, MCCA, ROI extraction, FC."""

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-from neurofaune.connectome.matrices import (
+from neurofaune.network.matrices import (
     bilateral_average,
     load_and_prepare_data,
 )

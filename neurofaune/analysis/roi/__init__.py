@@ -1,6 +1,6 @@
-"""Deprecated: use neurofaune.connectome.roi_extraction instead."""
+"""Deprecated: use neurofaune.network.roi_extraction instead."""
 
-from neurofaune.connectome.roi_extraction import (  # noqa: F401
+from neurofaune.network.roi_extraction import (  # noqa: F401
     compute_territory_means,
     discover_sigma_metrics,
     extract_all_subjects,

@@ -32,7 +32,7 @@ from neurofaune.analysis.func import (
     compute_reho_map,
     compute_reho_zscore,
 )
-from neurofaune.connectome.functional import (
+from neurofaune.network.functional import (
     compute_fc_matrix,
     extract_roi_timeseries,
     save_fc_matrix,

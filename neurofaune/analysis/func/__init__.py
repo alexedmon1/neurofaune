@@ -5,7 +5,7 @@ Submodules:
     falff: Amplitude of Low-Frequency Fluctuations (ALFF/fALFF) analysis
     reho: Regional Homogeneity (ReHo) analysis
 
-Note: FC (connectivity) functions have moved to neurofaune.connectome.functional.
+Note: FC (connectivity) functions have moved to neurofaune.network.functional.
 A backwards-compatible shim remains at neurofaune.analysis.func.connectivity.
 """
 
