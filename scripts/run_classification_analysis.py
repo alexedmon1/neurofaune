@@ -57,10 +57,14 @@ def run_single_analysis(
     skip_manova: bool,
     skip_classification: bool,
     atlas_labels: Path = None,
+    target: str = "dose",
 ) -> dict:
     """Run full classification pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
-    combo_dir = output_dir / metric / cohort_label / feature_set
+    if target != "dose":
+        combo_dir = output_dir / target / metric / cohort_label / feature_set
+    else:
+        combo_dir = output_dir / metric / cohort_label / feature_set
 
     logger.info(
         "\n%s\n  Metric: %s | Cohort: %s | Features: %s\n%s",
@@ -75,6 +79,7 @@ def run_single_analysis(
             feature_set=feature_set,
             cohort_filter=cohort if cohort else None,
             exclusion_csv=exclusion_csv,
+            target=target,
         )
     except ValueError as exc:
         logger.warning("Skipping %s/%s/%s: %s", metric, cohort_label, feature_set, exc)
@@ -250,7 +255,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
         "",
         "EXPERIMENTAL DESIGN",
         "-------------------",
-        "Grouping: Dose (C, L, M, H — 4 groups)",
+        f"Grouping: {args.target} ({'C, L, M, H — 4 groups' if args.target == 'dose' else 'from wide CSV column'})",
         "Cohorts analysed: p30, p60, p90, and pooled",
         "",
         "FEATURE SETS",
@@ -373,6 +378,10 @@ def main():
         help="Random seed for reproducibility",
     )
     parser.add_argument(
+        "--target", type=str, default="dose",
+        help="Target variable for group labels: 'dose' (C/L/M/H) or any column name from the wide CSV",
+    )
+    parser.add_argument(
         "--skip-manova", action="store_true",
         help="Skip optional MANOVA test",
     )
@@ -397,6 +406,7 @@ def main():
         "output_dir": str(args.output_dir),
         "metrics": args.metrics,
         "feature_sets": args.feature_sets,
+        "target": args.target,
         "atlas_labels": str(args.atlas_labels),
         "n_permutations": args.n_permutations,
         "seed": args.seed,
@@ -456,6 +466,7 @@ def main():
                     skip_manova=args.skip_manova,
                     skip_classification=args.skip_classification,
                     atlas_labels=args.atlas_labels,
+                    target=args.target,
                 )
                 metric_summaries[key] = summary
                 completed += 1

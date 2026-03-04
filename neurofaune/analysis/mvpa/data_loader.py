@@ -159,7 +159,7 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
     with open(subject_order_path) as f:
         subject_order = [line.strip() for line in f if line.strip()]
 
-    # Check for target_values.json (written by AUC design scripts)
+    # Check for target_values.json (written by target-response design scripts)
     target_values_path = design_dir / "target_values.json"
     has_target_values = target_values_path.exists()
 
@@ -173,11 +173,14 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
             design_type = "dose_response"
             break
 
-    # Check for AUC-response design (has auc column)
+    # Check for continuous-target response design (any non-dose covariate)
     for col in columns:
-        if col.get("name", "") == "auc":
-            design_type = "auc_response"
-            break
+        col_name = col.get("name", "")
+        if col_name not in ("dose_numeric", "Intercept", "") and col.get("type", "") != "categorical":
+            # If there's a non-dose covariate, this is a target response design
+            if "dose_numeric" not in col_name:
+                design_type = "target_response"
+                break
 
     # Extract group labels from design matrix structure
     subject_key_to_label = {}
@@ -189,7 +192,7 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
         for subj_key in subject_order:
             subject_key_to_label[subj_key] = float(raw_targets.get(subj_key, 0.0))
         if design_type == "categorical":
-            design_type = "auc_response"
+            design_type = "target_response"
 
     elif design_type == "categorical":
         # For categorical designs, reconstruct group membership from
@@ -215,11 +218,16 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
             else:
                 subject_key_to_label[subj_key] = "C"
 
-    elif design_type in ("dose_response", "auc_response"):
-        # For dose-response or AUC-response, extract numeric values
+    elif design_type in ("dose_response", "target_response"):
+        # For dose-response or target-response, extract numeric values
         target_col = None
         for col in columns:
-            if col.get("name", "") in ("dose_numeric", "auc"):
+            col_name = col.get("name", "")
+            if col_name == "dose_numeric":
+                target_col = col
+                break
+            # Any non-intercept, non-categorical covariate is the target
+            if col_name not in ("Intercept", "") and col.get("type", "") != "categorical":
                 target_col = col
                 break
 
@@ -232,7 +240,7 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
                 col_idx = target_col.get("index", -1) if target_col else -1
                 if col_idx >= 0 and col_idx < len(row):
                     raw_val = row[col_idx] + center
-                    # Round to int only for ordinal dose, keep float for AUC
+                    # Round to int only for ordinal dose, keep float for other targets
                     if design_type == "dose_response":
                         subject_key_to_label[subj_key] = round(raw_val)
                     else:

@@ -779,24 +779,27 @@ class CovNetAnalysis:
         densities: list[float] | None = None,
         n_perm: int = 5000,
         seed: int = 42,
+        n_workers: int = 1,
     ) -> pd.DataFrame:
         """Run graph metrics. Results saved to ``graph_metrics/{modality}/{metric}/``.
 
         Parameters
         ----------
         densities : list[float], optional
-            Network densities. Default [0.10, 0.15, 0.20, 0.25].
+            Network densities. Default [0.15, 0.20].
         n_perm : int
             Permutations for comparison test.
         seed : int
             Random seed.
+        n_workers : int
+            Parallel workers for pairwise comparisons (1 = sequential).
 
         Returns
         -------
         DataFrame of comparison p-values.
         """
         if densities is None:
-            densities = [0.10, 0.15, 0.20, 0.25]
+            densities = [0.15, 0.20]
 
         logger.info(
             f"Graph metrics: {self.metric} ({n_perm} permutations, "
@@ -826,6 +829,7 @@ class CovNetAnalysis:
             densities=densities,
             n_perm=n_perm,
             seed=seed,
+            n_workers=n_workers,
         )
         comparison_df.to_csv(graph_dir / "comparison_pvalues.csv", index=False)
 
@@ -904,7 +908,7 @@ class CovNetAnalysis:
 
     def run_edge_regression(
         self,
-        covariate_map: dict[str, float],
+        covariate_map: dict[str, float] | None = None,
         covariate_name: str = "AUC",
         cohort_filter: str | None = None,
         n_perm: int = 5000,
@@ -915,11 +919,14 @@ class CovNetAnalysis:
 
         Parameters
         ----------
-        covariate_map : dict[str, float]
+        covariate_map : dict[str, float], optional
             Mapping from subject_key (e.g. ``"sub-Rat001_ses-p60"``) to
-            covariate value (e.g. AUC).
+            covariate value. If None, the covariate is loaded from the
+            wide CSV column named by *covariate_name*.
         covariate_name : str
-            Name for the covariate (used in logging/output).
+            Name for the covariate (used in logging/output). When
+            *covariate_map* is None, this is also the column name to
+            look up in the wide CSV.
         cohort_filter : str, optional
             If set (e.g. ``"p60"``), restrict to groups matching this PND.
             If None, pool all subjects across groups.
@@ -971,10 +978,9 @@ class CovNetAnalysis:
             # For now, filter covariate_map keys by PND prefix.
             pass
 
-        # Alternative approach: load from the wide CSV and match directly
-        # Since CovNetAnalysis stores group_arrays but not individual subject
-        # keys, we need a different strategy. Load ROI data fresh and
-        # filter/match with covariate_map.
+        # Load from the wide CSV and match directly.
+        # CovNetAnalysis stores group_arrays but not individual subject
+        # keys, so we load ROI data fresh and filter/match with covariate.
 
         from .matrices import bilateral_average, load_and_prepare_data
 
@@ -997,6 +1003,29 @@ class CovNetAnalysis:
         # Bilateral average
         df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
         region_cols = [c for c in bilateral_cols if not c.startswith("territory_")]
+
+        # Build covariate_map from wide CSV column if not provided
+        if covariate_map is None:
+            if covariate_name not in df_bilateral.columns:
+                available = [c for c in df_bilateral.columns
+                             if c not in {"subject", "session", "dose", "cohort", "sex"}
+                             and c not in region_cols]
+                logger.error(
+                    "Covariate column %r not found in wide CSV. Available: %s",
+                    covariate_name, available,
+                )
+                return {}
+            df_bilateral["_key"] = df_bilateral["subject"] + "_" + df_bilateral["session"]
+            covariate_map = dict(zip(
+                df_bilateral["_key"],
+                df_bilateral[covariate_name].astype(float),
+            ))
+            # Remove NaN entries
+            covariate_map = {k: v for k, v in covariate_map.items() if not np.isnan(v)}
+            logger.info(
+                "Built covariate map from column %r: %d values",
+                covariate_name, len(covariate_map),
+            )
 
         # Build subject keys and match with covariate
         df_bilateral["_key"] = df_bilateral["subject"] + "_" + df_bilateral["session"]

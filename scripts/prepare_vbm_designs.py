@@ -381,69 +381,87 @@ def create_per_pnd_dose_response_design(
     logger.info(f"Saved to {design_dir}")
 
 
-def _load_auc_lookup(auc_csv_path: Path) -> pd.DataFrame:
-    """Load AUC lookup CSV (subject, session, auc)."""
-    auc_df = pd.read_csv(auc_csv_path)
-    if not {'subject', 'session', 'auc'}.issubset(auc_df.columns):
+def _load_target_lookup(csv_path: Path, column_name: str) -> pd.DataFrame:
+    """Load a target lookup CSV (subject, session, <column_name>).
+
+    Parameters
+    ----------
+    csv_path : Path
+        CSV with at least subject, session, and *column_name* columns.
+    column_name : str
+        Name of the target column to use.
+    """
+    df = pd.read_csv(csv_path)
+    if not {'subject', 'session'}.issubset(df.columns):
         raise ValueError(
-            f"AUC CSV must have columns: subject, session, auc. "
-            f"Found: {list(auc_df.columns)}"
+            f"Target CSV must have 'subject' and 'session' columns. "
+            f"Found: {list(df.columns)}"
         )
-    logger.info("Loaded AUC lookup: %d rows from %s", len(auc_df), auc_csv_path)
-    return auc_df
+    if column_name not in df.columns:
+        raise ValueError(
+            f"Target column {column_name!r} not found in CSV. "
+            f"Available: {[c for c in df.columns if c not in ('subject', 'session')]}"
+        )
+    logger.info("Loaded target lookup (%s): %d rows from %s", column_name, len(df), csv_path)
+    return df
 
 
-def _merge_auc(data: pd.DataFrame, auc_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge AUC values into VBM subject data."""
-    auc_df = auc_df.copy()
-    auc_df['_merge_key'] = auc_df['subject'] + '_' + auc_df['session']
-    auc_lookup = dict(zip(auc_df['_merge_key'], auc_df['auc']))
+def _merge_target(data: pd.DataFrame, lookup_df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    """Merge target values into VBM subject data.
+
+    Creates a column named *column_name* by matching subject+session keys.
+    Rows with missing values are dropped.
+    """
+    lookup_df = lookup_df.copy()
+    lookup_df['_merge_key'] = lookup_df['subject'] + '_' + lookup_df['session']
+    value_lookup = dict(zip(lookup_df['_merge_key'], lookup_df[column_name]))
 
     data = data.copy()
-    data['auc'] = data['subject_key'].map(auc_lookup)
+    data[column_name] = data['subject_key'].map(value_lookup)
 
-    n_missing = data['auc'].isna().sum()
+    n_missing = data[column_name].isna().sum()
     if n_missing > 0:
-        logger.warning("Dropping %d subjects with no AUC match", n_missing)
-        data = data.dropna(subset=['auc']).reset_index(drop=True)
+        logger.warning("Dropping %d subjects with no %s match", n_missing, column_name)
+        data = data.dropna(subset=[column_name]).reset_index(drop=True)
 
     return data
 
 
-def create_per_pnd_auc_response_design(
+def create_per_pnd_target_response_design(
     data: pd.DataFrame,
     pnd: str,
+    target_name: str,
     output_dir: Path,
     vbm_dir: Path,
 ) -> None:
-    """Create AUC-response design for a single PND timepoint."""
+    """Create continuous-target response design for a single PND timepoint."""
     subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
     n = len(subset)
     if n == 0:
-        logger.warning(f"No subjects for {pnd}, skipping AUC design")
+        logger.warning(f"No subjects for {pnd}, skipping {target_name} design")
         return
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"AUC-response design: {pnd} (n={n})")
+    logger.info(f"{target_name}-response design: {pnd} (n={n})")
     logger.info(f"{'='*60}")
 
-    logger.info(f"  AUC range: [{subset['auc'].min():.2f}, {subset['auc'].max():.2f}]")
+    logger.info(f"  {target_name} range: [{subset[target_name].min():.2f}, {subset[target_name].max():.2f}]")
 
     design_df = pd.DataFrame({
         'participant_id': subset['subject_key'].values,
-        'auc': subset['auc'].values,
+        target_name: subset[target_name].values,
         'sex': subset['sex'].values,
     })
 
     helper = DesignHelper(design_df, subject_column='participant_id')
-    helper.add_covariate('auc', mean_center=True)
+    helper.add_covariate(target_name, mean_center=True)
     helper.add_categorical('sex', coding='effect', reference='F')
 
     helper.build_design_matrix()
     logger.info(f"Columns: {helper.design_column_names}")
 
-    helper.add_contrast('auc_pos', covariate='auc', direction='+')
-    helper.add_contrast('auc_neg', covariate='auc', direction='-')
+    helper.add_contrast(f'{target_name}_pos', covariate=target_name, direction='+')
+    helper.add_contrast(f'{target_name}_neg', covariate=target_name, direction='-')
 
     logger.info(helper.summary())
 
@@ -456,7 +474,7 @@ def create_per_pnd_auc_response_design(
     else:
         logger.info(f"Design matrix is full rank ({rank}/{n_cols})")
 
-    design_dir = output_dir / f'auc_response_{pnd.lower()}'
+    design_dir = output_dir / f'{target_name}_response_{pnd.lower()}'
     design_dir.mkdir(parents=True, exist_ok=True)
 
     helper.save(
@@ -470,7 +488,7 @@ def create_per_pnd_auc_response_design(
         design_dir / 'subject_order.txt', index=False, header=False
     )
 
-    write_provenance(design_dir, vbm_dir, n, f'auc_response_{pnd.lower()}')
+    write_provenance(design_dir, vbm_dir, n, f'{target_name}_response_{pnd.lower()}')
     logger.info(f"Saved to {design_dir}")
 
 
@@ -487,12 +505,16 @@ def main():
         help='Path to study_tracker_combined CSV'
     )
     parser.add_argument(
-        '--target', choices=['dose', 'auc'], default='dose',
-        help="Target variable: 'dose' (ordinal + categorical) or 'auc' (continuous AUC)",
+        '--target', type=str, default='dose',
+        help="Target variable: 'dose' (ordinal + categorical) or any column name from --target-csv",
+    )
+    parser.add_argument(
+        '--target-csv', type=Path, default=None,
+        help='Path to target lookup CSV with subject, session, <target> columns (required for non-dose targets)',
     )
     parser.add_argument(
         '--auc-csv', type=Path, default=None,
-        help='Path to AUC lookup CSV (required when --target auc)',
+        help='Deprecated alias for --target-csv (backward compatibility)',
     )
     parser.add_argument(
         '--skip-subset', action='store_true',
@@ -500,8 +522,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.target == 'auc' and args.auc_csv is None:
-        parser.error("--auc-csv is required when --target is 'auc'")
+    # Handle deprecated --auc-csv alias
+    if args.auc_csv is not None and args.target_csv is None:
+        args.target_csv = args.auc_csv
+        logger.warning("--auc-csv is deprecated, use --target-csv instead")
+
+    if args.target != 'dose' and args.target_csv is None:
+        parser.error(f"--target-csv is required when --target is '{args.target}'")
 
     vbm_dir = args.vbm_dir
     designs_dir = vbm_dir / 'designs'
@@ -529,16 +556,17 @@ def main():
         design_pattern_list = sorted(designs_dir.glob('per_pnd_*')) + \
                               sorted(designs_dir.glob('dose_response_*'))
 
-    elif args.target == 'auc':
-        # Merge AUC data
-        auc_df = _load_auc_lookup(args.auc_csv)
-        data_auc = _merge_auc(data, auc_df)
+    else:
+        # Generic target: merge from lookup CSV
+        target_name = args.target
+        target_df = _load_target_lookup(args.target_csv, target_name)
+        data_target = _merge_target(data, target_df, target_name)
 
-        # Create per-PND AUC-response designs
+        # Create per-PND target-response designs
         for pnd in ['P30', 'P60', 'P90']:
-            create_per_pnd_auc_response_design(data_auc, pnd, designs_dir, vbm_dir)
+            create_per_pnd_target_response_design(data_target, pnd, target_name, designs_dir, vbm_dir)
 
-        design_pattern_list = sorted(designs_dir.glob('auc_response_*'))
+        design_pattern_list = sorted(designs_dir.glob(f'{target_name}_response_*'))
 
     logger.info(f"\nAll designs saved to {designs_dir}")
 

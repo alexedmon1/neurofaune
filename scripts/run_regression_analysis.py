@@ -54,7 +54,10 @@ def run_single_regression(
 ) -> dict:
     """Run regression pipeline for one metric/cohort/feature_set combo."""
     cohort_label = cohort if cohort else "pooled"
-    combo_dir = output_dir / metric / cohort_label / feature_set
+    if target != "dose":
+        combo_dir = output_dir / target / metric / cohort_label / feature_set
+    else:
+        combo_dir = output_dir / metric / cohort_label / feature_set
 
     logger.info(
         "\n%s\n  Metric: %s | Cohort: %s | Features: %s | Target: %s\n%s",
@@ -81,7 +84,7 @@ def run_single_regression(
     dose_labels = data["dose_labels"]
     target_name = data["target_name"]
     n_samples, n_features = X.shape
-    continuous = target == "auc"
+    continuous = target != "dose"
 
     if n_samples < 10:
         logger.warning("Too few samples (n=%d) — skipping", n_samples)
@@ -170,16 +173,16 @@ def run_single_regression(
 def write_design_description(args: argparse.Namespace, output_path: Path) -> None:
     """Write a human-readable description of the regression analysis design."""
     target = getattr(args, "target", "dose")
-    if target == "auc":
-        target_desc = "AUC (continuous pharmacokinetic exposure, session-matched)"
-    else:
+    if target == "dose":
         target_desc = "Dose as ordinal: C=0, L=1, M=2, H=3"
+    else:
+        target_desc = f"{target} (continuous column from wide CSV)"
 
     lines = [
         "ANALYSIS DESCRIPTION",
         "====================",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Analysis: {'AUC' if target == 'auc' else 'Dose'}-Response Regression",
+        f"Analysis: {target.upper() if target != 'dose' else 'Dose'}-Response Regression",
         "",
         "DATA SOURCE",
         "-----------",
@@ -286,8 +289,8 @@ def main():
         help="SIGMA atlas labels CSV for territory mapping in weight plots",
     )
     parser.add_argument(
-        "--target", choices=["dose", "auc"], default="dose",
-        help="Target variable: 'dose' (ordinal C=0..H=3) or 'auc' (continuous AUC)",
+        "--target", type=str, default="dose",
+        help="Target variable: 'dose' (ordinal C=0..H=3) or any column name from the wide CSV",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=1000,
