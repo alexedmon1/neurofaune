@@ -63,12 +63,18 @@ def discover_sigma_images(
             if session_filter and session != session_filter:
                 continue
 
-            dwi_dir = session_dir / "dwi"
-            if not dwi_dir.is_dir():
+            # Determine modality subdirectory from metric name
+            dwi_metrics = {"FA", "MD", "AD", "RD", "L1", "L2", "L3"}
+            msme_metrics = {"T2", "MWF", "IWF", "CSFF"}
+            if metric in msme_metrics:
+                modality_dir = session_dir / "msme"
+            else:
+                modality_dir = session_dir / "dwi"
+            if not modality_dir.is_dir():
                 continue
 
             # Look for the SIGMA-space metric file
-            sigma_file = dwi_dir / f"{subject}_{session}_space-SIGMA_{metric}.nii.gz"
+            sigma_file = modality_dir / f"{subject}_{session}_space-SIGMA_{metric}.nii.gz"
             if sigma_file.exists():
                 results.append({
                     "subject": subject,

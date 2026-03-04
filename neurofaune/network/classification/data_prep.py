@@ -203,10 +203,11 @@ def prepare_classification_data(
             y = np.array([val_to_int[v] for v in raw], dtype=int)
             label_names = list(unique_sorted)
 
-    info_cols = ["subject", "session", "dose", "cohort"]
-    if "sex" in df.columns:
-        info_cols.append("sex")
-    sample_info = df[[c for c in info_cols if c in df.columns]].reset_index(drop=True)
+    # Include all non-feature columns as metadata (subject, session, dose,
+    # cohort, sex, auc, etc.) so downstream consumers can access them.
+    feature_set_cols = set(feature_names)
+    info_cols = [c for c in df.columns if c not in feature_set_cols]
+    sample_info = df[info_cols].reset_index(drop=True)
 
     logger.info(
         "Classification data: n=%d, features=%d, groups=%s",
@@ -309,9 +310,8 @@ def prepare_regression_data(
             X, df, dose_labels, y = X[valid], df[valid].copy(), dose_labels[valid], y[valid]
         target_name = target
 
-    info_cols = ["subject", "session", "dose", "cohort"]
-    if "sex" in df.columns:
-        info_cols.append("sex")
+    feature_set_cols = set(feature_names)
+    info_cols = [c for c in df.columns if c not in feature_set_cols]
     sample_info = df[info_cols].reset_index(drop=True)
 
     logger.info(

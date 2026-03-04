@@ -64,6 +64,8 @@ def load_and_prepare_data(
 
     # Identify ROI columns (everything except metadata)
     meta_cols = {"subject", "session", "dose", "sex", "cohort"}
+    # Also treat AUC and other non-ROI numeric columns as metadata
+    meta_cols.update(c for c in df.columns if c.startswith("AUC_") or c == "auc")
     all_roi_cols = [c for c in df.columns if c not in meta_cols]
 
     # Separate region ROIs from territory ROIs
