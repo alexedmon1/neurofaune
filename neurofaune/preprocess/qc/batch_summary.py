@@ -822,7 +822,9 @@ def _get_key_metrics(modality: str) -> List[str]:
             'motion_mean_fd',
             'motion_max_fd',
             'motion_pct_bad_volumes',
-            'motion_mean_dvars'
+            'motion_mean_dvars',
+            'registration_correlation',
+            'registration_nmi',
         ],
         'msme': ['t2_mean', 'mwf_mean', 'iwf_mean'],
     }
