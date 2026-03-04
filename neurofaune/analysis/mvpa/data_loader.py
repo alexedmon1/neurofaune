@@ -170,21 +170,22 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
     has_target_values = target_values_path.exists()
 
     # Determine design type from column names or design structure
-    columns = summary.get("columns", [])
+    raw_columns = summary.get("columns", [])
+    # Normalise: columns may be plain strings or dicts with "name"/"type" keys
+    col_names = [
+        c if isinstance(c, str) else c.get("name", "")
+        for c in raw_columns
+    ]
     design_type = "categorical"
 
     # Check if this is a dose-response design (has dose_numeric column)
-    for col in columns:
-        if "dose_numeric" in col.get("name", ""):
-            design_type = "dose_response"
-            break
+    if any("dose_numeric" in c for c in col_names):
+        design_type = "dose_response"
 
     # Check for continuous-target response design (any non-dose covariate)
-    for col in columns:
-        col_name = col.get("name", "")
-        if col_name not in ("dose_numeric", "Intercept", "") and col.get("type", "") != "categorical":
-            # If there's a non-dose covariate, this is a target response design
-            if "dose_numeric" not in col_name:
+    if design_type == "categorical":
+        for c in col_names:
+            if c not in ("dose_numeric", "Intercept", "") and "dose_numeric" not in c:
                 design_type = "target_response"
                 break
 
@@ -205,8 +206,9 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
         # the design matrix. The design_summary includes group info.
         design_matrix = summary.get("design_matrix", [])
         dose_columns = [
-            c for c in columns
-            if c.get("name", "").startswith("dose_")
+            c for c in raw_columns
+            if isinstance(c, dict)
+            and c.get("name", "").startswith("dose_")
             and "numeric" not in c.get("name", "")
         ]
 
@@ -227,7 +229,9 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
     elif design_type in ("dose_response", "target_response"):
         # For dose-response or target-response, extract numeric values
         target_col = None
-        for col in columns:
+        for col in raw_columns:
+            if not isinstance(col, dict):
+                continue
             col_name = col.get("name", "")
             if col_name == "dose_numeric":
                 target_col = col

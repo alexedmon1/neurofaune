@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
 """
-MVPA (Multi-Voxel Pattern Analysis) runner for SIGMA-space DTI metrics.
+MVPA (Multi-Voxel Pattern Analysis) runner for SIGMA-space metrics.
 
-Runs whole-brain decoding and optional searchlight mapping per metric,
-cohort, and analysis type (classification + dose-response). Uses nilearn
-Decoder and SearchLight on individual SIGMA-space NIfTIs discovered from
-the derivatives tree.
+Runs whole-brain decoding and/or searchlight mapping per metric,
+cohort, and analysis type. Uses nilearn Decoder and SearchLight on
+individual SIGMA-space NIfTIs discovered from the derivatives tree.
+
+For continuous targets (log_auc, auc, etc.): use --searchlight-only to
+skip whole-brain decoding and run searchlight Ridge regression with R²
+scoring and FWER correction.
 
 Usage:
+    # Classification + dose-response:
     uv run python scripts/run_mvpa_analysis.py \
         --design-dir $STUDY_ROOT/analysis/mvpa/designs \
         --derivatives-root $STUDY_ROOT/derivatives \
         --output-dir $STUDY_ROOT/analysis/mvpa \
-        --mask $STUDY_ROOT/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Template_Masked.nii.gz \
+        --mask $STUDY_ROOT/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Mask.nii.gz \
         --metrics FA MD AD RD \
         --n-permutations 1000
 
-    # With searchlight (computationally expensive):
+    # Searchlight-only for continuous targets:
     uv run python scripts/run_mvpa_analysis.py \
-        --design-dir ... --derivatives-root ... --output-dir ... --mask ... \
-        --run-searchlight --searchlight-radius 2.0 --searchlight-n-jobs 4
+        --design-dir $STUDY_ROOT/analysis/mvpa/designs \
+        --derivatives-root $STUDY_ROOT/derivatives \
+        --output-dir $STUDY_ROOT/analysis/mvpa \
+        --mask $STUDY_ROOT/atlas/SIGMA_study_space/SIGMA_InVivo_Brain_Mask.nii.gz \
+        --metrics FA MD AD RD \
+        --searchlight-only --searchlight-radius 2.0 --searchlight-n-jobs 4
 """
 
 import argparse
@@ -92,8 +100,14 @@ def run_single_mvpa(
     sl_cv_folds,
     sl_n_jobs,
     sl_n_perm_fwer,
+    searchlight_only=False,
 ):
-    """Run MVPA for one metric + design + analysis_type combination."""
+    """Run MVPA for one metric + design + analysis_type combination.
+
+    If searchlight_only=True, skips whole-brain decoding and only runs
+    searchlight. This is the appropriate mode for continuous targets
+    (target_response) where whole-brain Decoder is not suitable.
+    """
     combo_label = f"{metric}/{design_name}/{analysis_type}"
     logger.info("\n%s\n  %s\n%s", "=" * 60, combo_label, "=" * 60)
 
@@ -151,63 +165,65 @@ def run_single_mvpa(
             for i, name in enumerate(label_names)
         }
 
-    # --- Whole-brain decoding (always runs) ---
-    logger.info("[Phase 1] Whole-brain decoding...")
-    wb_dir = combo_dir / "whole_brain"
-    wb_results = run_whole_brain_decoding(
-        images_4d=images_4d,
-        labels=encoded_labels,
-        mask_img=mask_img,
-        analysis_type=analysis_type,
-        n_permutations=n_permutations,
-        cv_folds=min(cv_folds, n_samples),
-        screening_percentile=screening_percentile,
-        seed=seed,
-        output_dir=wb_dir,
-    )
-
-    summary["whole_brain"] = {
-        "mean_score": wb_results["mean_score"],
-        "std_score": wb_results["std_score"],
-        "permutation_p": wb_results["permutation_p"],
-        "score_label": wb_results["score_label"],
-    }
-
-    # Visualizations for whole-brain
-    logger.info("[Phase 2] Whole-brain visualizations...")
-    score_label = "Accuracy" if analysis_type == "classification" else "R\u00b2"
-
-    plot_weight_map(
-        wb_results["weight_img"], mask_img,
-        wb_dir / "weight_map.png",
-        title=f"Decoder Weights \u2014 {metric} {design_name} ({analysis_type})",
-    )
-    plot_glass_brain(
-        wb_results["weight_img"],
-        wb_dir / "glass_brain.png",
-        title=f"Glass Brain \u2014 {metric} {design_name}",
-    )
-    plot_decoding_scores(
-        wb_results["fold_scores"],
-        wb_results["null_distribution"],
-        wb_results["mean_score"],
-        wb_results["permutation_p"],
-        wb_dir / "decoding_scores.png",
-        title=f"Decoding \u2014 {metric} {design_name} ({analysis_type})",
-        metric_label=score_label,
-    )
-
-    if analysis_type == "dose_response":
-        plot_dose_response_brain(
-            wb_results["weight_img"],
-            wb_dir / "dose_response_weights.png",
-            title=f"Dose-Response Weights \u2014 {metric} {design_name}",
-            bg_img=mask_img,
+    # --- Whole-brain decoding (skip for searchlight_only or target_response) ---
+    if not searchlight_only:
+        logger.info("[Phase 1] Whole-brain decoding...")
+        wb_dir = combo_dir / "whole_brain"
+        wb_results = run_whole_brain_decoding(
+            images_4d=images_4d,
+            labels=encoded_labels,
+            mask_img=mask_img,
+            analysis_type=analysis_type,
+            n_permutations=n_permutations,
+            cv_folds=min(cv_folds, n_samples),
+            screening_percentile=screening_percentile,
+            seed=seed,
+            output_dir=wb_dir,
         )
 
-    # --- Searchlight (optional) ---
-    if run_sl:
-        logger.info("[Phase 3] Searchlight...")
+        summary["whole_brain"] = {
+            "mean_score": wb_results["mean_score"],
+            "std_score": wb_results["std_score"],
+            "permutation_p": wb_results["permutation_p"],
+            "score_label": wb_results["score_label"],
+        }
+
+        # Visualizations for whole-brain
+        logger.info("[Phase 2] Whole-brain visualizations...")
+        score_label = "Accuracy" if analysis_type == "classification" else "R\u00b2"
+
+        plot_weight_map(
+            wb_results["weight_img"], mask_img,
+            wb_dir / "weight_map.png",
+            title=f"Decoder Weights \u2014 {metric} {design_name} ({analysis_type})",
+        )
+        plot_glass_brain(
+            wb_results["weight_img"],
+            wb_dir / "glass_brain.png",
+            title=f"Glass Brain \u2014 {metric} {design_name}",
+        )
+        plot_decoding_scores(
+            wb_results["fold_scores"],
+            wb_results["null_distribution"],
+            wb_results["mean_score"],
+            wb_results["permutation_p"],
+            wb_dir / "decoding_scores.png",
+            title=f"Decoding \u2014 {metric} {design_name} ({analysis_type})",
+            metric_label=score_label,
+        )
+
+        if analysis_type in ("dose_response", "target_response"):
+            plot_dose_response_brain(
+                wb_results["weight_img"],
+                wb_dir / "dose_response_weights.png",
+                title=f"Regression Weights \u2014 {metric} {design_name}",
+                bg_img=mask_img,
+            )
+
+    # --- Searchlight ---
+    if run_sl or searchlight_only:
+        phase = "[Phase 1]" if searchlight_only else "[Phase 3]"
+        logger.info("%s Searchlight (Ridge R\u00b2)...", phase)
         sl_dir = combo_dir / "searchlight"
         sl_results = run_searchlight(
             images_4d=images_4d,
@@ -244,11 +260,14 @@ def run_single_mvpa(
 
 def write_design_description(args, output_path):
     """Write a human-readable description of the MVPA analysis."""
+    searchlight_only = getattr(args, "searchlight_only", False)
+
     lines = [
         "ANALYSIS DESCRIPTION",
         "====================",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "Analysis: MVPA (Multi-Voxel Pattern Analysis)",
+        f"Mode: {'Searchlight-only' if searchlight_only else 'Full (decoding + searchlight)'}",
         "",
         "DATA SOURCE",
         "-----------",
@@ -257,24 +276,31 @@ def write_design_description(args, output_path):
         f"Brain mask: {args.mask}",
         f"Metrics: {', '.join(args.metrics)}",
         "",
-        "WHOLE-BRAIN DECODING",
-        "--------------------",
-        "- nilearn Decoder with ANOVA feature screening",
-        f"- Screening percentile: {args.screening_percentile}% (top voxels within mask)",
-        f"- Cross-validation: StratifiedKFold({args.cv_folds})",
-        f"- Permutation test: {args.n_permutations} shuffles for empirical p",
-        "- Classification: Linear SVM (L1 penalty)",
-        "- Dose-response: Ridge regression (alpha=1.0)",
-        "",
     ]
 
+    if not searchlight_only:
+        lines.extend([
+            "WHOLE-BRAIN DECODING",
+            "--------------------",
+            "- nilearn Decoder with ANOVA feature screening",
+            f"- Screening percentile: {args.screening_percentile}% (top voxels within mask)",
+            f"- Cross-validation: StratifiedKFold({args.cv_folds})",
+            f"- Permutation test: {args.n_permutations} shuffles for empirical p",
+            "- Classification: Linear SVM (L1 penalty)",
+            "- Dose-response: Ridge regression (alpha=1.0)",
+            "",
+        ])
+
     if args.run_searchlight:
+        cv_type = "KFold" if searchlight_only else "StratifiedKFold/KFold"
         lines.extend([
             "SEARCHLIGHT MAPPING",
             "-------------------",
             f"- Sphere radius: {args.searchlight_radius} mm (scaled space)",
-            f"- Cross-validation: StratifiedKFold({args.searchlight_cv_folds})",
-            "- Max-statistic FWER correction (100 label permutations, p<0.05)",
+            f"- Cross-validation: {cv_type}({args.searchlight_cv_folds})",
+            "- Classification: LinearSVC, scoring=accuracy",
+            "- Regression: Ridge (alpha=1.0), scoring=R\u00b2",
+            f"- Max-statistic FWER correction ({getattr(args, 'searchlight_n_perm_fwer', 100)} label permutations, p<0.05)",
             f"- Parallel jobs: {args.searchlight_n_jobs}",
             "",
         ])
@@ -282,12 +308,15 @@ def write_design_description(args, output_path):
     lines.extend([
         "ANALYSIS MODES",
         "--------------",
-        "1. Classification: categorical dose groups (C, L, M, H)",
-        "   - Metric: accuracy",
     ])
+    if not searchlight_only:
+        lines.extend([
+            "1. Classification: categorical dose groups (C, L, M, H)",
+            "   - Metric: accuracy",
+        ])
     if not args.skip_dose_response:
         lines.extend([
-            "2. Dose-response: ordinal dose (0, 1, 2, 3)",
+            "2. Dose-response / target-response: continuous regression",
             "   - Metric: R\u00b2",
         ])
 
@@ -356,6 +385,10 @@ def main():
         help="Parallel jobs for searchlight (default: 1)",
     )
     parser.add_argument(
+        "--searchlight-n-perm-fwer", type=int, default=100,
+        help="Number of label permutations for FWER correction (default: 100)",
+    )
+    parser.add_argument(
         "--seed", type=int, default=42,
         help="Random seed for reproducibility",
     )
@@ -363,8 +396,17 @@ def main():
         "--skip-dose-response", action="store_true",
         help="Skip dose-response regression, only run classification",
     )
+    parser.add_argument(
+        "--searchlight-only", action="store_true",
+        help="Run searchlight only (skip whole-brain decoding). "
+             "Appropriate for continuous targets where Decoder is not suitable.",
+    )
 
     args = parser.parse_args()
+
+    # --searchlight-only implies --run-searchlight
+    if args.searchlight_only:
+        args.run_searchlight = True
 
     # Validate inputs
     if not args.derivatives_root.exists():
@@ -394,6 +436,7 @@ def main():
         "cv_folds": args.cv_folds,
         "screening_percentile": args.screening_percentile,
         "run_searchlight": args.run_searchlight,
+        "searchlight_only": args.searchlight_only,
         "searchlight_radius": args.searchlight_radius,
         "searchlight_cv_folds": args.searchlight_cv_folds,
         "searchlight_n_jobs": args.searchlight_n_jobs,
@@ -420,16 +463,16 @@ def main():
 
     # Separate categorical and response designs (dose_response_*, {target}_response_*)
     categorical_designs = {}
-    dose_response_designs = {}
+    response_designs = {}
     for k, v in design_dirs.items():
         if "_response_" in k or k.endswith("_response_pooled"):
-            dose_response_designs[k] = v
+            response_designs[k] = v
         elif k.startswith("per_pnd_") or k == "pooled":
             categorical_designs[k] = v
         else:
-            # Unknown — treat as dose-response if name suggests response
+            # Unknown — treat as response if name suggests it
             if "response" in k:
-                dose_response_designs[k] = v
+                response_designs[k] = v
             else:
                 categorical_designs[k] = v
 
@@ -439,56 +482,21 @@ def main():
     total_n_subjects = 0
     n_searchlight_sig = 0
 
-    n_dose = 0 if args.skip_dose_response else len(dose_response_designs)
-    total_tasks = len(args.metrics) * (len(categorical_designs) + n_dose)
+    # In searchlight-only mode, skip classification designs
+    n_cat = 0 if args.searchlight_only else len(categorical_designs)
+    n_resp = 0 if args.skip_dose_response else len(response_designs)
+    total_tasks = len(args.metrics) * (n_cat + n_resp)
     progress = AnalysisProgress(args.output_dir, "run_mvpa_analysis.py", total_tasks)
     completed = 0
 
     for metric in args.metrics:
         metric_summaries = {}
 
-        # Classification analyses (categorical designs)
-        for design_name, design_path in categorical_designs.items():
-            progress.update(
-                task=f"{metric} / {design_name} / classification",
-                phase="running",
-                completed=completed,
-            )
-
-            summary = run_single_mvpa(
-                metric=metric,
-                design_name=design_name,
-                design_dir=design_path,
-                derivatives_root=args.derivatives_root,
-                mask_img=mask_img,
-                analysis_type="classification",
-                output_dir=args.output_dir,
-                n_permutations=args.n_permutations,
-                cv_folds=args.cv_folds,
-                screening_percentile=args.screening_percentile,
-                seed=args.seed,
-                run_sl=args.run_searchlight,
-                sl_radius=args.searchlight_radius,
-                sl_cv_folds=args.searchlight_cv_folds,
-                sl_n_jobs=args.searchlight_n_jobs,
-                sl_n_perm_fwer=100,
-            )
-            metric_summaries[f"{design_name}_classification"] = summary
-            completed += 1
-
-            if summary.get("status") == "completed":
-                total_n_subjects = max(total_n_subjects, summary.get("n_subjects", 0))
-                wb = summary.get("whole_brain", {})
-                if wb.get("score_label") == "accuracy":
-                    best_accuracy = max(best_accuracy, wb.get("mean_score", 0))
-                sl = summary.get("searchlight", {})
-                n_searchlight_sig += sl.get("n_significant_voxels", 0)
-
-        # Dose-response analyses
-        if not args.skip_dose_response:
-            for design_name, design_path in dose_response_designs.items():
+        # Classification analyses (categorical designs) — skip in searchlight-only mode
+        if not args.searchlight_only:
+            for design_name, design_path in categorical_designs.items():
                 progress.update(
-                    task=f"{metric} / {design_name} / dose_response",
+                    task=f"{metric} / {design_name} / classification",
                     phase="running",
                     completed=completed,
                 )
@@ -499,7 +507,7 @@ def main():
                     design_dir=design_path,
                     derivatives_root=args.derivatives_root,
                     mask_img=mask_img,
-                    analysis_type="dose_response",
+                    analysis_type="classification",
                     output_dir=args.output_dir,
                     n_permutations=args.n_permutations,
                     cv_folds=args.cv_folds,
@@ -509,9 +517,54 @@ def main():
                     sl_radius=args.searchlight_radius,
                     sl_cv_folds=args.searchlight_cv_folds,
                     sl_n_jobs=args.searchlight_n_jobs,
-                    sl_n_perm_fwer=100,
+                    sl_n_perm_fwer=args.searchlight_n_perm_fwer,
                 )
-                metric_summaries[f"{design_name}_dose_response"] = summary
+                metric_summaries[f"{design_name}_classification"] = summary
+                completed += 1
+
+                if summary.get("status") == "completed":
+                    total_n_subjects = max(total_n_subjects, summary.get("n_subjects", 0))
+                    wb = summary.get("whole_brain", {})
+                    if wb.get("score_label") == "accuracy":
+                        best_accuracy = max(best_accuracy, wb.get("mean_score", 0))
+                    sl = summary.get("searchlight", {})
+                    n_searchlight_sig += sl.get("n_significant_voxels", 0)
+
+        # Response designs (dose_response or target_response)
+        if not args.skip_dose_response:
+            for design_name, design_path in response_designs.items():
+                # Determine analysis type from design name
+                if "dose_response" in design_name:
+                    analysis_type = "dose_response"
+                else:
+                    analysis_type = "target_response"
+
+                progress.update(
+                    task=f"{metric} / {design_name} / {analysis_type}",
+                    phase="running",
+                    completed=completed,
+                )
+
+                summary = run_single_mvpa(
+                    metric=metric,
+                    design_name=design_name,
+                    design_dir=design_path,
+                    derivatives_root=args.derivatives_root,
+                    mask_img=mask_img,
+                    analysis_type=analysis_type,
+                    output_dir=args.output_dir,
+                    n_permutations=args.n_permutations,
+                    cv_folds=args.cv_folds,
+                    screening_percentile=args.screening_percentile,
+                    seed=args.seed,
+                    run_sl=args.run_searchlight,
+                    sl_radius=args.searchlight_radius,
+                    sl_cv_folds=args.searchlight_cv_folds,
+                    sl_n_jobs=args.searchlight_n_jobs,
+                    sl_n_perm_fwer=args.searchlight_n_perm_fwer,
+                    searchlight_only=args.searchlight_only,
+                )
+                metric_summaries[f"{design_name}_{analysis_type}"] = summary
                 completed += 1
 
                 if summary.get("status") == "completed":

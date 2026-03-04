@@ -1,9 +1,13 @@
 """
-Searchlight MVPA analysis using nilearn SearchLight.
+Searchlight analysis using nilearn SearchLight.
 
-Maps local discriminability across the brain by running a classifier
-in a sliding sphere. Optional max-statistic FWER correction via
-label permutations.
+Maps local predictability across the brain by running a classifier or
+regressor in a sliding sphere. Optional max-statistic FWER correction
+via label permutations.
+
+For continuous targets (target_response, dose_response), uses Ridge
+regression with R² scoring and KFold cross-validation.
+For classification, uses LinearSVC with accuracy and StratifiedKFold.
 """
 
 import json
@@ -13,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import nibabel as nib
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,7 @@ def run_searchlight(
         images_4d: 4D Nifti1Image (subjects along 4th dimension).
         labels: Group labels (str for classification, numeric for regression).
         mask_img: Brain mask Nifti1Image.
-        analysis_type: 'classification' or 'dose_response'.
+        analysis_type: 'classification', 'dose_response', or 'target_response'.
         radius: Searchlight sphere radius in mm (default: 2.0 for scaled space).
         cv_folds: Number of cross-validation folds.
         n_jobs: Number of parallel jobs for SearchLight.
@@ -57,17 +61,16 @@ def run_searchlight(
         from sklearn.svm import LinearSVC
         estimator = LinearSVC(dual=False, max_iter=10000, random_state=seed)
         scoring = "accuracy"
-        stratify_labels = labels_arr
+        cv = StratifiedKFold(n_splits=min(cv_folds, n_samples), shuffle=True,
+                             random_state=seed)
     else:
+        # Regression: Ridge with KFold (no stratification needed)
         from sklearn.linear_model import Ridge
         estimator = Ridge(alpha=1.0)
         scoring = "r2"
         labels_arr = labels_arr.astype(float)
-        bins = np.digitize(labels_arr, np.percentile(labels_arr, [25, 50, 75]))
-        stratify_labels = bins
-
-    cv = StratifiedKFold(n_splits=min(cv_folds, n_samples), shuffle=True,
-                         random_state=seed)
+        cv = KFold(n_splits=min(cv_folds, n_samples), shuffle=True,
+                   random_state=seed)
 
     logger.info(
         "Searchlight: %s, n=%d, radius=%.1fmm, cv=%d-fold, n_jobs=%d",
