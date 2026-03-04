@@ -418,15 +418,20 @@ def main():
 
     logger.info("Found %d designs: %s", len(design_dirs), list(design_dirs.keys()))
 
-    # Separate categorical and dose-response/AUC-response designs
-    categorical_designs = {
-        k: v for k, v in design_dirs.items()
-        if not k.startswith("dose_response") and not k.startswith("auc_response")
-    }
-    dose_response_designs = {
-        k: v for k, v in design_dirs.items()
-        if k.startswith("dose_response") or k.startswith("auc_response")
-    }
+    # Separate categorical and response designs (dose_response_*, {target}_response_*)
+    categorical_designs = {}
+    dose_response_designs = {}
+    for k, v in design_dirs.items():
+        if "_response_" in k or k.endswith("_response_pooled"):
+            dose_response_designs[k] = v
+        elif k.startswith("per_pnd_") or k == "pooled":
+            categorical_designs[k] = v
+        else:
+            # Unknown — treat as dose-response if name suggests response
+            if "response" in k:
+                dose_response_designs[k] = v
+            else:
+                categorical_designs[k] = v
 
     all_summaries = {}
     best_accuracy = 0.0

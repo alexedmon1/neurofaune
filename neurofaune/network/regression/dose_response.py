@@ -129,6 +129,7 @@ def run_regression(
     use_pca: bool = False,
     continuous_target: bool = False,
     dose_labels: Optional[np.ndarray] = None,
+    target_name: Optional[str] = None,
 ) -> dict:
     """LOOCV regression with SVR, Ridge, and PLS + permutation test.
 
@@ -158,6 +159,8 @@ def run_regression(
     dose_labels : ndarray, optional
         Integer dose group per sample for plot colouring when using a
         continuous target.
+    target_name : str, optional
+        Name of the target variable for axis labels (e.g. 'auc').
 
     Returns
     -------
@@ -248,6 +251,7 @@ def run_regression(
                 out_path=output_dir / f"{reg_name}_predicted_vs_actual.png",
                 continuous_target=continuous_target,
                 dose_labels=dose_labels,
+                target_name=target_name,
             )
             plot_permutation_distribution(
                 null_r2, r2, perm_p,

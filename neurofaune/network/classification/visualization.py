@@ -344,6 +344,7 @@ def plot_predicted_vs_actual(
     out_path: Optional[Path] = None,
     continuous_target: bool = False,
     dose_labels: Optional[np.ndarray] = None,
+    target_name: Optional[str] = None,
 ) -> None:
     """Scatter plot of predicted vs actual values with identity line.
 
@@ -374,6 +375,9 @@ def plot_predicted_vs_actual(
         Integer dose group per sample for colouring when using continuous
         target. If None with ``continuous_target=True``, all points are
         one colour.
+    target_name : str, optional
+        Name of the target variable for axis labels (e.g. 'auc',
+        'bodyweight'). If None, defaults to 'AUC' for backward compat.
     """
     fig, ax = plt.subplots(figsize=(6, 5))
     colors = _get_colors(label_names)
@@ -397,8 +401,9 @@ def plot_predicted_vs_actual(
                 c="#1a5276", s=40, alpha=0.7,
                 edgecolors="white", linewidths=0.5,
             )
-        xlabel = "True AUC"
-        ylabel = "Predicted AUC"
+        _tname = target_name or "AUC"
+        xlabel = f"True {_tname}"
+        ylabel = f"Predicted {_tname}"
     else:
         # Ordinal — jitter at integer positions
         rng = np.random.default_rng(0)

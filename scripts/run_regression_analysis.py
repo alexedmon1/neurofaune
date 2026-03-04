@@ -121,6 +121,7 @@ def run_single_regression(
         use_pca=use_pca,
         continuous_target=continuous,
         dose_labels=dose_labels,
+        target_name=target_name if continuous else None,
     )
 
     # Serialise regression results
