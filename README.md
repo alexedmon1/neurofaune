@@ -219,63 +219,39 @@ fc_matrix = compute_fc_matrix(timeseries)  # Pearson r → Fisher z
 
 ### Covariance Network Analysis (CovNet)
 
-Builds Spearman correlation matrices per experimental group and compares them using NBS, graph metrics, and whole-network tests. Supports bilateral ROI averaging and territory-level analysis.
-
-**All-in-one** (prepare + all tests):
+Builds Spearman correlation matrices per experimental group and compares them using NBS, graph theory, and whole-network tests. Each analysis is a separate script that independently prepares data and runs its test, so failures in one don't block others.
 
 ```bash
-uv run python scripts/run_covnet_analysis.py \
+# NBS — edge-level permutation testing (dose vs control within each PND)
+uv run python scripts/run_covnet_nbs.py \
     --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi --metrics FA MD AD RD \
     --exclusion-csv /path/to/exclusions.csv \
-    --output-dir /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD AD RD \
-    --n-permutations 5000 --seed 42
+    --n-permutations 1000 --nbs-threshold 3.0 --n-workers 4
 
-# Edge-level regression with continuous AUC covariate
-uv run python scripts/run_covnet_analysis.py \
+# Graph theory — clustering, centrality, small-worldness with permutation comparison
+uv run python scripts/run_covnet_graph_theory.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD AD RD \
-    --target auc --auc-csv /path/to/auc_lookup.csv \
-    --n-permutations 5000
-```
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv \
+    --n-permutations 1000 --densities 0.15 0.20 --n-workers 4
 
-**Step-by-step** (prepare once, run tests independently):
-
-```bash
-# Step 1: Prepare data and correlation matrices
-uv run python scripts/covnet_prepare.py \
+# Whole-network — Mantel, Frobenius, spectral divergence tests
+uv run python scripts/run_covnet_whole_network.py \
     --roi-dir /path/to/network/roi \
-    --covnet-root /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD AD RD
+    --output-dir /path/to/network/covnet \
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv \
+    --n-permutations 1000 --n-workers 4
 
-# Step 2: Network-Based Statistic (edge-level permutation testing)
-uv run python scripts/covnet_nbs.py \
-    --covnet-root /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD --comparisons dose cross-timepoint \
-    --n-permutations 5000 --nbs-threshold 3.0 --n-workers 8
-
-# Step 3: Territory-level Fisher z-tests with FDR correction
-uv run python scripts/covnet_territory.py \
-    --covnet-root /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD --comparisons dose cross-timepoint
-
-# Step 4: Graph metrics (efficiency, clustering, modularity, small-worldness)
-uv run python scripts/covnet_graph_metrics.py \
-    --covnet-root /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD --densities 0.10 0.15 0.20 0.25 --n-permutations 5000
-
-# Step 5: Whole-network similarity (Mantel, Frobenius, spectral divergence)
-uv run python scripts/covnet_whole_network.py \
-    --covnet-root /path/to/network/covnet \
-    --modality dwi \
-    --metrics FA MD --comparisons dose cross-timepoint --n-workers 8
+# Territory — post-hoc Fisher z + FDR at coarse anatomical level
+uv run python scripts/run_covnet_territory.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv
 ```
 
 ```python
@@ -283,16 +259,24 @@ from neurofaune.network.covnet import CovNetAnalysis
 
 analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
 analysis.save()
-
-# Group-based comparisons
-analysis = CovNetAnalysis.load(covnet_root, "dwi", "FA")
 analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
+analysis.run_graph_metrics(n_perm=1000)
+analysis.run_whole_network(n_perm=1000)
 analysis.run_territory()
-analysis.run_graph_metrics()
-analysis.run_whole_network()
+```
 
-# Edge-level regression with continuous covariate (e.g. AUC)
-analysis.run_edge_regression(covariate_map=auc_dict, covariate_name="AUC")
+### Edge Regression
+
+Edge-level regression testing whether pairwise ROI co-variation scales with a continuous covariate (e.g. log-AUC). Uses NBS-style component extraction with permutation FWER correction. This is appropriate **only for continuous targets** — for categorical group comparisons, use NBS instead. Results are saved under `network/edge_regression/`, separate from CovNet.
+
+```bash
+uv run python scripts/run_edge_regression.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/edge_regression \
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv \
+    --target log_auc --auc-csv /path/to/auc_lookup.csv \
+    --n-permutations 1000 --seed 42
 ```
 
 ### Classification

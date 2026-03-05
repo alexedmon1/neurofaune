@@ -1,21 +1,22 @@
 """Covariance Network (CovNet) analysis pipeline.
 
 Provides the ``CovNetAnalysis`` class: prepare data once, then run any
-combination of NBS, territory, graph-metric, or whole-network tests.
-Serializable to / from disk so each test can run independently.
+combination of NBS, territory, graph theory, or whole-network tests.
+Each test has a corresponding standalone script in ``scripts/``:
+
+- ``run_covnet_nbs.py`` — NBS permutation testing
+- ``run_covnet_territory.py`` — Territory-level Fisher z + FDR (post-hoc)
+- ``run_covnet_graph_theory.py`` — Graph-theoretic metric comparisons
+- ``run_covnet_whole_network.py`` — Mantel/Frobenius/spectral tests
+
+Edge regression (continuous targets) is separate: see
+``neurofaune.network.edge_regression`` and ``run_edge_regression.py``.
 
 Typical usage::
 
-    # Prepare and save
     analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
     analysis.save()
-
-    # Load and run individual tests
-    analysis = CovNetAnalysis.load(covnet_root, "dwi", "FA")
     analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
-    analysis.run_territory()
-    analysis.run_graph_metrics()
-    analysis.run_whole_network()
 """
 
 import json
@@ -26,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from .graph_metrics import compare_metrics, compute_metrics
-from .nbs import fisher_z_edge_test, network_based_regression
+from .nbs import fisher_z_edge_test
 from .nbs import run_all_comparisons as _run_nbs_comparisons
 from .visualization import (
     plot_all_group_heatmaps,
@@ -906,200 +907,3 @@ class CovNetAnalysis:
         )
         return wn_df, wn_nulls
 
-    def run_edge_regression(
-        self,
-        covariate_map: dict[str, float] | None = None,
-        covariate_name: str = "AUC",
-        cohort_filter: str | None = None,
-        n_perm: int = 5000,
-        threshold: float = 3.0,
-        seed: int = 42,
-    ) -> dict:
-        """Run edge-level regression testing whether edge co-variation scales with a covariate.
-
-        Parameters
-        ----------
-        covariate_map : dict[str, float], optional
-            Mapping from subject_key (e.g. ``"sub-Rat001_ses-p60"``) to
-            covariate value. If None, the covariate is loaded from the
-            wide CSV column named by *covariate_name*.
-        covariate_name : str
-            Name for the covariate (used in logging/output). When
-            *covariate_map* is None, this is also the column name to
-            look up in the wide CSV.
-        cohort_filter : str, optional
-            If set (e.g. ``"p60"``), restrict to groups matching this PND.
-            If None, pool all subjects across groups.
-        n_perm : int
-            Number of permutations for NBS null distribution.
-        threshold : float
-            |t|-statistic threshold for suprathreshold edges.
-        seed : int
-            Random seed.
-
-        Returns
-        -------
-        dict with keys per analysis run (e.g. "pooled" or "p60"):
-            Each contains NBS regression result dict.
-        """
-        logger.info(
-            "Edge regression: %s (%s, threshold=%.1f, n_perm=%d)",
-            self.metric, covariate_name, threshold, n_perm,
-        )
-
-        # Reconstruct per-subject data from group arrays
-        # group_arrays keys are like "p30_C", "p60_H"
-        all_results = {}
-
-        # Determine which groups to include
-        if cohort_filter:
-            groups = [g for g in self.group_labels if g.startswith(cohort_filter)]
-        else:
-            groups = self.group_labels
-
-        if not groups:
-            logger.warning("No groups match cohort_filter=%s", cohort_filter)
-            return {}
-
-        # Stack subject data and covariates
-        data_rows = []
-        cov_values = []
-
-        for group_label in groups:
-            arr = self.group_arrays.get(group_label)
-            if arr is None:
-                continue
-
-            # Reconstruct subject keys for this group
-            # We need the original data; group_arrays don't store keys.
-            # Instead, match subjects from the covariate_map that belong
-            # to this PND x dose group by checking key patterns.
-            # This is imperfect — better to use the raw DataFrame.
-            # For now, filter covariate_map keys by PND prefix.
-            pass
-
-        # Load from the wide CSV and match directly.
-        # CovNetAnalysis stores group_arrays but not individual subject
-        # keys, so we load ROI data fresh and filter/match with covariate.
-
-        from neurofaune.network.matrices import bilateral_average, load_and_prepare_data
-
-        if self.roi_dir is None:
-            logger.error("roi_dir not set — needed for edge regression (re-run prepare or check metadata)")
-            return {}
-
-        wide_csv = self.roi_dir / f"roi_{self.metric}_wide.csv"
-        if not wide_csv.exists():
-            logger.error("Cannot find wide CSV for %s at %s", self.metric, wide_csv)
-            return {}
-
-        exclusion_csv = None  # Already filtered during prepare()
-        df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
-        df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()
-
-        if cohort_filter:
-            df = df[df["cohort"] == cohort_filter].copy()
-
-        # Bilateral average
-        df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
-        region_cols = [c for c in bilateral_cols if not c.startswith("territory_")]
-
-        # Build covariate_map from wide CSV column if not provided
-        if covariate_map is None:
-            if covariate_name not in df_bilateral.columns:
-                available = [c for c in df_bilateral.columns
-                             if c not in {"subject", "session", "dose", "cohort", "sex"}
-                             and c not in region_cols]
-                logger.error(
-                    "Covariate column %r not found in wide CSV. Available: %s",
-                    covariate_name, available,
-                )
-                return {}
-            df_bilateral["_key"] = df_bilateral["subject"] + "_" + df_bilateral["session"]
-            covariate_map = dict(zip(
-                df_bilateral["_key"],
-                df_bilateral[covariate_name].astype(float),
-            ))
-            # Remove NaN entries
-            covariate_map = {k: v for k, v in covariate_map.items() if not np.isnan(v)}
-            logger.info(
-                "Built covariate map from column %r: %d values",
-                covariate_name, len(covariate_map),
-            )
-
-        # Build subject keys and match with covariate
-        df_bilateral["_key"] = df_bilateral["subject"] + "_" + df_bilateral["session"]
-        matched = df_bilateral[df_bilateral["_key"].isin(covariate_map)].copy()
-        matched["_cov"] = matched["_key"].map(covariate_map)
-        matched = matched.dropna(subset=["_cov"])
-
-        if len(matched) < 10:
-            logger.warning(
-                "Too few matched subjects (%d) for edge regression", len(matched)
-            )
-            return {}
-
-        X_data = matched[region_cols].values.astype(float)
-        cov_arr = matched["_cov"].values.astype(float)
-
-        cohort_label = cohort_filter if cohort_filter else "pooled"
-        logger.info(
-            "Edge regression %s/%s: n=%d subjects, %d ROIs",
-            self.metric, cohort_label, len(matched), len(region_cols),
-        )
-
-        result = network_based_regression(
-            data=X_data,
-            covariate=cov_arr,
-            n_perm=n_perm,
-            threshold=threshold,
-            seed=seed,
-        )
-
-        # Save results
-        reg_dir = self._test_dir("edge_regression") / cohort_label
-        reg_dir.mkdir(parents=True, exist_ok=True)
-
-        stat_df = pd.DataFrame(
-            result["test_stat"], index=region_cols, columns=region_cols
-        )
-        stat_df.to_csv(reg_dir / "edge_tstats.csv")
-
-        import json as _json
-        components_json = {
-            "covariate": covariate_name,
-            "cohort": cohort_label,
-            "n_subjects": result["n_subjects"],
-            "threshold": threshold,
-            "n_perm": n_perm,
-            "components": [],
-        }
-        for comp in result["significant_components"]:
-            components_json["components"].append({
-                "nodes": comp["nodes"],
-                "node_names": [region_cols[n] for n in comp["nodes"]],
-                "edges": comp["edges"],
-                "edge_names": [
-                    (region_cols[u], region_cols[v]) for u, v in comp["edges"]
-                ],
-                "size": comp["size"],
-                "pvalue": comp["pvalue"],
-            })
-
-        with open(reg_dir / "components.json", "w") as f:
-            _json.dump(components_json, f, indent=2)
-
-        np.savetxt(reg_dir / "null_distribution.txt", result["null_distribution"])
-
-        # Visualization
-        sig_comps = [c for c in result["significant_components"] if c["pvalue"] < 0.05]
-        if sig_comps:
-            plot_nbs_network(
-                result["significant_components"],
-                region_cols,
-                title=f"Edge Regression NBS: {self.metric} ~ {covariate_name} ({cohort_label})",
-                out_path=reg_dir / "nbs_network.png",
-            )
-
-        all_results[cohort_label] = result
-        return all_results
