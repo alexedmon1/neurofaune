@@ -475,6 +475,61 @@ Output group (in analysis/vbm/stats/):
     # Also copy subject_list.txt into stats/ for convenience
     shutil.copy2(subject_list_file, stats_dir / 'subject_list.txt')
 
+    # ── Phase 4.5: Downsample to match smoothing resolution ──
+    voxel_size = mask_img.header.get_zooms()[0]
+    if args.fwhm > voxel_size:
+        target_res = args.fwhm
+        logger.info(
+            f"\n[Phase 4.5] Downsampling from {voxel_size:.1f}mm to "
+            f"{target_res:.1f}mm (matching FWHM)..."
+        )
+
+        # Back up full-resolution files
+        for f in [analysis_mask_file] + [
+            stats_dir / f'all_{t}.nii.gz' for t in args.tissues
+        ]:
+            backup = f.with_name(
+                f.name.replace('.nii.gz', f'_{voxel_size:.1f}mm.nii.gz')
+            )
+            if not backup.exists():
+                shutil.copy2(f, backup)
+                logger.info(f"  Backed up: {f.name} -> {backup.name}")
+
+        # Downsample mask (nearest neighbour)
+        subprocess.run([
+            'flirt',
+            '-in', str(analysis_mask_file),
+            '-ref', str(analysis_mask_file),
+            '-out', str(analysis_mask_file),
+            '-applyisoxfm', str(target_res),
+            '-interp', 'nearestneighbour',
+        ], check=True)
+
+        # Downsample 4D tissue volumes (trilinear — already smoothed)
+        for tissue in args.tissues:
+            tissue_file = stats_dir / f'all_{tissue}.nii.gz'
+            subprocess.run([
+                'flirt',
+                '-in', str(tissue_file),
+                '-ref', str(analysis_mask_file),
+                '-out', str(tissue_file),
+                '-applyisoxfm', str(target_res),
+                '-interp', 'trilinear',
+            ], check=True)
+
+        # Report new dimensions
+        new_mask = nib.load(analysis_mask_file)
+        new_voxels = int(np.count_nonzero(new_mask.get_fdata()))
+        logger.info(
+            f"  Downsampled: {ref_shape} -> {new_mask.shape}, "
+            f"{np.count_nonzero(mask_data):,} -> {new_voxels:,} in-mask voxels"
+        )
+    else:
+        logger.info(
+            f"\n[Phase 4.5] Skipping downsample (voxel size {voxel_size:.1f}mm "
+            f">= FWHM {args.fwhm:.1f}mm)"
+        )
+
     # ── Phase 5: Write VBM config ──
     logger.info("\n[Phase 5] Writing VBM config...")
     vbm_config = {
