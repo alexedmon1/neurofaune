@@ -412,12 +412,34 @@ def _skull_strip_atropos_bet(
     print(f"  Atropos ∩ BET: {n_intersect:,} voxels")
     print(f"  Reduction: {n_atropos:,} -> {n_intersect:,} ({100*(n_atropos - n_intersect)/max(n_atropos, 1):.1f}% removed)")
 
-    # Step 6: Morphological closing (dilate then erode) to fill holes in the mask.
-    # The Atropos ∩ BET intersection can leave small gaps where the two methods
-    # disagree slightly. Closing smooths the boundary and fills internal holes.
-    struct = ndimage.generate_binary_structure(3, 1)  # 6-connected
-    final_mask = ndimage.binary_closing(final_mask, structure=struct, iterations=2)
+    # Step 5b: Keep only the largest connected component per slice.
+    # The Atropos "brightest class" can include scattered non-brain tissue
+    # (e.g. muscle) that happens to be bright on b0. These fragments are
+    # spatially disconnected from the brain and inflate the mask.
+    # We apply LCC per-slice (2D) to avoid dropping entire edge slices in
+    # thin-slab acquisitions where slices may not be 3D-connected.
+    n_before_lcc = int(final_mask.sum())
+    n_removed_total = 0
     for z in range(final_mask.shape[2]):
+        slice_mask = final_mask[:, :, z]
+        labeled, n_components = ndimage.label(slice_mask)
+        if n_components > 1:
+            sizes = ndimage.sum(slice_mask, labeled, range(1, n_components + 1))
+            largest = np.argmax(sizes) + 1
+            final_mask[:, :, z] = (labeled == largest).astype(np.uint8)
+            n_removed_total += int(slice_mask.sum()) - int(final_mask[:, :, z].sum())
+    if n_removed_total > 0:
+        n_after_lcc = int(final_mask.sum())
+        print(f"  Per-slice LCC: {n_after_lcc:,} voxels "
+              f"(removed {n_removed_total:,} from disconnected fragments)")
+
+    # Step 6: Per-slice morphological closing + hole fill.
+    # Done per-slice (2D) to avoid 3D closing eroding boundary slices where
+    # there is no data beyond the volume edge to support them.
+    struct_2d = ndimage.generate_binary_structure(2, 1)  # 4-connected
+    for z in range(final_mask.shape[2]):
+        final_mask[:, :, z] = ndimage.binary_closing(
+            final_mask[:, :, z], structure=struct_2d, iterations=2)
         final_mask[:, :, z] = ndimage.binary_fill_holes(final_mask[:, :, z])
     final_mask = final_mask.astype(np.uint8)
     n_final = int(final_mask.sum())
