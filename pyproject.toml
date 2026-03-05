@@ -28,7 +28,7 @@ dependencies = [
     # Diffusion imaging
     "dipy>=1.11.0",
     # Functional imaging
-    "nilearn>=0.10.0,<0.11",  # For compatibility
+    "nilearn>=0.10.0,<0.11", # For compatibility
     # Scientific computing
     "numpy>=1.24,<3.0",
     "scipy>=1.14",
@@ -45,6 +45,7 @@ dependencies = [
     "natsort>=8.0.0",
     "tedana>=23.0.2",
     "bokeh>=3.3,<3.4",
+    "python-igraph>=1.0.0",
 ]
 
 [project.optional-dependencies]
