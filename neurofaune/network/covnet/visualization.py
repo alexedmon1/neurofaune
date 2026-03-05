@@ -316,6 +316,85 @@ def plot_nbs_network(
         plt.close(fig)
 
 
+def plot_density_curves(
+    curves_df: pd.DataFrame,
+    out_path: Path = None,
+    figsize_per_metric: tuple = (6, 3),
+) -> None:
+    """Plot graph metric density curves per group.
+
+    Parameters
+    ----------
+    curves_df : DataFrame
+        From ``compute_all_metrics`` output with columns: group, graph_metric,
+        density, value.
+    out_path : Path
+        Output file path.
+    figsize_per_metric : tuple
+        Figure size per subplot row.
+    """
+    if curves_df.empty:
+        logger.info("No density curves to plot")
+        return
+
+    metrics = sorted(curves_df["graph_metric"].unique())
+    n_metrics = len(metrics)
+    fig, axes = plt.subplots(
+        n_metrics, 1,
+        figsize=(figsize_per_metric[0], figsize_per_metric[1] * n_metrics),
+        squeeze=False,
+    )
+
+    # Colour groups by PND and dose
+    groups = sorted(curves_df["group"].unique())
+    cmap = plt.cm.tab20
+    colors = {g: cmap(i / max(len(groups), 1)) for i, g in enumerate(groups)}
+
+    for ax_row, gm_name in zip(axes, metrics):
+        ax = ax_row[0]
+        subset = curves_df[curves_df["graph_metric"] == gm_name]
+
+        for group in groups:
+            g_data = subset[subset["group"] == group].sort_values("density")
+            if g_data.empty:
+                continue
+            ax.plot(
+                g_data["density"].values,
+                g_data["value"].values,
+                marker="o",
+                markersize=3,
+                linewidth=1.2,
+                color=colors[group],
+                label=group,
+            )
+
+        ax.set_ylabel(gm_name.replace("_", " ").title(), fontsize=9)
+        ax.set_xlabel("Density", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+    # Single legend
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        loc="upper center",
+        ncol=min(6, len(groups)),
+        fontsize=7,
+        bbox_to_anchor=(0.5, 1.02),
+    )
+
+    fig.suptitle("Graph Metric Density Curves", fontsize=13, y=1.04)
+    fig.tight_layout()
+
+    if out_path:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved density curves: {out_path}")
+    else:
+        plt.close(fig)
+
+
 def plot_graph_metrics_comparison(
     metrics_df: pd.DataFrame,
     out_path: Path = None,

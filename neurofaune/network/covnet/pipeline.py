@@ -26,14 +26,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .graph_metrics import compare_metrics, compute_metrics
+from neurofaune.network.graph_theory import (
+    DEFAULT_DENSITIES,
+    METRIC_REGISTRY,
+    compare_metric,
+    compute_all_metrics,
+    compute_metric_curve,
+    list_metrics,
+)
 from .nbs import fisher_z_edge_test
 from .nbs import run_all_comparisons as _run_nbs_comparisons
 from .visualization import (
     plot_all_group_heatmaps,
     plot_correlation_heatmap,
+    plot_density_curves,
     plot_difference_matrix,
-    plot_graph_metrics_comparison,
     plot_nbs_network,
 )
 from .whole_network import (
@@ -777,19 +784,25 @@ class CovNetAnalysis:
 
     def run_graph_metrics(
         self,
+        graph_metrics: list[str] | None = None,
         densities: list[float] | None = None,
-        n_perm: int = 5000,
+        n_perm: int = 1000,
         seed: int = 42,
         n_workers: int = 1,
     ) -> pd.DataFrame:
-        """Run graph metrics. Results saved to ``graph_metrics/{modality}/{metric}/``.
+        """Run graph theory analysis with density-curve AUC permutation testing.
+
+        Results saved to ``graph_metrics/{modality}/{metric}/``.
 
         Parameters
         ----------
+        graph_metrics : list[str], optional
+            Graph metrics to test. Default: all in ``METRIC_REGISTRY``.
+            Use ``list_metrics()`` to see available options.
         densities : list[float], optional
-            Network densities. Default [0.15, 0.20].
+            Network density sweep. Default ``DEFAULT_DENSITIES``.
         n_perm : int
-            Permutations for comparison test.
+            Permutations for AUC comparison test.
         seed : int
             Random seed.
         n_workers : int
@@ -797,51 +810,72 @@ class CovNetAnalysis:
 
         Returns
         -------
-        DataFrame of comparison p-values.
+        DataFrame of AUC comparison p-values across all requested metrics.
         """
         if densities is None:
-            densities = [0.15, 0.20]
+            densities = DEFAULT_DENSITIES
+        if graph_metrics is None:
+            graph_metrics = list_metrics()
 
         logger.info(
-            f"Graph metrics: {self.metric} ({n_perm} permutations, "
-            f"densities={densities})"
+            "Graph theory: %s (%d metrics, %d densities, %d permutations)",
+            self.metric, len(graph_metrics), len(densities), n_perm,
         )
 
         graph_dir = self._test_dir("graph_metrics")
         graph_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-group metrics at multiple densities
-        metrics_rows = []
+        # Per-group density curves for all metrics
+        curves_rows = []
         for label, data in self.matrices_pnd_dose.items():
-            for d in densities:
-                m = compute_metrics(data["corr"], density=d)
-                m["group"] = label
-                m["density"] = d
-                metrics_rows.append(m)
+            all_curves = compute_all_metrics(data["corr"], densities)
+            for gm_name, values in all_curves.items():
+                for i, d in enumerate(densities):
+                    curves_rows.append({
+                        "group": label,
+                        "graph_metric": gm_name,
+                        "density": d,
+                        "value": values[i],
+                    })
 
-        metrics_df = pd.DataFrame(metrics_rows)
-        metrics_df.to_csv(graph_dir / "global_metrics.csv", index=False)
-        logger.info(f"Saved global metrics: {graph_dir / 'global_metrics.csv'}")
+        curves_df = pd.DataFrame(curves_rows)
+        curves_df.to_csv(graph_dir / "density_curves.csv", index=False)
+        logger.info("Saved density curves: %s", graph_dir / "density_curves.csv")
 
-        # Permutation comparison
-        comparison_df = compare_metrics(
-            self.group_arrays,
-            self.bilateral_region_cols,
-            densities=densities,
-            n_perm=n_perm,
-            seed=seed,
-            n_workers=n_workers,
-        )
-        comparison_df.to_csv(graph_dir / "comparison_pvalues.csv", index=False)
+        # Permutation test per requested metric
+        all_comparison_rows = []
+        all_nulls = {}
+        for gm_name in graph_metrics:
+            logger.info("  Testing: %s", gm_name)
+            comp_df, obs_curves, nulls = compare_metric(
+                self.group_arrays,
+                metric_name=gm_name,
+                densities=densities,
+                n_perm=n_perm,
+                seed=seed,
+                n_workers=n_workers,
+            )
+            all_comparison_rows.append(comp_df)
+            for key, arr in nulls.items():
+                all_nulls[f"{gm_name}__{key}"] = arr
+
+        comparison_df = pd.concat(all_comparison_rows, ignore_index=True)
+        comparison_df.to_csv(graph_dir / "auc_comparison.csv", index=False)
+
+        # Save null distributions
+        np.savez(graph_dir / "null_distributions.npz", **all_nulls)
 
         # Visualization
-        plot_graph_metrics_comparison(
-            comparison_df,
-            out_path=self._test_dir("figures") / "graph_metrics_bars.png",
+        plot_density_curves(
+            curves_df,
+            out_path=self._test_dir("figures") / "graph_density_curves.png",
         )
 
         n_sig = int((comparison_df["p_value"] < 0.05).sum())
-        logger.info(f"Graph metrics {self.metric}: {n_sig} significant comparisons")
+        logger.info(
+            "Graph theory %s: %d/%d significant AUC comparisons",
+            self.metric, n_sig, len(comparison_df),
+        )
         return comparison_df
 
     def run_whole_network(

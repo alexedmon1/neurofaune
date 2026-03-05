@@ -1,3 +1,3 @@
-"""Deprecated: use neurofaune.network.covnet.graph_metrics instead."""
+"""Deprecated: use neurofaune.network.graph_theory instead."""
 
-from neurofaune.network.covnet.graph_metrics import *  # noqa: F401, F403
+from neurofaune.network.graph_theory import *  # noqa: F401, F403
