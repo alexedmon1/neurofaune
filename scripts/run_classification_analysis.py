@@ -79,7 +79,6 @@ def run_single_analysis(
             feature_set=feature_set,
             cohort_filter=cohort if cohort else None,
             exclusion_csv=exclusion_csv,
-            target=target,
         )
     except ValueError as exc:
         logger.warning("Skipping %s/%s/%s: %s", metric, cohort_label, feature_set, exc)
