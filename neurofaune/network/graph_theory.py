@@ -268,6 +268,8 @@ def _threshold_to_adjacency(corr_matrix: np.ndarray, density: float) -> np.ndarr
 def _build_graph(corr_matrix: np.ndarray, density: float) -> tuple[ig.Graph, int]:
     """Build a thresholded igraph graph from a correlation matrix."""
     adj = _threshold_to_adjacency(corr_matrix, density)
+    # Enforce exact symmetry (floating-point thresholding can introduce asymmetry)
+    adj = (adj + adj.T) / 2
     n = adj.shape[0]
     G = ig.Graph.Weighted_Adjacency(adj.tolist(), mode="undirected")
     return G, n
