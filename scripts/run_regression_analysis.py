@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.network.classification.data_prep import prepare_regression_data
 from neurofaune.analysis.progress import AnalysisProgress
-from neurofaune.network.regression.dose_response import run_regression
+from neurofaune.network.regression import run_regression
 
 logging.basicConfig(
     level=logging.INFO,
@@ -179,6 +179,7 @@ def write_design_description(args: argparse.Namespace, output_path: Path) -> Non
     else:
         target_desc = f"{target} (continuous column from wide CSV)"
 
+    target_label = {"auc": "AUC", "log_auc": "log-AUC", "dose": "Dose"}.get(target, target)
     lines = [
         "ANALYSIS DESCRIPTION",
         "====================",

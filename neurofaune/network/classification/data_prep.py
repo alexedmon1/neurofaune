@@ -14,12 +14,19 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-from neurofaune.network.matrices import (
+from neurofaune.connectome.matrices import (
     bilateral_average,
     load_and_prepare_data,
 )
 
 logger = logging.getLogger(__name__)
+
+# Session -> AUC column mapping
+_SESSION_TO_AUC = {
+    "ses-p30": "AUC_p30",
+    "ses-p60": "AUC_p60",
+    "ses-p90": "AUC_p90",
+}
 
 
 def _load_filter_select(
@@ -96,7 +103,6 @@ def prepare_classification_data(
     cohort_filter: Optional[str] = None,
     exclusion_csv: Optional[Union[str, Path]] = None,
     standardize: bool = True,
-    target: str = "dose",
 ) -> dict:
     """Load, filter, and scale ROI data for classification.
 
@@ -116,19 +122,13 @@ def prepare_classification_data(
         Path to exclusion CSV (subject, session columns).
     standardize : bool
         Whether to z-score features (recommended for SVM/LDA).
-    target : str
-        Target variable for group labels:
-        - ``'dose'``: built-in C/L/M/H → 0/1/2/3
-        - any other string: look up that column in the DataFrame.
-          String values are used as labels directly; numeric values
-          with ≤20 unique values are cast to int labels.
 
     Returns
     -------
     dict with keys:
         X : ndarray, shape (n_samples, n_features)
-        y : ndarray, shape (n_samples,) — integer group labels
-        label_names : list[str] — ordered group names
+        y : ndarray, shape (n_samples,) — integer dose labels
+        label_names : list[str] — ordered dose group names
         feature_names : list[str]
         sample_info : DataFrame — subject, session, dose, cohort per row
         scaler : StandardScaler or None
@@ -140,73 +140,29 @@ def prepare_classification_data(
     X = loaded["X"]
     feature_names = loaded["feature_names"]
 
-    if target == "dose":
-        # Built-in: encode dose as integer labels
-        dose_order = ["C", "L", "M", "H"]
-        dose_col = df["dose"].values
-        label_map = {d: i for i, d in enumerate(dose_order)}
-        valid_mask = np.array([d in label_map for d in dose_col])
-        if not valid_mask.all():
-            n_dropped = (~valid_mask).sum()
-            logger.warning("Dropping %d samples with unrecognised dose labels", n_dropped)
-            X = X[valid_mask]
-            df = df[valid_mask].copy()
-            dose_col = dose_col[valid_mask]
+    # Encode dose as integer labels
+    dose_order = ["C", "L", "M", "H"]
+    dose_col = df["dose"].values
+    # Map to integers (C=0, L=1, M=2, H=3)
+    label_map = {d: i for i, d in enumerate(dose_order)}
+    valid_mask = np.array([d in label_map for d in dose_col])
+    if not valid_mask.all():
+        n_dropped = (~valid_mask).sum()
+        logger.warning("Dropping %d samples with unrecognised dose labels", n_dropped)
+        X = X[valid_mask]
+        df = df[valid_mask].copy()
+        dose_col = dose_col[valid_mask]
 
-        y = np.array([label_map[d] for d in dose_col], dtype=int)
-        label_names = [d for d in dose_order if d in set(dose_col)]
-        if len(label_names) < len(dose_order):
-            new_map = {d: i for i, d in enumerate(label_names)}
-            y = np.array([new_map[d] for d in dose_col], dtype=int)
-    else:
-        # Generic column lookup
-        if target not in df.columns:
-            info_cols = {"subject", "session", "dose", "cohort", "sex"}
-            available = [c for c in df.columns if c not in info_cols and c not in feature_names]
-            raise ValueError(
-                f"Target column {target!r} not found. Available: {available}"
-            )
-        raw = df[target].values
+    y = np.array([label_map[d] for d in dose_col], dtype=int)
+    label_names = [d for d in dose_order if d in set(dose_col)]
+    # Re-map so labels are contiguous 0..n-1
+    if len(label_names) < len(dose_order):
+        new_map = {d: i for i, d in enumerate(label_names)}
+        y = np.array([new_map[d] for d in dose_col], dtype=int)
 
-        # Drop NaN rows
-        if hasattr(raw[0], '__float__') or pd.api.types.is_numeric_dtype(df[target]):
-            raw = raw.astype(float)
-            valid = ~np.isnan(raw)
-            if not valid.all():
-                logger.warning("Dropping %d samples with NaN %s", (~valid).sum(), target)
-                X, df, raw = X[valid], df[valid].copy(), raw[valid]
-
-        # Determine if string or numeric
-        try:
-            float_vals = raw.astype(float)
-            n_unique = len(np.unique(float_vals))
-            if n_unique > 20:
-                raise ValueError(
-                    f"Target {target!r} has {n_unique} unique numeric values. "
-                    f"Classification requires discrete groups (≤20 unique values). "
-                    f"Use regression for continuous targets."
-                )
-            if n_unique > 1:
-                logger.info(
-                    "Target %s: %d unique numeric values, treating as discrete groups",
-                    target, n_unique,
-                )
-            # Map unique sorted values to contiguous integers
-            unique_sorted = sorted(np.unique(float_vals))
-            val_to_int = {v: i for i, v in enumerate(unique_sorted)}
-            y = np.array([val_to_int[v] for v in float_vals], dtype=int)
-            label_names = [str(v) for v in unique_sorted]
-        except (ValueError, TypeError):
-            # String labels
-            unique_sorted = sorted(set(raw))
-            val_to_int = {v: i for i, v in enumerate(unique_sorted)}
-            y = np.array([val_to_int[v] for v in raw], dtype=int)
-            label_names = list(unique_sorted)
-
-    # Include all non-feature columns as metadata (subject, session, dose,
-    # cohort, sex, auc, etc.) so downstream consumers can access them.
-    feature_set_cols = set(feature_names)
-    info_cols = [c for c in df.columns if c not in feature_set_cols]
+    info_cols = ["subject", "session", "dose", "cohort"]
+    if "sex" in df.columns:
+        info_cols.append("sex")
     sample_info = df[info_cols].reset_index(drop=True)
 
     logger.info(
@@ -254,7 +210,7 @@ def prepare_regression_data(
     target : str
         Target variable:
         - ``'dose'``: ordinal encoding (C=0, L=1, M=2, H=3)
-        - any other string: look up that column in the DataFrame
+        - ``'auc'``: session-matched AUC from ROI CSV columns
 
     Returns
     -------
@@ -295,23 +251,55 @@ def prepare_regression_data(
     if target == "dose":
         y = dose_labels.astype(float)
         target_name = "Dose (ordinal)"
-    else:
-        # Generic column lookup
-        if target not in df.columns:
-            info_cols = {"subject", "session", "dose", "cohort", "sex"}
-            available = [c for c in df.columns if c not in info_cols and c not in feature_names]
-            raise ValueError(
-                f"Target column {target!r} not found. Available: {available}"
-            )
-        y = df[target].values.astype(float)
-        valid = ~np.isnan(y)
-        if not valid.all():
-            logger.warning("Dropping %d samples with NaN %s", (~valid).sum(), target)
-            X, df, dose_labels, y = X[valid], df[valid].copy(), dose_labels[valid], y[valid]
-        target_name = target
 
-    feature_set_cols = set(feature_names)
-    info_cols = [c for c in df.columns if c not in feature_set_cols]
+    elif target == "auc":
+        # Extract session-matched AUC
+        auc_values = []
+        for _, row in df.iterrows():
+            session = row["session"]
+            auc_col = _SESSION_TO_AUC.get(session)
+            if auc_col is not None and auc_col in df.columns:
+                auc_values.append(row.get(auc_col, np.nan))
+            else:
+                auc_values.append(np.nan)
+        auc_arr = np.array(auc_values, dtype=float)
+
+        # Drop rows with NaN AUC
+        valid_auc = ~np.isnan(auc_arr)
+        if not valid_auc.all():
+            n_dropped = (~valid_auc).sum()
+            logger.warning("Dropping %d samples with NaN AUC", n_dropped)
+            X = X[valid_auc]
+            df = df[valid_auc].copy()
+            dose_labels = dose_labels[valid_auc]
+            auc_arr = auc_arr[valid_auc]
+
+        y = auc_arr
+        target_name = "AUC"
+
+    elif target == "log_auc":
+        # Use log-transformed AUC (log1p) from the wide CSV column
+        if "log_auc" not in df.columns:
+            raise ValueError("Wide CSV has no 'log_auc' column. Run prepare_pbtk_auc.py --merge-into-roi-dir first.")
+        log_auc_arr = df["log_auc"].values.astype(float)
+
+        valid = ~np.isnan(log_auc_arr)
+        if not valid.all():
+            n_dropped = (~valid).sum()
+            logger.warning("Dropping %d samples with NaN log_auc", n_dropped)
+            X = X[valid]
+            df = df[valid].copy()
+            dose_labels = dose_labels[valid]
+            log_auc_arr = log_auc_arr[valid]
+
+        y = log_auc_arr
+        target_name = "log(1+AUC)"
+    else:
+        raise ValueError(f"Unknown target: {target!r}. Use 'dose', 'auc', or 'log_auc'.")
+
+    info_cols = ["subject", "session", "dose", "cohort"]
+    if "sex" in df.columns:
+        info_cols.append("sex")
     sample_info = df[info_cols].reset_index(drop=True)
 
     logger.info(

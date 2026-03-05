@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.analysis.progress import AnalysisProgress
-from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.connectome import CovNetAnalysis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,9 +72,21 @@ def run_single_metric(analysis: CovNetAnalysis, args: argparse.Namespace) -> dic
     logger.info("\n[Phase 6] Territory-level edge comparisons (Fisher z + FDR)...")
     analysis.run_territory(comparisons)
 
-    # Phase 7: Whole-network (lighter than graph metrics — run first)
+    # Phase 7: Graph metrics
+    if not args.skip_graph:
+        logger.info("\n[Phase 7] Graph metrics and permutation comparison...")
+        comparison_df = analysis.run_graph_metrics(
+            n_perm=args.n_permutations, seed=args.seed,
+        )
+        summary["graph_metrics_significant"] = int(
+            (comparison_df["p_value"] < 0.05).sum()
+        )
+    else:
+        logger.info("\n[Phase 7] Skipping graph metrics (--skip-graph)")
+
+    # Phase 8: Whole-network
     if not args.skip_whole_network:
-        logger.info(f"\n[Phase 7] Whole-network similarity tests ({args.n_permutations} permutations)...")
+        logger.info(f"\n[Phase 8] Whole-network similarity tests ({args.n_permutations} permutations)...")
         wn_df, _ = analysis.run_whole_network(
             comparisons, args.n_permutations, args.seed, args.n_workers,
         )
@@ -84,20 +96,7 @@ def run_single_metric(analysis: CovNetAnalysis, args: argparse.Namespace) -> dic
         )
         summary["whole_network_significant"] = n_sig
     else:
-        logger.info("\n[Phase 7] Skipping whole-network tests (--skip-whole-network)")
-
-    # Phase 8: Graph metrics (heaviest phase — all C(n,2) pairs)
-    if not args.skip_graph:
-        logger.info("\n[Phase 8] Graph metrics and permutation comparison...")
-        comparison_df = analysis.run_graph_metrics(
-            n_perm=args.n_permutations, seed=args.seed,
-            n_workers=args.n_workers,
-        )
-        summary["graph_metrics_significant"] = int(
-            (comparison_df["p_value"] < 0.05).sum()
-        )
-    else:
-        logger.info("\n[Phase 8] Skipping graph metrics (--skip-graph)")
+        logger.info("\n[Phase 8] Skipping whole-network tests (--skip-whole-network)")
 
     return summary
 
@@ -279,20 +278,23 @@ def main():
         help="SIGMA atlas labels CSV for hybrid territory mapping (default: arborea path)",
     )
     parser.add_argument(
-        "--target", type=str, default="groups",
-        help="Analysis target: 'groups' (default, group-based NBS) or any column name from the wide CSV (edge-level regression)",
+        "--target", choices=["groups", "auc", "log_auc"], default="groups",
+        help="Analysis target: 'groups' (group-based NBS), 'auc' (edge regression), or 'log_auc' (log-transformed AUC edge regression)",
+    )
+    parser.add_argument(
+        "--auc-csv", type=Path, default=None,
+        help="Path to AUC lookup CSV (required when --target auc)",
     )
 
     args = parser.parse_args()
+
+    if args.target in ("auc", "log_auc") and args.auc_csv is None:
+        parser.error("--auc-csv is required when --target is 'auc' or 'log_auc'")
 
     # Validate inputs
     if not args.roi_dir.exists():
         logger.error(f"ROI directory not found: {args.roi_dir}")
         sys.exit(1)
-
-    # Insert target into output path for non-groups targets
-    if args.target != "groups":
-        args.output_dir = args.output_dir / args.target
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -301,7 +303,6 @@ def main():
         "roi_dir": str(args.roi_dir),
         "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
         "output_dir": str(args.output_dir),
-        "target": args.target,
         "modality": args.modality,
         "metrics": args.metrics,
         "n_permutations": args.n_permutations,
@@ -318,6 +319,32 @@ def main():
         json.dump(config, f, indent=2)
 
     write_design_description(args, args.output_dir / f"design_description_{args.modality}.txt")
+
+    # Load AUC data if needed
+    auc_lookup = None
+    covariate_name = "AUC"
+    if args.target in ("auc", "log_auc"):
+        import pandas as pd
+        auc_df = pd.read_csv(args.auc_csv)
+        if args.target == "log_auc":
+            if "log_auc" not in auc_df.columns:
+                logger.error("AUC CSV must have 'log_auc' column for --target log_auc")
+                sys.exit(1)
+            value_col = "log_auc"
+            covariate_name = "log(1+AUC)"
+        else:
+            value_col = "auc"
+        if not {'subject', 'session', value_col}.issubset(auc_df.columns):
+            logger.error("AUC CSV must have columns: subject, session, %s", value_col)
+            sys.exit(1)
+        # Build lookup: "sub-Rat001_ses-p60" -> float
+        auc_lookup = dict(
+            zip(
+                auc_df['subject'] + '_' + auc_df['session'],
+                auc_df[value_col].astype(float),
+            )
+        )
+        logger.info("Loaded %d %s values from %s", len(auc_lookup), covariate_name, args.auc_csv)
 
     # Run for each metric
     all_summaries = {}
@@ -342,7 +369,7 @@ def main():
             if args.target == "groups":
                 progress.update(task=metric, phase="running analyses", completed=completed, failed=failed)
                 summary = run_single_metric(analysis, args)
-            else:
+            elif args.target in ("auc", "log_auc"):
                 progress.update(task=metric, phase="running edge regression", completed=completed, failed=failed)
                 summary = {
                     "metric": metric,
@@ -353,9 +380,10 @@ def main():
                 # Run edge regression per cohort + pooled
                 for cohort in [None, "p30", "p60", "p90"]:
                     cohort_label = cohort if cohort else "pooled"
-                    logger.info("Edge regression: %s / %s / %s", metric, cohort_label, args.target)
+                    logger.info("Edge regression: %s / %s", metric, cohort_label)
                     reg_results = analysis.run_edge_regression(
-                        covariate_name=args.target,
+                        covariate_map=auc_lookup,
+                        covariate_name=covariate_name,
                         cohort_filter=cohort,
                         n_perm=args.n_permutations,
                         threshold=args.nbs_threshold,

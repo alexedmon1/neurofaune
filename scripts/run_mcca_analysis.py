@@ -92,13 +92,11 @@ def run_cohort_mcca(
     exclusion_csv: Path,
     confounds: list = None,
     target: str = "dose",
+    auc_csv: Path = None,
 ) -> dict:
     """Run MCCA pipeline for a single cohort (or pooled)."""
     cohort_label = cohort if cohort else "pooled"
-    if target != "dose":
-        combo_dir = output_dir / target / cohort_label / feature_set
-    else:
-        combo_dir = output_dir / cohort_label / feature_set
+    combo_dir = output_dir / cohort_label / feature_set
     combo_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
@@ -140,18 +138,39 @@ def run_cohort_mcca(
 
     label_names = [d for d in dose_order if d in set(metadata["dose"].values)]
 
-    # Build target array for association test
-    if target == "dose":
-        target_values = dose_labels.astype(float)
-        target_name = "Ordinal dose"
-    else:
-        # Generic column lookup from metadata
-        if target not in metadata.columns:
-            available = [c for c in metadata.columns if c not in {"subject", "session", "dose", "cohort", "sex"}]
-            raise ValueError(
-                f"Target column {target!r} not found in metadata. Available: {available}"
-            )
-        target_values = metadata[target].values.astype(float)
+    # Build target array for dose association test
+    if target in ("auc", "log_auc"):
+        value_col = "log_auc" if target == "log_auc" else "auc"
+
+        if auc_csv is not None:
+            # Load from external AUC lookup CSV
+            import pandas as pd
+            auc_df = pd.read_csv(auc_csv)
+            auc_lookup = {}
+            for _, r in auc_df.iterrows():
+                auc_lookup[(r["subject"], r["session"])] = r.get(value_col, np.nan)
+            target_values = np.array([
+                auc_lookup.get((row["subject"], row["session"]), np.nan)
+                for _, row in metadata.iterrows()
+            ], dtype=float)
+        elif value_col in metadata.columns:
+            target_values = metadata[value_col].values.astype(float)
+        else:
+            # Session-matched AUC from per-session columns
+            _session_to_auc = {
+                "ses-p30": "AUC_p30", "ses-p60": "AUC_p60", "ses-p90": "AUC_p90",
+            }
+            auc_values = []
+            for _, row in metadata.iterrows():
+                auc_col = _session_to_auc.get(row["session"])
+                if auc_col and auc_col in metadata.columns:
+                    auc_values.append(row.get(auc_col, np.nan))
+                else:
+                    auc_values.append(np.nan)
+            target_values = np.array(auc_values, dtype=float)
+            if target == "log_auc":
+                target_values = np.log1p(target_values)
+
         valid_target = ~np.isnan(target_values)
         if not valid_target.all():
             n_drop = (~valid_target).sum()
@@ -161,7 +180,10 @@ def run_cohort_mcca(
             dose_labels = dose_labels[valid_target]
             target_values = target_values[valid_target]
             n_samples = len(target_values)
-        target_name = target
+        target_name = "log(1+AUC)" if target == "log_auc" else "AUC"
+    else:
+        target_values = dose_labels.astype(float)
+        target_name = "Ordinal dose"
 
     summary = {
         "status": "completed",
@@ -380,9 +402,9 @@ def write_design_description(args: argparse.Namespace, views: dict, output_path:
         f"   - {args.n_permutations} permutations (shuffle views 1..K, fix view 0)",
         "   - Empirical p-value per component",
         "",
-        f"3. {getattr(args, 'target', 'dose').upper() if getattr(args, 'target', 'dose') != 'dose' else 'Dose'} association test",
+        f"3. {'AUC' if getattr(args, 'target', 'dose') == 'auc' else 'Dose'} association test",
         "   - Average MCCA scores across views per component",
-        f"   - Spearman correlation with {getattr(args, 'target', 'dose') + ' (from wide CSV)' if getattr(args, 'target', 'dose') != 'dose' else 'ordinal dose (C=0, L=1, M=2, H=3)'}",
+        f"   - Spearman correlation with {'continuous AUC (session-matched)' if getattr(args, 'target', 'dose') == 'auc' else 'ordinal dose (C=0, L=1, M=2, H=3)'}",
         f"   - {args.n_permutations} permutation p-values (two-tailed)",
         "",
         "4. PERMANOVA on MCCA score space",
@@ -443,8 +465,12 @@ def main():
         help="Regularisation method: 'lw' (Ledoit-Wolf), 'identity', or float (default: lw)",
     )
     parser.add_argument(
-        "--target", type=str, default="dose",
-        help="Target for association test: 'dose' (ordinal C=0..H=3) or any column name from the wide CSV",
+        "--target", choices=["dose", "auc", "log_auc"], default="dose",
+        help="Target for dose association: 'dose' (ordinal C=0..H=3), 'auc' (continuous AUC), or 'log_auc' (log-transformed AUC)",
+    )
+    parser.add_argument(
+        "--auc-csv", type=Path, default=None,
+        help="Path to AUC lookup CSV with subject, session, auc, log_auc columns (used when --target is auc or log_auc)",
     )
     parser.add_argument(
         "--confounds", nargs="*", default=None,
@@ -530,6 +556,7 @@ def main():
             exclusion_csv=args.exclusion_csv,
             confounds=args.confounds,
             target=args.target,
+            auc_csv=args.auc_csv,
         )
         all_summaries[cohort_label] = summary
         completed += 1

@@ -1,12 +1,11 @@
 """
-Cross-validated regression with permutation testing for dose-response.
+Cross-validated regression with permutation testing.
 
-Treats dose as ordinal (C=0, L=1, M=2, H=3) and tests whether joint ROI
-patterns predict dose level using LOOCV with SVR, Ridge, and PLS regressors.
-Complements classification (discrete groups) by testing for a continuous
-dose-response relationship. When use_pca is set, PCA is fit inside each
-LOOCV fold to avoid data leakage, and model weights are mapped back to ROI
-space for interpretation.
+Runs LOOCV with SVR, Ridge, and PLS regressors to test whether joint ROI
+patterns predict a continuous or ordinal target variable. When use_pca is
+set, PCA is fit inside each LOOCV fold to avoid data leakage, and model
+weights are mapped back to ROI space for interpretation. PCA transforms
+are pre-computed once (unsupervised) and reused across permutations.
 """
 
 import logging
@@ -71,7 +70,13 @@ def _loocv_regression(
         # PLS returns 2D array
         y_pred[test_idx] = np.atleast_1d(pred).ravel()[0]
 
-    # Metrics
+    return _compute_regression_metrics(y, y_pred)
+
+
+def _compute_regression_metrics(
+    y: np.ndarray, y_pred: np.ndarray,
+) -> tuple[float, float, float, np.ndarray]:
+    """Compute R², MAE, Spearman rho from true and predicted values."""
     ss_res = np.sum((y - y_pred) ** 2)
     ss_tot = np.sum((y - y.mean()) ** 2)
     r_squared = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
@@ -80,6 +85,40 @@ def _loocv_regression(
     spearman_rho = float(rho) if not np.isnan(rho) else 0.0
 
     return r_squared, mae, spearman_rho, y_pred
+
+
+def _precompute_pca_folds(
+    X: np.ndarray, n_components: int,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Pre-compute PCA-transformed train/test splits for each LOOCV fold.
+
+    PCA is unsupervised (depends only on X, not y), so transforms are
+    invariant across label permutations and can be computed once.
+    """
+    loo = LeaveOneOut()
+    folds = []
+    for train_idx, test_idx in loo.split(X):
+        pca = PCA(n_components=n_components)
+        X_train_pca = pca.fit_transform(X[train_idx])
+        X_test_pca = pca.transform(X[test_idx])
+        folds.append((X_train_pca, X_test_pca, train_idx, test_idx))
+    return folds
+
+
+def _loocv_regression_precomputed(
+    reg,
+    y: np.ndarray,
+    pca_folds: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+) -> tuple[float, float, float, np.ndarray]:
+    """Run LOOCV using pre-computed PCA folds. Only re-fits the regressor."""
+    y_pred = np.empty_like(y, dtype=float)
+    for X_train_pca, X_test_pca, train_idx, test_idx in pca_folds:
+        reg_copy = clone(reg)
+        reg_copy.fit(X_train_pca, y[train_idx])
+        pred = reg_copy.predict(X_test_pca)
+        y_pred[test_idx] = np.atleast_1d(pred).ravel()[0]
+
+    return _compute_regression_metrics(y, y_pred)
 
 
 def _determine_n_pca(X: np.ndarray, variance_threshold: float = 0.95) -> int:
@@ -184,11 +223,16 @@ def run_regression(
 
     # Determine PCA dimensionality if requested
     n_pca = None
+    pca_folds = None
     if use_pca:
         n_pca = _determine_n_pca(X)
         n_pca = min(n_pca, X.shape[0] - 1, X.shape[1])
         logger.info("PCA reduction: %d features -> %d components (95%% variance)",
                      X.shape[1], n_pca)
+        # Pre-compute PCA transforms for all LOOCV folds (unsupervised,
+        # invariant to label permutations)
+        logger.info("Pre-computing PCA for %d LOOCV folds...", X.shape[0])
+        pca_folds = _precompute_pca_folds(X, n_pca)
 
     # Determine PLS n_components (min of n_samples-1, n_features, n_classes-1)
     n_classes = len(np.unique(y))
@@ -207,18 +251,24 @@ def run_regression(
         logger.info("Running LOOCV regression for %s...", reg_name)
 
         # Observed metrics
-        r2, mae, rho, y_pred = _loocv_regression(reg, X, y_float, n_pca_components=n_pca)
+        if pca_folds is not None:
+            r2, mae, rho, y_pred = _loocv_regression_precomputed(reg, y_float, pca_folds)
+        else:
+            r2, mae, rho, y_pred = _loocv_regression(reg, X, y_float)
 
         logger.info(
             "  %s: R²=%.3f, MAE=%.3f, ρ=%.3f",
             reg_name, r2, mae, rho,
         )
 
-        # Permutation test on R²
+        # Permutation test on R² (reuse pre-computed PCA folds)
         null_r2 = np.empty(n_permutations)
         for i in range(n_permutations):
             y_perm = rng.permutation(y_float)
-            null_r2[i], _, _, _ = _loocv_regression(reg, X, y_perm, n_pca_components=n_pca)
+            if pca_folds is not None:
+                null_r2[i], _, _, _ = _loocv_regression_precomputed(reg, y_perm, pca_folds)
+            else:
+                null_r2[i], _, _, _ = _loocv_regression(reg, X, y_perm)
 
         perm_p = float((np.sum(null_r2 >= r2) + 1) / (n_permutations + 1))
         logger.info("  Permutation p-value (R²): %.4f (n=%d)", perm_p, n_permutations)
