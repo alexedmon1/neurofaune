@@ -2,8 +2,8 @@
 Whole-brain MVPA decoding using nilearn Decoder.
 
 Wraps nilearn.decoding.Decoder for classification (SVM) and
-dose-response regression (Ridge), with ANOVA feature screening
-and permutation testing for empirical p-values.
+regression (Ridge), with ANOVA feature screening and permutation
+testing for empirical p-values.
 """
 
 import json
@@ -35,7 +35,7 @@ def run_whole_brain_decoding(
         images_4d: 4D Nifti1Image (subjects along 4th dimension).
         labels: Group labels (str for classification, numeric for regression).
         mask_img: Brain mask Nifti1Image.
-        analysis_type: 'classification' or 'dose_response'.
+        analysis_type: 'classification' or 'regression'.
         n_permutations: Number of permutations for empirical p-value.
         cv_folds: Number of cross-validation folds.
         screening_percentile: ANOVA feature screening percentile.

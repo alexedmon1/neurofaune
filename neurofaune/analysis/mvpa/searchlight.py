@@ -5,9 +5,9 @@ Maps local predictability across the brain by running a classifier or
 regressor in a sliding sphere. Optional max-statistic FWER correction
 via label permutations.
 
-For continuous targets (target_response, dose_response), uses Ridge
-regression with R² scoring and KFold cross-validation.
-For classification, uses LinearSVC with accuracy and StratifiedKFold.
+For continuous targets (regression), uses Ridge with R² scoring and
+KFold cross-validation.  For classification, uses LinearSVC with
+accuracy and StratifiedKFold.
 """
 
 import json
@@ -40,7 +40,7 @@ def run_searchlight(
         images_4d: 4D Nifti1Image (subjects along 4th dimension).
         labels: Group labels (str for classification, numeric for regression).
         mask_img: Brain mask Nifti1Image.
-        analysis_type: 'classification', 'dose_response', or 'target_response'.
+        analysis_type: 'classification' or 'regression'.
         radius: Searchlight sphere radius in mm (default: 2.0 for scaled space).
         cv_folds: Number of cross-validation folds.
         n_jobs: Number of parallel jobs for SearchLight.

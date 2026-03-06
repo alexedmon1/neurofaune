@@ -177,17 +177,12 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
         for c in raw_columns
     ]
     design_type = "categorical"
+    is_ordinal_dose = False
 
-    # Check if this is a dose-response design (has dose_numeric column)
+    # Check if this is a regression design (has dose_numeric column)
     if any("dose_numeric" in c for c in col_names):
-        design_type = "dose_response"
-
-    # Check for continuous-target response design (any non-dose covariate)
-    if design_type == "categorical":
-        for c in col_names:
-            if c not in ("dose_numeric", "Intercept", "") and "dose_numeric" not in c:
-                design_type = "target_response"
-                break
+        design_type = "regression"
+        is_ordinal_dose = True
 
     # Extract group labels from design matrix structure
     subject_key_to_label = {}
@@ -199,66 +194,79 @@ def load_design(design_dir: Path) -> Dict[str, Any]:
         for subj_key in subject_order:
             subject_key_to_label[subj_key] = float(raw_targets.get(subj_key, 0.0))
         if design_type == "categorical":
-            design_type = "target_response"
+            design_type = "regression"
 
     elif design_type == "categorical":
         # For categorical designs, reconstruct group membership from
-        # the design matrix. The design_summary includes group info.
-        design_matrix = summary.get("design_matrix", [])
-        dose_columns = [
-            c for c in raw_columns
-            if isinstance(c, dict)
-            and c.get("name", "").startswith("dose_")
-            and "numeric" not in c.get("name", "")
-        ]
+        # the FSL design matrix (.mat file) and column names.
+        mat_path = design_dir / "design.mat"
+        design_rows = []
+        if mat_path.exists():
+            with open(mat_path) as f:
+                in_matrix = False
+                for line in f:
+                    if line.startswith("/Matrix"):
+                        in_matrix = True
+                        continue
+                    if in_matrix and line.strip():
+                        design_rows.append(
+                            [float(x) for x in line.strip().split()]
+                        )
+
+        # Find dose dummy columns (e.g. dose_H, dose_L, dose_M)
+        dose_col_indices = []
+        dose_col_labels = []
+        for idx, cname in enumerate(col_names):
+            if cname.startswith("dose_") and "numeric" not in cname:
+                dose_col_indices.append(idx)
+                dose_col_labels.append(cname.replace("dose_", ""))
 
         for i, subj_key in enumerate(subject_order):
-            if i < len(design_matrix):
-                row = design_matrix[i]
+            if i < len(design_rows):
+                row = design_rows[i]
                 # Find which dose group: if all dose dummies are 0, it's reference (C)
                 label = "C"
-                for col_info in dose_columns:
-                    col_idx = col_info.get("index", -1)
-                    if col_idx >= 0 and col_idx < len(row) and row[col_idx] == 1.0:
-                        label = col_info["name"].replace("dose_", "")
+                for col_idx, col_label in zip(dose_col_indices, dose_col_labels):
+                    if col_idx < len(row) and row[col_idx] == 1.0:
+                        label = col_label
                         break
                 subject_key_to_label[subj_key] = label
             else:
                 subject_key_to_label[subj_key] = "C"
 
-    elif design_type in ("dose_response", "target_response"):
-        # For dose-response or target-response, extract numeric values
-        target_col = None
-        for col in raw_columns:
-            if not isinstance(col, dict):
-                continue
-            col_name = col.get("name", "")
-            if col_name == "dose_numeric":
-                target_col = col
-                break
-            # Any non-intercept, non-categorical covariate is the target
-            if col_name not in ("Intercept", "") and col.get("type", "") != "categorical":
-                target_col = col
+    elif design_type == "regression":
+        # For regression designs, extract numeric target values from .mat
+        # Find the dose_numeric column index in the column list
+        target_col_idx = None
+        for idx, cname in enumerate(col_names):
+            if cname == "dose_numeric":
+                target_col_idx = idx
                 break
 
-        design_matrix = summary.get("design_matrix", [])
-        center = target_col.get("mean", 0.0) if target_col else 0.0
+        # Read design matrix from .mat file
+        mat_path = design_dir / "design.mat"
+        design_rows = []
+        if mat_path.exists():
+            with open(mat_path) as f:
+                in_matrix = False
+                for line in f:
+                    if line.startswith("/Matrix"):
+                        in_matrix = True
+                        continue
+                    if in_matrix and line.strip():
+                        design_rows.append(
+                            [float(x) for x in line.strip().split()]
+                        )
 
+        # Use centered values directly — centering doesn't affect
+        # regression predictions, only interpretation of intercept
         for i, subj_key in enumerate(subject_order):
-            if i < len(design_matrix):
-                row = design_matrix[i]
-                col_idx = target_col.get("index", -1) if target_col else -1
-                if col_idx >= 0 and col_idx < len(row):
-                    raw_val = row[col_idx] + center
-                    # Round to int only for ordinal dose, keep float for other targets
-                    if design_type == "dose_response":
-                        subject_key_to_label[subj_key] = round(raw_val)
-                    else:
-                        subject_key_to_label[subj_key] = float(raw_val)
-                else:
-                    subject_key_to_label[subj_key] = 0
+            if i < len(design_rows) and target_col_idx is not None:
+                subject_key_to_label[subj_key] = float(
+                    design_rows[i][target_col_idx]
+                )
             else:
-                subject_key_to_label[subj_key] = 0
+                subject_key_to_label[subj_key] = 0.0
 
     labels = [subject_key_to_label.get(s, "C") for s in subject_order]
 

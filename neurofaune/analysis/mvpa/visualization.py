@@ -199,13 +199,13 @@ def plot_decoding_scores(
     return output_path
 
 
-def plot_dose_response_brain(
+def plot_regression_brain(
     weight_img,
     output_path: Path,
-    title: str = "Dose-Response Regression Weights",
+    title: str = "Regression Weights",
     bg_img=None,
 ) -> Path:
-    """Plot regression weight map for dose-response decoding.
+    """Plot regression weight map for whole-brain decoding.
 
     Args:
         weight_img: Nifti1Image of regression weights.
@@ -235,5 +235,5 @@ def plot_dose_response_brain(
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    logger.info("Saved dose-response weight map: %s", output_path)
+    logger.info("Saved regression weight map: %s", output_path)
     return output_path

@@ -2,7 +2,7 @@
 """
 Prepare design matrices for MVPA analysis of SIGMA-space DTI metrics.
 
-Creates both categorical (dose group classification) and dose-response
+Creates both categorical (dose group classification) and dose regression
 (ordinal regression) designs for whole-brain decoding. Discovers
 SIGMA-space NIfTIs from the derivatives tree and builds NeuroAider
 design matrices per-cohort and pooled.
@@ -10,12 +10,12 @@ design matrices per-cohort and pooled.
 Design sets created:
   - per_pnd_p30, per_pnd_p60, per_pnd_p90: within-cohort dose (+ sex)
   - pooled: all subjects with dose + PND + sex + dose x PND
-  - dose_response_p30/p60/p90: ordinal dose trend within cohort
-  - dose_response_pooled: ordinal dose + PND interaction
+  - dose_regression_p30/p60/p90: ordinal dose trend within cohort
+  - dose_regression_pooled: ordinal dose + PND interaction
 
 For non-dose targets (e.g. --target auc --target-csv auc_lookup.csv):
-  - {target}_response_p30/p60/p90: per-PND continuous target designs
-  - {target}_response_pooled: pooled with target x PND interaction
+  - {target}_regression_p30/p60/p90: per-PND continuous target designs
+  - {target}_regression_pooled: pooled with target x PND interaction
 
 Usage:
     uv run python scripts/prepare_mvpa_designs.py \
@@ -281,16 +281,16 @@ def create_pooled_categorical(data, output_dir, subject_list_path):
     logger.info("Saved pooled categorical design to %s", design_dir)
 
 
-def create_per_pnd_dose_response(data, pnd, output_dir, subject_list_path):
-    """Create dose-response design for a single PND."""
+def create_per_pnd_dose_regression(data, pnd, output_dir, subject_list_path):
+    """Create dose regression design for a single PND."""
     subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
     n = len(subset)
     if n == 0:
-        logger.warning("No subjects for %s, skipping dose-response", pnd)
+        logger.warning("No subjects for %s, skipping dose regression", pnd)
         return
 
     logger.info(
-        "\n%s\nDose-response design: %s (n=%d)\n%s", "=" * 60, pnd, n, "=" * 60
+        "\n%s\nDose regression design: %s (n=%d)\n%s", "=" * 60, pnd, n, "=" * 60
     )
 
     subset['dose_numeric'] = subset['dose'].map(DOSE_MAP)
@@ -311,7 +311,7 @@ def create_per_pnd_dose_response(data, pnd, output_dir, subject_list_path):
 
     logger.info(helper.summary())
 
-    design_dir = output_dir / f'dose_response_{pnd.lower()}'
+    design_dir = output_dir / f'dose_regression_{pnd.lower()}'
     design_dir.mkdir(parents=True, exist_ok=True)
 
     helper.save(
@@ -324,15 +324,15 @@ def create_per_pnd_dose_response(data, pnd, output_dir, subject_list_path):
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
     )
-    write_provenance(design_dir, subject_list_path, n, f'dose_response_{pnd.lower()}')
-    logger.info("Saved dose-response design to %s", design_dir)
+    write_provenance(design_dir, subject_list_path, n, f'dose_regression_{pnd.lower()}')
+    logger.info("Saved dose regression design to %s", design_dir)
 
 
-def create_pooled_dose_response(data, output_dir, subject_list_path):
-    """Create pooled dose-response design with dose x PND interaction."""
+def create_pooled_dose_regression(data, output_dir, subject_list_path):
+    """Create pooled dose regression design with dose x PND interaction."""
     n = len(data)
     logger.info(
-        "\n%s\nPooled dose-response design (n=%d)\n%s", "=" * 60, n, "=" * 60
+        "\n%s\nPooled dose regression design (n=%d)\n%s", "=" * 60, n, "=" * 60
     )
 
     data = data.copy()
@@ -370,7 +370,7 @@ def create_pooled_dose_response(data, output_dir, subject_list_path):
 
     logger.info(helper.summary())
 
-    design_dir = output_dir / 'dose_response_pooled'
+    design_dir = output_dir / 'dose_regression_pooled'
     design_dir.mkdir(parents=True, exist_ok=True)
 
     helper.save(
@@ -383,8 +383,8 @@ def create_pooled_dose_response(data, output_dir, subject_list_path):
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
     )
-    write_provenance(design_dir, subject_list_path, n, 'dose_response_pooled')
-    logger.info("Saved pooled dose-response design to %s", design_dir)
+    write_provenance(design_dir, subject_list_path, n, 'dose_regression_pooled')
+    logger.info("Saved pooled dose regression design to %s", design_dir)
 
 
 def _load_target_lookup(csv_path: Path, column_name: str) -> pd.DataFrame:
@@ -433,16 +433,16 @@ def _merge_target(data: pd.DataFrame, lookup_df: pd.DataFrame, column_name: str)
     return data
 
 
-def create_per_pnd_target_response(data, pnd, target_name, output_dir, subject_list_path):
-    """Create continuous-target response design for a single PND."""
+def create_per_pnd_target_regression(data, pnd, target_name, output_dir, subject_list_path):
+    """Create continuous-target regression design for a single PND."""
     subset = data[data['PND'] == pnd].copy().reset_index(drop=True)
     n = len(subset)
     if n == 0:
-        logger.warning("No subjects for %s, skipping %s-response", pnd, target_name)
+        logger.warning("No subjects for %s, skipping %s-regression", pnd, target_name)
         return
 
     logger.info(
-        "\n%s\n%s-response design: %s (n=%d)\n%s",
+        "\n%s\n%s-regression design: %s (n=%d)\n%s",
         "=" * 60, target_name, pnd, n, "=" * 60,
     )
 
@@ -467,7 +467,7 @@ def create_per_pnd_target_response(data, pnd, target_name, output_dir, subject_l
 
     logger.info(helper.summary())
 
-    design_dir = output_dir / f'{target_name}_response_{pnd.lower()}'
+    design_dir = output_dir / f'{target_name}_regression_{pnd.lower()}'
     design_dir.mkdir(parents=True, exist_ok=True)
 
     helper.save(
@@ -488,15 +488,15 @@ def create_per_pnd_target_response(data, pnd, target_name, output_dir, subject_l
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
     )
-    write_provenance(design_dir, subject_list_path, n, f'{target_name}_response_{pnd.lower()}')
-    logger.info("Saved %s-response design to %s", target_name, design_dir)
+    write_provenance(design_dir, subject_list_path, n, f'{target_name}_regression_{pnd.lower()}')
+    logger.info("Saved %s-regression design to %s", target_name, design_dir)
 
 
-def create_pooled_target_response(data, target_name, output_dir, subject_list_path):
-    """Create pooled continuous-target response design with target x PND interaction."""
+def create_pooled_target_regression(data, target_name, output_dir, subject_list_path):
+    """Create pooled continuous-target regression design with target x PND interaction."""
     n = len(data)
     logger.info(
-        "\n%s\nPooled %s-response design (n=%d)\n%s",
+        "\n%s\nPooled %s-regression design (n=%d)\n%s",
         "=" * 60, target_name, n, "=" * 60,
     )
 
@@ -536,7 +536,7 @@ def create_pooled_target_response(data, target_name, output_dir, subject_list_pa
 
     logger.info(helper.summary())
 
-    design_dir = output_dir / f'{target_name}_response_pooled'
+    design_dir = output_dir / f'{target_name}_regression_pooled'
     design_dir.mkdir(parents=True, exist_ok=True)
 
     helper.save(
@@ -557,8 +557,8 @@ def create_pooled_target_response(data, target_name, output_dir, subject_list_pa
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
     )
-    write_provenance(design_dir, subject_list_path, n, f'{target_name}_response_pooled')
-    logger.info("Saved pooled %s-response design to %s", target_name, design_dir)
+    write_provenance(design_dir, subject_list_path, n, f'{target_name}_regression_pooled')
+    logger.info("Saved pooled %s-regression design to %s", target_name, design_dir)
 
 
 def write_design_description(args, output_path):
@@ -584,7 +584,7 @@ def write_design_description(args, output_path):
         "   - Dummy coding, sex as nuisance (effect coding)",
         "   - Pooled includes dose x PND interaction",
         "",
-        "2. Dose-response (per-PND + pooled):",
+        "2. Dose regression (per-PND + pooled):",
         "   - Dose as ordinal: C=0, L=1, M=2, H=3 (mean-centered)",
         "   - Sex as nuisance (effect coding)",
         "   - Pooled includes dose_numeric x PND interaction",
@@ -593,7 +593,7 @@ def write_design_description(args, output_path):
         "---------",
         "Categorical: H>C, C>H, L>C, C>L, M>C, C>M",
         "  (pooled adds dose x PND interaction contrasts)",
-        "Dose-response: dose_pos, dose_neg",
+        "Dose regression: dose_pos, dose_neg",
         "  (pooled adds dose x P60 and dose x P90 interactions)",
         "",
         "SUBJECT SELECTION",
@@ -686,10 +686,10 @@ def main():
             create_per_pnd_categorical(data, pnd, args.output_dir, subject_list_path)
         create_pooled_categorical(data, args.output_dir, subject_list_path)
 
-        # Create dose-response designs (per-PND + pooled)
+        # Create dose regression designs (per-PND + pooled)
         for pnd in args.cohorts:
-            create_per_pnd_dose_response(data, pnd, args.output_dir, subject_list_path)
-        create_pooled_dose_response(data, args.output_dir, subject_list_path)
+            create_per_pnd_dose_regression(data, pnd, args.output_dir, subject_list_path)
+        create_pooled_dose_regression(data, args.output_dir, subject_list_path)
 
     else:
         # Generic target: merge from lookup CSV
@@ -697,12 +697,12 @@ def main():
         target_df = _load_target_lookup(args.target_csv, target_name)
         data_target = _merge_target(data, target_df, target_name)
 
-        # Create target-response designs (per-PND + pooled)
+        # Create target regression designs (per-PND + pooled)
         for pnd in args.cohorts:
-            create_per_pnd_target_response(
+            create_per_pnd_target_regression(
                 data_target, pnd, target_name, args.output_dir, subject_list_path,
             )
-        create_pooled_target_response(
+        create_pooled_target_regression(
             data_target, target_name, args.output_dir, subject_list_path,
         )
 

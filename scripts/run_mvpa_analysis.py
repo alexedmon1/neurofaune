@@ -11,7 +11,7 @@ skip whole-brain decoding and run searchlight Ridge regression with R²
 scoring and FWER correction.
 
 Usage:
-    # Classification + dose-response:
+    # Classification + regression:
     uv run python scripts/run_mvpa_analysis.py \
         --design-dir $STUDY_ROOT/analysis/mvpa/designs \
         --derivatives-root $STUDY_ROOT/derivatives \
@@ -51,7 +51,7 @@ from neurofaune.analysis.mvpa.data_loader import (
 from neurofaune.analysis.mvpa.searchlight import run_searchlight
 from neurofaune.analysis.mvpa.visualization import (
     plot_decoding_scores,
-    plot_dose_response_brain,
+    plot_regression_brain,
     plot_glass_brain,
     plot_searchlight_map,
     plot_weight_map,
@@ -69,7 +69,7 @@ def encode_labels(labels, analysis_type):
     """Encode labels for sklearn: strings to integers or floats.
 
     For classification: unique string labels to integer codes.
-    For dose-response: labels are already numeric (ordinal).
+    For regression: labels are already numeric.
 
     Returns (encoded_labels, label_names).
     """
@@ -106,7 +106,7 @@ def run_single_mvpa(
 
     If searchlight_only=True, skips whole-brain decoding and only runs
     searchlight. This is the appropriate mode for continuous targets
-    (target_response) where whole-brain Decoder is not suitable.
+    where whole-brain Decoder is not suitable.
     """
     combo_label = f"{metric}/{design_name}/{analysis_type}"
     logger.info("\n%s\n  %s\n%s", "=" * 60, combo_label, "=" * 60)
@@ -165,7 +165,7 @@ def run_single_mvpa(
             for i, name in enumerate(label_names)
         }
 
-    # --- Whole-brain decoding (skip for searchlight_only or target_response) ---
+    # --- Whole-brain decoding (skip for searchlight_only) ---
     if not searchlight_only:
         logger.info("[Phase 1] Whole-brain decoding...")
         wb_dir = combo_dir / "whole_brain"
@@ -212,10 +212,10 @@ def run_single_mvpa(
             metric_label=score_label,
         )
 
-        if analysis_type in ("dose_response", "target_response"):
-            plot_dose_response_brain(
+        if analysis_type == "regression":
+            plot_regression_brain(
                 wb_results["weight_img"],
-                wb_dir / "dose_response_weights.png",
+                wb_dir / "regression_weights.png",
                 title=f"Regression Weights \u2014 {metric} {design_name}",
                 bg_img=mask_img,
             )
@@ -287,7 +287,7 @@ def write_design_description(args, output_path):
             f"- Cross-validation: StratifiedKFold({args.cv_folds})",
             f"- Permutation test: {args.n_permutations} shuffles for empirical p",
             "- Classification: Linear SVM (L1 penalty)",
-            "- Dose-response: Ridge regression (alpha=1.0)",
+            "- Regression: Ridge (alpha=1.0)",
             "",
         ])
 
@@ -314,9 +314,9 @@ def write_design_description(args, output_path):
             "1. Classification: categorical dose groups (C, L, M, H)",
             "   - Metric: accuracy",
         ])
-    if not args.skip_dose_response:
+    if not args.skip_regression:
         lines.extend([
-            "2. Dose-response / target-response: continuous regression",
+            "2. Regression: continuous/ordinal target",
             "   - Metric: R\u00b2",
         ])
 
@@ -393,8 +393,8 @@ def main():
         help="Random seed for reproducibility",
     )
     parser.add_argument(
-        "--skip-dose-response", action="store_true",
-        help="Skip dose-response regression, only run classification",
+        "--skip-regression", action="store_true",
+        help="Skip regression designs, only run classification",
     )
     parser.add_argument(
         "--searchlight-only", action="store_true",
@@ -441,7 +441,7 @@ def main():
         "searchlight_cv_folds": args.searchlight_cv_folds,
         "searchlight_n_jobs": args.searchlight_n_jobs,
         "seed": args.seed,
-        "skip_dose_response": args.skip_dose_response,
+        "skip_regression": args.skip_regression,
         "timestamp": datetime.now().isoformat(),
     }
     with open(args.output_dir / "analysis_config.json", "w") as f:
@@ -461,18 +461,18 @@ def main():
 
     logger.info("Found %d designs: %s", len(design_dirs), list(design_dirs.keys()))
 
-    # Separate categorical and response designs (dose_response_*, {target}_response_*)
+    # Separate categorical and regression designs
     categorical_designs = {}
-    response_designs = {}
+    regression_designs = {}
     for k, v in design_dirs.items():
-        if "_response_" in k or k.endswith("_response_pooled"):
-            response_designs[k] = v
+        if "_regression_" in k or k.endswith("_regression_pooled"):
+            regression_designs[k] = v
         elif k.startswith("per_pnd_") or k == "pooled":
             categorical_designs[k] = v
         else:
-            # Unknown — treat as response if name suggests it
-            if "response" in k:
-                response_designs[k] = v
+            # Unknown — treat as regression if name suggests it
+            if "regression" in k or "response" in k:
+                regression_designs[k] = v
             else:
                 categorical_designs[k] = v
 
@@ -484,7 +484,7 @@ def main():
 
     # In searchlight-only mode, skip classification designs
     n_cat = 0 if args.searchlight_only else len(categorical_designs)
-    n_resp = 0 if args.skip_dose_response else len(response_designs)
+    n_resp = 0 if args.skip_regression else len(regression_designs)
     total_tasks = len(args.metrics) * (n_cat + n_resp)
     progress = AnalysisProgress(args.output_dir, "run_mvpa_analysis.py", total_tasks)
     completed = 0
@@ -530,17 +530,11 @@ def main():
                     sl = summary.get("searchlight", {})
                     n_searchlight_sig += sl.get("n_significant_voxels", 0)
 
-        # Response designs (dose_response or target_response)
-        if not args.skip_dose_response:
-            for design_name, design_path in response_designs.items():
-                # Determine analysis type from design name
-                if "dose_response" in design_name:
-                    analysis_type = "dose_response"
-                else:
-                    analysis_type = "target_response"
-
+        # Regression designs
+        if not args.skip_regression:
+            for design_name, design_path in regression_designs.items():
                 progress.update(
-                    task=f"{metric} / {design_name} / {analysis_type}",
+                    task=f"{metric} / {design_name} / regression",
                     phase="running",
                     completed=completed,
                 )
@@ -551,7 +545,7 @@ def main():
                     design_dir=design_path,
                     derivatives_root=args.derivatives_root,
                     mask_img=mask_img,
-                    analysis_type=analysis_type,
+                    analysis_type="regression",
                     output_dir=args.output_dir,
                     n_permutations=args.n_permutations,
                     cv_folds=args.cv_folds,
@@ -564,7 +558,7 @@ def main():
                     sl_n_perm_fwer=args.searchlight_n_perm_fwer,
                     searchlight_only=args.searchlight_only,
                 )
-                metric_summaries[f"{design_name}_{analysis_type}"] = summary
+                metric_summaries[f"{design_name}_regression"] = summary
                 completed += 1
 
                 if summary.get("status") == "completed":
