@@ -265,12 +265,17 @@ def run_regression(
         null_r2 = np.empty(n_permutations)
         for i in range(n_permutations):
             y_perm = rng.permutation(y_float)
-            if pca_folds is not None:
-                null_r2[i], _, _, _ = _loocv_regression_precomputed(reg, y_perm, pca_folds)
-            else:
-                null_r2[i], _, _, _ = _loocv_regression(reg, X, y_perm)
+            try:
+                if pca_folds is not None:
+                    null_r2[i], _, _, _ = _loocv_regression_precomputed(reg, y_perm, pca_folds)
+                else:
+                    null_r2[i], _, _, _ = _loocv_regression(reg, X, y_perm)
+            except (ValueError, np.linalg.LinAlgError):
+                # PLS can hit numerical singularities on degenerate permutations
+                null_r2[i] = np.nan
 
-        perm_p = float((np.sum(null_r2 >= r2) + 1) / (n_permutations + 1))
+        valid_null = null_r2[~np.isnan(null_r2)]
+        perm_p = float((np.sum(valid_null >= r2) + 1) / (len(valid_null) + 1))
         logger.info("  Permutation p-value (R²): %.4f (n=%d)", perm_p, n_permutations)
 
         results[reg_name] = {
