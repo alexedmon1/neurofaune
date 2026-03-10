@@ -42,6 +42,7 @@ from typing import Dict, List, Optional, Tuple
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 
 from neurofaune.config import load_config, get_config_value
 
@@ -101,6 +102,7 @@ def discover_tbss_subjects(
     config: Dict,
     cohorts: List[str] = None,
     exclude_file: Optional[Path] = None,
+    exclusion_csv: Optional[Path] = None,
     subject_list: Optional[List[str]] = None,
     metrics: List[str] = None,
     use_prewarped: bool = True
@@ -118,6 +120,7 @@ def discover_tbss_subjects(
         config: Configuration dictionary
         cohorts: Cohorts to include (default: ['p30', 'p60', 'p90'])
         exclude_file: Path to exclusion list (one subject_session per line)
+        exclusion_csv: Path to CSV with subject,session columns (standardized format)
         subject_list: Explicit subject list (format: 'sub-Rat1_ses-p60' per line)
         metrics: DTI metrics to validate (default: ['FA', 'MD', 'AD', 'RD'])
         use_prewarped: If True, use existing space-SIGMA files (default: True)
@@ -137,12 +140,17 @@ def discover_tbss_subjects(
         transforms_dir = Path(get_config_value(config, 'paths.transforms'))
         templates_dir = Path(get_config_value(config, 'paths.templates'))
 
-    # Load exclusion list
+    # Load exclusion list (text format and/or CSV format)
     excluded_ids = set()
     if exclude_file and exclude_file.exists():
         with open(exclude_file) as f:
             excluded_ids = {line.strip() for line in f if line.strip()}
         logger.info(f"Loaded {len(excluded_ids)} excluded subjects from {exclude_file}")
+    if exclusion_csv and exclusion_csv.exists():
+        excl_df = pd.read_csv(exclusion_csv)
+        csv_ids = {f"{row['subject']}_{row['session']}" for _, row in excl_df.iterrows()}
+        excluded_ids |= csv_ids
+        logger.info(f"Loaded {len(csv_ids)} excluded sessions from {exclusion_csv}")
 
     # Determine subject/session pairs to check
     if subject_list:
@@ -945,6 +953,7 @@ def prepare_tbss_data(
     cohorts: List[str] = None,
     subjects: Optional[List[str]] = None,
     exclude_file: Optional[Path] = None,
+    exclusion_csv: Optional[Path] = None,
     wm_prob_threshold: float = 0.3,
     erosion_voxels: int = 2,
     dry_run: bool = False,
@@ -1007,6 +1016,7 @@ def prepare_tbss_data(
         config=config,
         cohorts=cohorts,
         exclude_file=exclude_file,
+        exclusion_csv=exclusion_csv,
         subject_list=subjects,
         metrics=metrics,
         use_prewarped=use_prewarped
@@ -1250,7 +1260,9 @@ Examples:
     parser.add_argument('--subject-list', type=Path,
                         help='Path to subject list file (one per line, format: sub-Rat1_ses-p60)')
     parser.add_argument('--exclude-file', type=Path,
-                        help='Path to exclusion list from batch QC')
+                        help='Path to exclusion list from batch QC (text: one subject_session per line)')
+    parser.add_argument('--exclusion-csv', type=Path,
+                        help='Path to CSV with subject,session columns (standardized exclusion format)')
     parser.add_argument('--wm-prob-threshold', type=float, default=0.3,
                         help='WM probability threshold (default: 0.3)')
     parser.add_argument('--erosion-voxels', type=int, default=2,
@@ -1280,6 +1292,7 @@ Examples:
         cohorts=args.cohorts,
         subjects=subjects,
         exclude_file=args.exclude_file,
+        exclusion_csv=args.exclusion_csv,
         wm_prob_threshold=args.wm_prob_threshold,
         erosion_voxels=args.erosion_voxels,
         dry_run=args.dry_run,

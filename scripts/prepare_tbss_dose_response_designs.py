@@ -186,6 +186,11 @@ def create_pooled_dose_design(data, output_dir, tbss_dir=None):
       - dose_x_P90_pos / dose_x_P90_neg: dose slope differs at P90 vs P30?
     """
     n = len(data)
+    n_pnds = data['PND'].nunique()
+    if n_pnds < 2:
+        logger.info(f"\nSkipping pooled dose-response design: only {n_pnds} PND level(s) present")
+        return
+
     logger.info(f"\n{'='*60}")
     logger.info(f"Pooled dose-response design (n={n})")
     logger.info(f"{'='*60}")
@@ -343,6 +348,11 @@ def create_pooled_target_design(data, target_name, output_dir, tbss_dir=None):
                      sex_M, <target>\u00d7PND_P60, <target>\u00d7PND_P90]
     """
     n = len(data)
+    n_pnds = data['PND'].nunique()
+    if n_pnds < 2:
+        logger.info(f"\nSkipping pooled {target_name}-response design: only {n_pnds} PND level(s) present")
+        return
+
     logger.info(f"\n{'='*60}")
     logger.info(f"Pooled {target_name}-response design (n={n})")
     logger.info(f"{'='*60}")

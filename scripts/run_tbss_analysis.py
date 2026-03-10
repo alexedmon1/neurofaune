@@ -47,6 +47,7 @@ import numpy as np
 from neurofaune.analysis.progress import AnalysisProgress
 from neurofaune.analysis.stats.randomise_wrapper import run_randomise, summarize_results
 from neurofaune.analysis.stats.cluster_report import generate_reports_for_all_contrasts
+from neurofaune.analysis.stats.effect_size import generate_effect_size_maps
 from neurofaune.config import load_config, get_config_value
 
 
@@ -347,12 +348,17 @@ def run_single_analysis(
             }
             continue
 
+        # Auto-detect F-test file if present
+        design_fts = design_dir / "design.fts"
+        fts_file = design_fts if design_fts.exists() else None
+
         randomise_result = run_randomise(
             input_file=metric_files[metric],
             design_mat=design_mat,
             contrast_con=design_con,
             output_dir=metric_output,
             mask=analysis_mask,
+            fts_file=fts_file,
             n_permutations=n_permutations,
             tfce=True,
             seed=seed
@@ -363,7 +369,31 @@ def run_single_analysis(
             'summary': summarize_results(metric_output, cluster_threshold)
         }
 
-    # Step 4: Extract clusters and generate reports
+    # Step 4: Generate effect size maps
+    logger.info("\nComputing effect size maps...")
+
+    # Auto-detect F-test file
+    design_fts = design_dir / "design.fts"
+    fts_for_effect_size = design_fts if design_fts.exists() else None
+
+    for metric in metrics:
+        metric_output = output_dir / f"randomise_{metric}"
+        if not metric_output.exists():
+            continue
+        try:
+            effect_paths = generate_effect_size_maps(
+                randomise_output_dir=metric_output,
+                design_mat_file=design_mat,
+                design_con_file=design_con,
+                design_fts_file=fts_for_effect_size
+            )
+            all_results[metric]['effect_size'] = {
+                k: [str(p) for p in v] for k, v in effect_paths.items()
+            }
+        except Exception as e:
+            logger.warning(f"Effect size computation failed for {metric}: {e}")
+
+    # Step 5: Extract clusters and generate reports
     logger.info("\nExtracting clusters...")
 
     sigma_parcellation = None
@@ -617,6 +647,22 @@ Output structure:
             )
     except Exception as exc:
         logger.warning("Failed to register with reporting system: %s", exc)
+
+    # Generate per-analysis findings summaries
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        for analysis, result in results.items():
+            if not result.get('success'):
+                continue
+            summary_json = tbss_dir / "randomise" / analysis / "analysis_summary.json"
+            if summary_json.exists():
+                findings = summarize_analysis(
+                    "tbss", summary_json,
+                    output_dir=summary_json.parent,
+                )
+                logger.info("Findings [%s]: %s", analysis, findings.summary_text)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summaries: %s", exc)
 
     # Final summary
     logger.info("\n" + "=" * 80)

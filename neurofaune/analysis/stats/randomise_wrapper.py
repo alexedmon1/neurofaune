@@ -89,6 +89,7 @@ def run_randomise(
     contrast_con: Path,
     output_dir: Path,
     mask: Optional[Path] = None,
+    fts_file: Optional[Path] = None,
     n_permutations: int = 5000,
     tfce: bool = True,
     tfce_2d: bool = True,
@@ -106,6 +107,7 @@ def run_randomise(
         contrast_con: FSL contrast matrix (.con file)
         output_dir: Output directory for results
         mask: Optional binary mask (3D volume)
+        fts_file: Optional F-test specification file (.fts)
         n_permutations: Number of permutations (default: 5000)
         tfce: Use Threshold-Free Cluster Enhancement (default: True)
         tfce_2d: Use 2D TFCE (--T2) for TBSS skeletons (default: True).
@@ -146,6 +148,9 @@ def run_randomise(
 
     if mask is not None:
         cmd.extend(['-m', str(mask)])
+
+    if fts_file is not None:
+        cmd.extend(['-f', str(fts_file)])
 
     if tfce:
         if tfce_2d:

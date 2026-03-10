@@ -26,7 +26,9 @@ def extract_clusters(
     corrp_file: Path,
     stat_file: Path,
     threshold: float = 0.95,
-    min_cluster_size: int = 10
+    min_cluster_size: int = 10,
+    effect_size_file: Optional[Path] = None,
+    etasq_file: Optional[Path] = None
 ) -> pd.DataFrame:
     """
     Extract significant clusters from corrected p-value map.
@@ -39,6 +41,8 @@ def extract_clusters(
         stat_file: T-statistic or F-statistic map
         threshold: Threshold for significance (default: 0.95 = p<0.05)
         min_cluster_size: Minimum cluster size in voxels
+        effect_size_file: Optional Cohen's d or effect size map (same geometry)
+        etasq_file: Optional partial eta-squared map (same geometry)
 
     Returns:
         DataFrame with cluster information (index, size, peak coords, peak stat)
@@ -56,6 +60,15 @@ def extract_clusters(
 
     stat_img = nib.load(stat_file)
     stat_data = stat_img.get_fdata()
+
+    # Load optional effect size maps
+    es_data = None
+    if effect_size_file and effect_size_file.exists():
+        es_data = nib.load(effect_size_file).get_fdata()
+
+    etasq_data = None
+    if etasq_file and etasq_file.exists():
+        etasq_data = nib.load(etasq_file).get_fdata()
 
     sig_mask = corrp_data >= threshold
     n_sig_voxels = int(np.sum(sig_mask))
@@ -96,7 +109,7 @@ def extract_clusters(
         # Mean statistic in cluster
         mean_stat = float(np.mean(stat_data[cluster_mask]))
 
-        clusters.append({
+        cluster_info = {
             'cluster_id': cluster_id,
             'size_voxels': cluster_size,
             'peak_stat': peak_stat,
@@ -111,7 +124,18 @@ def extract_clusters(
             'peak_x_vox': int(peak_idx[0]),
             'peak_y_vox': int(peak_idx[1]),
             'peak_z_vox': int(peak_idx[2]),
-        })
+        }
+
+        # Effect size at peak and cluster mean
+        if es_data is not None:
+            cluster_info['peak_cohens_d'] = float(es_data[peak_idx])
+            cluster_info['mean_cohens_d'] = float(np.mean(es_data[cluster_mask]))
+
+        if etasq_data is not None:
+            cluster_info['peak_etasq'] = float(etasq_data[peak_idx])
+            cluster_info['mean_etasq'] = float(np.mean(etasq_data[cluster_mask]))
+
+        clusters.append(cluster_info)
 
     df = pd.DataFrame(clusters)
     if not df.empty:
@@ -197,7 +221,9 @@ def generate_cluster_report(
     sigma_parcellation: Optional[Path] = None,
     label_names: Optional[Dict[int, str]] = None,
     threshold: float = 0.95,
-    min_cluster_size: int = 10
+    min_cluster_size: int = 10,
+    effect_size_file: Optional[Path] = None,
+    etasq_file: Optional[Path] = None
 ) -> Dict:
     """
     Generate comprehensive cluster report for a single contrast.
@@ -225,7 +251,9 @@ def generate_cluster_report(
         corrp_file=corrp_file,
         stat_file=stat_file,
         threshold=threshold,
-        min_cluster_size=min_cluster_size
+        min_cluster_size=min_cluster_size,
+        effect_size_file=effect_size_file,
+        etasq_file=etasq_file
     )
 
     if df.empty:
@@ -322,6 +350,13 @@ def generate_reports_for_all_contrasts(
             else f"contrast_{i+1}"
         )
 
+        # Find corresponding effect size maps (if generated)
+        es_file = randomise_output_dir / stat_name.replace('_tstat', '_cohend')
+        etasq_name = stat_name.replace('_tstat', '_etasq')
+        if '_fstat' in stat_name:
+            etasq_name = stat_name.replace('_fstat', '_etasq_f')
+        etasq_file = randomise_output_dir / etasq_name
+
         report = generate_cluster_report(
             stat_file=stat_file,
             corrp_file=corrp_file,
@@ -330,7 +365,9 @@ def generate_reports_for_all_contrasts(
             sigma_parcellation=sigma_parcellation,
             label_names=label_names,
             threshold=threshold,
-            min_cluster_size=min_cluster_size
+            min_cluster_size=min_cluster_size,
+            effect_size_file=es_file if es_file.exists() else None,
+            etasq_file=etasq_file if etasq_file.exists() else None
         )
 
         reports.append(report)
@@ -354,14 +391,21 @@ def _generate_html_report(
     # Select display columns
     display_cols = ['cluster_id', 'size_voxels', 'peak_stat', 'peak_corrp',
                     'peak_x_mm', 'peak_y_mm', 'peak_z_mm']
+    col_labels = ['Cluster', 'Voxels', 'Peak T', 'Peak 1-p',
+                  'X (mm)', 'Y (mm)', 'Z (mm)']
+
+    if 'peak_cohens_d' in df.columns:
+        display_cols.append('peak_cohens_d')
+        col_labels.append("Cohen's d")
+    if 'peak_etasq' in df.columns:
+        display_cols.append('peak_etasq')
+        col_labels.append('Partial eta-sq')
     if 'region' in df.columns:
         display_cols.append('region')
+        col_labels.append('Region')
 
     display_df = df[display_cols].copy()
-    display_df.columns = [
-        'Cluster', 'Voxels', 'Peak T', 'Peak 1-p',
-        'X (mm)', 'Y (mm)', 'Z (mm)'
-    ] + (['Region'] if 'region' in df.columns else [])
+    display_df.columns = col_labels
 
     html = f"""<!DOCTYPE html>
 <html>

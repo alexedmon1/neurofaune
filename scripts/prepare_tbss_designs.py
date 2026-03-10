@@ -328,6 +328,11 @@ def create_pooled_design(
 ) -> None:
     """Create pooled design with dose × PND interaction."""
     n = len(data)
+    n_pnds = data['PND'].nunique()
+    if n_pnds < 2:
+        logger.info(f"\nSkipping pooled design: only {n_pnds} PND level(s) present")
+        return
+
     logger.info(f"\n{'='*60}")
     logger.info(f"Pooled design (n={n})")
     logger.info(f"{'='*60}")
