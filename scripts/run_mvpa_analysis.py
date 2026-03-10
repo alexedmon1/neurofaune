@@ -3,8 +3,9 @@
 MVPA (Multi-Voxel Pattern Analysis) runner for SIGMA-space metrics.
 
 Runs whole-brain decoding and/or searchlight mapping per metric,
-cohort, and analysis type. Uses nilearn Decoder and SearchLight on
-individual SIGMA-space NIfTIs discovered from the derivatives tree.
+cohort, and analysis type. Uses PCA + LinearSVC/Ridge for whole-brain
+decoding and nilearn SearchLight for spatial mapping, on individual
+SIGMA-space NIfTIs discovered from the derivatives tree.
 
 For continuous targets (log_auc, auc, etc.): use --searchlight-only to
 skip whole-brain decoding and run searchlight Ridge regression with R²
@@ -282,12 +283,13 @@ def write_design_description(args, output_path):
         lines.extend([
             "WHOLE-BRAIN DECODING",
             "--------------------",
-            "- nilearn Decoder with ANOVA feature screening",
-            f"- Screening percentile: {args.screening_percentile}% (top voxels within mask)",
-            f"- Cross-validation: StratifiedKFold({args.cv_folds})",
+            "- PCA dimensionality reduction (95% variance threshold)",
+            "- PCA pre-computed once per CV fold, reused across permutations",
+            f"- Cross-validation: StratifiedKFold({args.cv_folds}) / KFold({args.cv_folds})",
             f"- Permutation test: {args.n_permutations} shuffles for empirical p",
-            "- Classification: Linear SVM (L1 penalty)",
+            "- Classification: LinearSVC (dual=False)",
             "- Regression: Ridge (alpha=1.0)",
+            "- Weight inversion: coef @ pca.components_ → voxel space",
             "",
         ])
 
@@ -467,8 +469,13 @@ def main():
     for k, v in design_dirs.items():
         if "_regression_" in k or k.endswith("_regression_pooled"):
             regression_designs[k] = v
-        elif k.startswith("per_pnd_") or k == "pooled":
+        elif k.startswith("per_pnd_"):
             categorical_designs[k] = v
+        elif k == "pooled":
+            # Pooled classification mixes cohorts where dose categories
+            # have different meanings — skip it
+            logger.info("Skipping pooled categorical design (dose groups are cohort-specific)")
+            continue
         else:
             # Unknown — treat as regression if name suggests it
             if "regression" in k or "response" in k:
@@ -644,6 +651,14 @@ def main():
         )
     except Exception as exc:
         logger.warning("Failed to register with reporting system: %s", exc)
+
+    # Generate findings summary
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        findings = summarize_analysis("mvpa", summary_path, output_dir=args.output_dir)
+        logger.info("Findings: %s", findings.summary_text)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
 
     logger.info("\nMVPA analysis complete. Results in: %s", args.output_dir)
 
