@@ -145,6 +145,15 @@ def main():
         json.dump(all_summaries, f, indent=2)
 
     progress.finish()
+
+    # Generate findings summary
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        findings = summarize_analysis("covnet_nbs", summary_path, output_dir=args.output_dir)
+        logger.info("Findings: %s", findings.summary_text)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
+
     logger.info("\nNBS analysis complete. Results in: %s", args.output_dir)
 
 

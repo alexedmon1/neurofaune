@@ -459,6 +459,14 @@ def main():
     except Exception as exc:
         logger.warning("Failed to register with reporting system: %s", exc)
 
+    # Generate findings summary
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        findings = summarize_analysis("regression", summary_path, output_dir=args.output_dir)
+        logger.info("Findings: %s", findings.summary_text)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
+
     logger.info("\nRegression analysis complete. Results in: %s", args.output_dir)
 
 
