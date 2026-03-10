@@ -45,6 +45,8 @@ from .visualization import (
 )
 from .whole_network import (
     run_all_comparisons as _run_whole_network_comparisons,
+    run_maturation_distance as _run_maturation_distance,
+    maturation_distance_comparisons,
 )
 from neurofaune.network.matrices import (
     bilateral_average,
@@ -940,4 +942,71 @@ class CovNetAnalysis:
             f"with at least one significant statistic (p < 0.05)"
         )
         return wn_df, wn_nulls
+
+    def run_maturation_distance(
+        self,
+        triplets: list[tuple[str, str, str]] | None = None,
+        n_perm: int = 5000,
+        seed: int = 42,
+        distance_fns: list[str] | None = None,
+        n_workers: int = 1,
+    ) -> pd.DataFrame:
+        """Test whether dosed groups' covariance networks are shifted toward
+        or away from a mature reference (accelerated/decelerated maturation).
+
+        For each (dose, early_control, late_control) triplet, computes:
+            Δ = d(dose, late_control) − d(early_control, late_control)
+        Negative Δ = dose group is closer to mature reference → accelerated.
+        Positive Δ = dose group is further from mature reference → decelerated.
+
+        Results saved to ``maturation_distance/{modality}/{metric}/``.
+
+        Parameters
+        ----------
+        triplets : list of (dose, early_control, late_control), optional
+            If None, auto-generated from group labels.
+        n_perm : int
+            Number of permutations.
+        seed : int
+            Random seed.
+        distance_fns : list[str], optional
+            Distance metrics. Default: ["frobenius", "spectral", "mantel"].
+        n_workers : int
+            Parallel workers.
+
+        Returns
+        -------
+        DataFrame with columns: dose_group, early_control, reference,
+        comparison, distance_fn, d_dose_to_ref, d_ctrl_to_ref, delta,
+        p_accelerated, p_decelerated, n_dose, n_ctrl, n_ref, interpretation.
+        """
+        if triplets is None:
+            triplets = maturation_distance_comparisons(self.group_labels)
+
+        logger.info(
+            f"Maturation distance: {self.metric} ({n_perm} permutations, "
+            f"{len(triplets)} triplets)"
+        )
+
+        md_dir = self._test_dir("maturation_distance")
+        md_dir.mkdir(parents=True, exist_ok=True)
+
+        md_df = _run_maturation_distance(
+            group_data=self.group_arrays,
+            triplets=triplets,
+            n_perm=n_perm,
+            seed=seed,
+            distance_fns=distance_fns,
+            n_workers=n_workers,
+        )
+
+        md_df.to_csv(md_dir / "maturation_distance_results.csv", index=False)
+
+        n_accel = int((md_df["p_accelerated"] < 0.05).sum())
+        n_decel = int((md_df["p_decelerated"] < 0.05).sum())
+        logger.info(
+            f"Maturation distance {self.metric}: {n_accel} accelerated, "
+            f"{n_decel} decelerated (p < 0.05) out of {len(md_df)} tests"
+        )
+        return md_df
 

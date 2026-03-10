@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""
+CovNet maturation distance analysis.
+
+Tests whether BPA-exposed groups at an early timepoint have covariance
+networks that are more similar to older controls than same-age controls are.
+This directly tests the "accelerated maturation" hypothesis.
+
+For each (dose_group, early_control, late_control) triplet:
+    Δ = d(dose, late_control) − d(early_control, late_control)
+    Δ < 0 → dose group is closer to mature reference (accelerated)
+    Δ > 0 → dose group is further from mature reference (decelerated)
+
+Significance is assessed via permutation of dose/control labels within the
+early timepoint, keeping the late reference fixed.
+
+Usage:
+    uv run python scripts/run_covnet_maturation_distance.py \
+        --roi-dir $STUDY_ROOT/network/roi \
+        --output-dir $STUDY_ROOT/network/covnet \
+        --modality dwi \
+        --metrics FA MD AD RD \
+        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
+        --n-permutations 5000 --seed 42
+"""
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.analysis.progress import AnalysisProgress
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="CovNet maturation distance analysis"
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, required=True,
+        help="Directory containing roi_*_wide.csv files",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, required=True,
+        help="Root output directory for CovNet results",
+    )
+    parser.add_argument(
+        "--modality", type=str, required=True,
+        help="Modality name (e.g. dwi, msme, func)",
+    )
+    parser.add_argument(
+        "--metrics", nargs="+", required=True,
+        help="Metrics to analyse (e.g. FA MD AD RD)",
+    )
+    parser.add_argument(
+        "--exclusion-csv", type=Path, default=None,
+        help="CSV of sessions to exclude (must have subject, session columns)",
+    )
+    parser.add_argument(
+        "--labels-csv", type=Path, default=None,
+        help="SIGMA atlas labels CSV for territory mapping",
+    )
+    parser.add_argument(
+        "--n-permutations", type=int, default=5000,
+        help="Number of permutations (default: 5000)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--n-workers", type=int, default=1,
+        help="Parallel workers (default: 1)",
+    )
+    parser.add_argument(
+        "--distance-fns", nargs="+", default=None,
+        help="Distance metrics (default: frobenius spectral mantel)",
+    )
+
+    args = parser.parse_args()
+
+    if not args.roi_dir.exists():
+        logger.error("ROI directory not found: %s", args.roi_dir)
+        sys.exit(1)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    progress = AnalysisProgress(
+        args.output_dir, "run_covnet_maturation_distance.py", len(args.metrics)
+    )
+    all_summaries = {}
+    completed = 0
+
+    for metric in args.metrics:
+        logger.info(
+            "\n%s\n  Maturation distance: %s / %s\n%s",
+            "=" * 60, args.modality, metric, "=" * 60,
+        )
+        progress.update(task=metric, phase="preparing", completed=completed)
+
+        try:
+            analysis = CovNetAnalysis.prepare(
+                args.roi_dir, args.exclusion_csv, args.output_dir,
+                args.modality, metric, labels_csv=args.labels_csv,
+            )
+            analysis.save()
+
+            progress.update(
+                task=metric, phase="running maturation distance",
+                completed=completed,
+            )
+            md_df = analysis.run_maturation_distance(
+                n_perm=args.n_permutations,
+                seed=args.seed,
+                distance_fns=args.distance_fns,
+                n_workers=args.n_workers,
+            )
+
+            n_accel = int((md_df["p_accelerated"] < 0.05).sum())
+            n_decel = int((md_df["p_decelerated"] < 0.05).sum())
+            all_summaries[metric] = {
+                "metric": metric,
+                "n_subjects": analysis.n_subjects,
+                "n_bilateral_rois": len(analysis.bilateral_region_cols),
+                "n_triplets": len(md_df) // len(args.distance_fns or ["frobenius", "spectral", "mantel"]),
+                "n_accelerated": n_accel,
+                "n_decelerated": n_decel,
+                "n_total_tests": len(md_df),
+            }
+            completed += 1
+
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning("Skipping %s: %s", metric, e)
+            continue
+
+    # Save summary
+    summary_path = args.output_dir / f"maturation_distance_summary_{args.modality}.json"
+    with open(summary_path, "w") as f:
+        json.dump(all_summaries, f, indent=2)
+
+    progress.finish()
+    logger.info(
+        "\nMaturation distance analysis complete. Results in: %s",
+        args.output_dir,
+    )
+
+
+if __name__ == "__main__":
+    main()

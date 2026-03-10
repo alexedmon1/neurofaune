@@ -199,6 +199,271 @@ def whole_network_test(
     }
 
 
+def maturation_distance_test(
+    data_dose: np.ndarray,
+    data_early_control: np.ndarray,
+    data_late_control: np.ndarray,
+    n_perm: int = 5000,
+    seed: int = 42,
+    distance_fn: str = "frobenius",
+) -> dict:
+    """Test whether a dosed group's covariance network is shifted toward
+    (or away from) a mature reference relative to same-age controls.
+
+    Compares d(dose, late_control) vs d(early_control, late_control).
+    If Δ = d(dose, ref) − d(control, ref) < 0, the dosed group's network
+    is *closer* to the mature reference, suggesting accelerated maturation.
+
+    Permutation null: shuffle labels between dose and early_control (keeping
+    late_control fixed) and recompute Δ.
+
+    Parameters
+    ----------
+    data_dose : ndarray (n_dose, n_rois)
+        ROI values for the dosed group at the early timepoint.
+    data_early_control : ndarray (n_ctrl, n_rois)
+        ROI values for controls at the early timepoint.
+    data_late_control : ndarray (n_ref, n_rois)
+        ROI values for the mature reference (controls at the late timepoint).
+    n_perm : int
+        Number of permutations for the null distribution.
+    seed : int
+        Random seed.
+    distance_fn : str
+        Distance metric: "frobenius", "spectral", or "mantel".
+        For Mantel, the delta is *negated* (1 − r) so that lower = more similar.
+
+    Returns
+    -------
+    result : dict
+        Keys: delta (observed), p_accelerated (one-sided: Δ < 0),
+        p_decelerated (one-sided: Δ > 0), d_dose_to_ref, d_ctrl_to_ref,
+        null_deltas, distance_fn, n_dose, n_ctrl, n_ref.
+    """
+    rng = np.random.default_rng(seed)
+
+    if distance_fn == "frobenius":
+        dist = frobenius_distance
+    elif distance_fn == "spectral":
+        dist = spectral_divergence
+    elif distance_fn == "mantel":
+        # For Mantel, convert correlation to distance: d = 1 - r
+        def dist(a, b):
+            r = mantel_test(a, b)
+            return 1.0 - r if not np.isnan(r) else float("nan")
+    else:
+        raise ValueError(f"Unknown distance_fn: {distance_fn!r}")
+
+    n_dose = data_dose.shape[0]
+    n_ctrl = data_early_control.shape[0]
+
+    # Reference covariance matrix (fixed across permutations)
+    corr_ref = spearman_matrix(data_late_control)
+
+    # Observed
+    corr_dose = spearman_matrix(data_dose)
+    corr_ctrl = spearman_matrix(data_early_control)
+
+    d_dose_ref = dist(corr_dose, corr_ref)
+    d_ctrl_ref = dist(corr_ctrl, corr_ref)
+    obs_delta = d_dose_ref - d_ctrl_ref
+
+    logger.info(
+        f"  Observed: d(dose,ref)={d_dose_ref:.4f}, d(ctrl,ref)={d_ctrl_ref:.4f}, "
+        f"Δ={obs_delta:.4f} ({'accelerated' if obs_delta < 0 else 'decelerated'})"
+    )
+
+    # Permutation: shuffle dose/control labels within early timepoint
+    pooled_early = np.vstack([data_dose, data_early_control])
+    n_early = n_dose + n_ctrl
+    null_deltas = np.zeros(n_perm)
+
+    for p in range(n_perm):
+        perm_idx = rng.permutation(n_early)
+        perm_dose = pooled_early[perm_idx[:n_dose]]
+        perm_ctrl = pooled_early[perm_idx[n_dose:]]
+
+        corr_pd = _fast_spearman(perm_dose)
+        corr_pc = _fast_spearman(perm_ctrl)
+
+        d_pd = dist(corr_pd, corr_ref)
+        d_pc = dist(corr_pc, corr_ref)
+        null_deltas[p] = d_pd - d_pc
+
+    valid = null_deltas[~np.isnan(null_deltas)]
+    if len(valid) == 0:
+        p_accel = float("nan")
+        p_decel = float("nan")
+    else:
+        # Accelerated: observed Δ is unusually negative
+        p_accel = float(np.mean(valid <= obs_delta))
+        # Decelerated: observed Δ is unusually positive
+        p_decel = float(np.mean(valid >= obs_delta))
+
+    return {
+        "delta": obs_delta,
+        "p_accelerated": p_accel,
+        "p_decelerated": p_decel,
+        "d_dose_to_ref": d_dose_ref,
+        "d_ctrl_to_ref": d_ctrl_ref,
+        "null_deltas": null_deltas,
+        "distance_fn": distance_fn,
+        "n_dose": n_dose,
+        "n_ctrl": n_ctrl,
+        "n_ref": data_late_control.shape[0],
+    }
+
+
+def maturation_distance_comparisons(
+    group_labels: list[str],
+) -> list[tuple[str, str, str]]:
+    """Generate maturation distance triplets.
+
+    For each dose at each early PND, compare to controls at each later PND.
+
+    Returns
+    -------
+    triplets : list of (dose_label, early_control_label, late_control_label)
+    """
+    pnds = ["p30", "p60", "p90"]
+    dose_sets = [
+        {"control": "C", "doses": ["L", "M", "H"]},
+        {"control": "control", "doses": ["low", "medium", "high"]},
+    ]
+
+    naming = dose_sets[0]
+    for candidate in dose_sets:
+        if any(f"{pnds[0]}_{candidate['control']}" in group_labels
+               for _ in [None]):
+            naming = candidate
+            break
+
+    triplets = []
+    for i, early_pnd in enumerate(pnds):
+        early_ctrl = f"{early_pnd}_{naming['control']}"
+        if early_ctrl not in group_labels:
+            continue
+        for later_pnd in pnds[i + 1:]:
+            late_ctrl = f"{later_pnd}_{naming['control']}"
+            if late_ctrl not in group_labels:
+                continue
+            for dose in naming["doses"]:
+                dose_label = f"{early_pnd}_{dose}"
+                if dose_label in group_labels:
+                    triplets.append((dose_label, early_ctrl, late_ctrl))
+
+    return triplets
+
+
+def run_maturation_distance(
+    group_data: dict[str, np.ndarray],
+    triplets: list[tuple[str, str, str]] | None = None,
+    n_perm: int = 5000,
+    seed: int = 42,
+    distance_fns: list[str] | None = None,
+    n_workers: int = 1,
+) -> pd.DataFrame:
+    """Run maturation distance tests for all triplets and distance functions.
+
+    Parameters
+    ----------
+    group_data : dict[str, ndarray]
+        Mapping from group label to (n_subjects, n_rois) arrays.
+    triplets : list of (dose_label, early_control, late_control), optional
+        If None, auto-generated from group labels.
+    n_perm : int
+        Number of permutations.
+    seed : int
+        Random seed.
+    distance_fns : list[str], optional
+        Distance metrics to use. Default: ["frobenius", "spectral", "mantel"].
+    n_workers : int
+        Parallel workers (1 = sequential).
+
+    Returns
+    -------
+    results_df : DataFrame
+    """
+    if triplets is None:
+        triplets = maturation_distance_comparisons(list(group_data.keys()))
+
+    if distance_fns is None:
+        distance_fns = ["frobenius", "spectral", "mantel"]
+
+    # Validate
+    valid_triplets = []
+    for dose_lbl, ctrl_lbl, ref_lbl in triplets:
+        missing = [l for l in (dose_lbl, ctrl_lbl, ref_lbl) if l not in group_data]
+        if missing:
+            logger.warning(f"Skipping {dose_lbl}/{ctrl_lbl}/{ref_lbl}: missing {missing}")
+            continue
+        valid_triplets.append((dose_lbl, ctrl_lbl, ref_lbl))
+
+    logger.info(
+        f"Running maturation distance: {len(valid_triplets)} triplets × "
+        f"{len(distance_fns)} distance metrics = {len(valid_triplets) * len(distance_fns)} tests"
+    )
+
+    work_items = [
+        (dose_lbl, ctrl_lbl, ref_lbl, dfn)
+        for dose_lbl, ctrl_lbl, ref_lbl in valid_triplets
+        for dfn in distance_fns
+    ]
+
+    rows = []
+
+    def _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn):
+        return maturation_distance_test(
+            data_dose=group_data[dose_lbl],
+            data_early_control=group_data[ctrl_lbl],
+            data_late_control=group_data[ref_lbl],
+            n_perm=n_perm,
+            seed=seed,
+            distance_fn=dfn,
+        )
+
+    if n_workers > 1 and len(work_items) > 1:
+        futures = {}
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            for dose_lbl, ctrl_lbl, ref_lbl, dfn in work_items:
+                future = executor.submit(_do_one, dose_lbl, ctrl_lbl, ref_lbl, dfn)
+                futures[future] = (dose_lbl, ctrl_lbl, ref_lbl, dfn)
+            for future in as_completed(futures):
+                dose_lbl, ctrl_lbl, ref_lbl, dfn = futures[future]
+                result = future.result()
+                rows.append(_mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+    else:
+        for dose_lbl, ctrl_lbl, ref_lbl, dfn in work_items:
+            comp_label = f"{dose_lbl}_ref_{ref_lbl}"
+            logger.info(f"\n--- Maturation distance: {comp_label} ({dfn}) ---")
+            result = _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn)
+            rows.append(_mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+
+    return pd.DataFrame(rows)
+
+
+def _mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result):
+    """Build a row dict from maturation distance test result."""
+    return {
+        "dose_group": dose_lbl,
+        "early_control": ctrl_lbl,
+        "reference": ref_lbl,
+        "comparison": f"{dose_lbl}_ref_{ref_lbl}",
+        "distance_fn": result["distance_fn"],
+        "d_dose_to_ref": result["d_dose_to_ref"],
+        "d_ctrl_to_ref": result["d_ctrl_to_ref"],
+        "delta": result["delta"],
+        "p_accelerated": result["p_accelerated"],
+        "p_decelerated": result["p_decelerated"],
+        "n_dose": result["n_dose"],
+        "n_ctrl": result["n_ctrl"],
+        "n_ref": result["n_ref"],
+        "interpretation": (
+            "accelerated" if result["delta"] < 0 else "decelerated"
+        ),
+    }
+
+
 def run_all_comparisons(
     group_data: dict[str, np.ndarray],
     comparisons: Optional[list[tuple[str, str]]] = None,
