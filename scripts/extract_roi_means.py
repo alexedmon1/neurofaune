@@ -73,6 +73,16 @@ def main():
         '--output-dir', type=Path, required=True,
         help='Output directory for CSV files',
     )
+    parser.add_argument(
+        '--exclusion-csv', type=Path, default=None,
+        help='Path to exclusion CSV (columns: subject, session, reason). '
+             'Excluded sessions are removed before writing output CSVs.',
+    )
+    parser.add_argument(
+        '--min-volumes', type=int, default=0,
+        help='Minimum BOLD volume count for func modality (0 = no check). '
+             'Only applicable when --modality func.',
+    )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +102,14 @@ def main():
     logger.info(f"Labels CSV: {args.labels_csv}")
     logger.info(f"Output: {args.output_dir}")
 
+    # Load exclusions if provided
+    exclusions = None
+    if args.exclusion_csv:
+        import pandas as _pd
+        excl_df = _pd.read_csv(args.exclusion_csv)
+        exclusions = set(zip(excl_df['subject'], excl_df['session']))
+        logger.info(f"Loaded {len(exclusions)} exclusions from {args.exclusion_csv}")
+
     # Extract all subjects
     wide_dfs = extract_all_subjects(
         derivatives_dir=args.derivatives_dir,
@@ -99,6 +117,8 @@ def main():
         labels_csv_path=args.labels_csv,
         modality=args.modality,
         metrics=args.metrics,
+        exclusions=exclusions,
+        min_volumes=args.min_volumes if args.modality == 'func' else 0,
     )
 
     if not wide_dfs:

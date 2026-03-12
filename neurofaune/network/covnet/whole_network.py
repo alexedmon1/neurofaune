@@ -1,17 +1,23 @@
 """
-Whole-network similarity tests for covariance network comparison.
+Network distance tests for covariance network comparison.
 
 Complements edge-level (NBS) and graph-metric approaches with holistic tests
-that ask whether the overall covariance structure differs between groups.
+that quantify global differences between group covariance networks.
 
-Three statistics:
+Two analysis modes:
+    - **Absolute distance** (``abs_distance_test``): directly compares two
+      groups' networks.
+    - **Relative distance** (``rel_distance_test``): compares how far two
+      groups each are from a reference network (e.g., older controls).
+
+Three distance statistics (used in both modes):
     1. Mantel test — Pearson correlation between vectorized upper triangles.
     2. Frobenius distance — L2 norm of the difference between upper triangles.
     3. Spectral divergence — L2 distance between sorted eigenvalue spectra.
 
 All use a shared permutation framework: pool subjects, shuffle labels, split,
-recompute group correlation matrices, recompute all three statistics, build
-null distributions.
+recompute group correlation matrices, recompute statistics, build null
+distributions.
 """
 
 import logging
@@ -109,13 +115,16 @@ def spectral_divergence(corr_a: np.ndarray, corr_b: np.ndarray) -> float:
     return float(np.linalg.norm(eig_a - eig_b))
 
 
-def whole_network_test(
+def abs_distance_test(
     data_a: np.ndarray,
     data_b: np.ndarray,
     n_perm: int = 5000,
     seed: int = 42,
 ) -> dict:
-    """Compute all three whole-network statistics with permutation p-values.
+    """Absolute network distance: compare two groups directly.
+
+    Computes all three distance statistics (Mantel, Frobenius, Spectral)
+    between two groups' covariance networks with permutation p-values.
 
     Parameters
     ----------
@@ -199,7 +208,7 @@ def whole_network_test(
     }
 
 
-def maturation_distance_test(
+def rel_distance_test(
     data_dose: np.ndarray,
     data_early_control: np.ndarray,
     data_late_control: np.ndarray,
@@ -207,24 +216,28 @@ def maturation_distance_test(
     seed: int = 42,
     distance_fn: str = "frobenius",
 ) -> dict:
-    """Test whether a dosed group's covariance network is shifted toward
-    (or away from) a mature reference relative to same-age controls.
+    """Relative network distance: compare two groups' distances to a reference.
 
-    Compares d(dose, late_control) vs d(early_control, late_control).
-    If Δ = d(dose, ref) − d(control, ref) < 0, the dosed group's network
-    is *closer* to the mature reference, suggesting accelerated maturation.
+    Tests whether a group's covariance network is shifted toward (or away
+    from) a reference network relative to a comparison group.
 
-    Permutation null: shuffle labels between dose and early_control (keeping
-    late_control fixed) and recompute Δ.
+    Compares d(group_A, reference) vs d(group_B, reference).
+    If Δ = d(A, ref) − d(B, ref) < 0, group A is *closer* to the reference.
+    When the reference is older controls, Δ < 0 suggests accelerated
+    development; Δ > 0 suggests decelerated development.
+
+    Permutation null: shuffle A/B labels (keeping reference fixed) and
+    recompute Δ.
 
     Parameters
     ----------
     data_dose : ndarray (n_dose, n_rois)
-        ROI values for the dosed group at the early timepoint.
+        ROI values for group A (e.g., dosed group at the early timepoint).
     data_early_control : ndarray (n_ctrl, n_rois)
-        ROI values for controls at the early timepoint.
+        ROI values for group B (e.g., controls at the early timepoint).
     data_late_control : ndarray (n_ref, n_rois)
-        ROI values for the mature reference (controls at the late timepoint).
+        ROI values for the reference group (e.g., controls at a later
+        timepoint).
     n_perm : int
         Number of permutations for the null distribution.
     seed : int
@@ -314,10 +327,10 @@ def maturation_distance_test(
     }
 
 
-def maturation_distance_comparisons(
+def rel_distance_comparisons(
     group_labels: list[str],
 ) -> list[tuple[str, str, str]]:
-    """Generate maturation distance triplets.
+    """Generate relative distance triplets for developmental trajectory analysis.
 
     For each dose at each early PND, compare to controls at each later PND.
 
@@ -355,7 +368,7 @@ def maturation_distance_comparisons(
     return triplets
 
 
-def run_maturation_distance(
+def run_rel_distance(
     group_data: dict[str, np.ndarray],
     triplets: list[tuple[str, str, str]] | None = None,
     n_perm: int = 5000,
@@ -363,7 +376,7 @@ def run_maturation_distance(
     distance_fns: list[str] | None = None,
     n_workers: int = 1,
 ) -> pd.DataFrame:
-    """Run maturation distance tests for all triplets and distance functions.
+    """Run relative distance tests for all triplets and distance functions.
 
     Parameters
     ----------
@@ -385,7 +398,7 @@ def run_maturation_distance(
     results_df : DataFrame
     """
     if triplets is None:
-        triplets = maturation_distance_comparisons(list(group_data.keys()))
+        triplets = rel_distance_comparisons(list(group_data.keys()))
 
     if distance_fns is None:
         distance_fns = ["frobenius", "spectral", "mantel"]
@@ -400,7 +413,7 @@ def run_maturation_distance(
         valid_triplets.append((dose_lbl, ctrl_lbl, ref_lbl))
 
     logger.info(
-        f"Running maturation distance: {len(valid_triplets)} triplets × "
+        f"Running relative distance: {len(valid_triplets)} triplets × "
         f"{len(distance_fns)} distance metrics = {len(valid_triplets) * len(distance_fns)} tests"
     )
 
@@ -413,7 +426,7 @@ def run_maturation_distance(
     rows = []
 
     def _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn):
-        return maturation_distance_test(
+        return rel_distance_test(
             data_dose=group_data[dose_lbl],
             data_early_control=group_data[ctrl_lbl],
             data_late_control=group_data[ref_lbl],
@@ -431,19 +444,19 @@ def run_maturation_distance(
             for future in as_completed(futures):
                 dose_lbl, ctrl_lbl, ref_lbl, dfn = futures[future]
                 result = future.result()
-                rows.append(_mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+                rows.append(_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
     else:
         for dose_lbl, ctrl_lbl, ref_lbl, dfn in work_items:
             comp_label = f"{dose_lbl}_ref_{ref_lbl}"
-            logger.info(f"\n--- Maturation distance: {comp_label} ({dfn}) ---")
+            logger.info(f"\n--- Relative distance: {comp_label} ({dfn}) ---")
             result = _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn)
-            rows.append(_mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+            rows.append(_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
 
     return pd.DataFrame(rows)
 
 
-def _mat_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result):
-    """Build a row dict from maturation distance test result."""
+def _rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result):
+    """Build a row dict from relative distance test result."""
     return {
         "dose_group": dose_lbl,
         "early_control": ctrl_lbl,
@@ -471,7 +484,7 @@ def run_all_comparisons(
     seed: int = 42,
     n_workers: int = 1,
 ) -> tuple[pd.DataFrame, dict[str, dict]]:
-    """Run whole_network_test for each pairwise comparison.
+    """Run absolute distance test for each pairwise comparison.
 
     Parameters
     ----------
@@ -536,7 +549,7 @@ def run_all_comparisons(
             for label_a, label_b in valid_comparisons:
                 comp_label = f"{label_a}_vs_{label_b}"
                 future = executor.submit(
-                    whole_network_test,
+                    abs_distance_test,
                     data_a=group_data[label_a],
                     data_b=group_data[label_b],
                     n_perm=n_perm,
@@ -554,7 +567,7 @@ def run_all_comparisons(
             comparison_label = f"{label_a}_vs_{label_b}"
             logger.info(f"\n--- Whole-network test: {comparison_label} ---")
 
-            result = whole_network_test(
+            result = abs_distance_test(
                 data_a=group_data[label_a],
                 data_b=group_data[label_b],
                 n_perm=n_perm,
@@ -564,3 +577,11 @@ def run_all_comparisons(
 
     results_df = pd.DataFrame(rows)
     return results_df, null_dists
+
+
+# Backward-compatible aliases
+whole_network_test = abs_distance_test
+maturation_distance_test = rel_distance_test
+maturation_distance_comparisons = rel_distance_comparisons
+run_maturation_distance = run_rel_distance
+_mat_dist_row = _rel_dist_row

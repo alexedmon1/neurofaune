@@ -3,24 +3,29 @@
 Prepare fMRI resting-state metric data for whole-brain voxel-wise analysis.
 
 Discovers SIGMA-space fALFF and ReHo maps, merges with study tracker metadata,
-stacks into masked 4D volumes using the SIGMA brain mask (whole-brain, not WM
-skeleton), and writes subject list + config JSON.
+applies exclusions, stacks into masked 4D volumes, and generates a coverage-
+based analysis mask restricted to voxels with adequate subject coverage.
 
 Unlike TBSS which uses a skeletonized WM mask, this analysis uses the full
-SIGMA brain mask because fALFF and ReHo are whole-brain metrics.
+SIGMA brain mask intersected with a coverage threshold — only voxels where
+a minimum fraction of subjects have signal are included.
 
 Usage:
-    # Prepare ReHo
+    # Prepare ReHo with exclusions
     PYTHONUNBUFFERED=1 uv run python scripts/prepare_fmri_voxelwise.py \
         --study-root $STUDY_ROOT \
         --output-dir $STUDY_ROOT/analysis/reho \
-        --metrics ReHo
+        --metrics ReHo \
+        --exclusion-csv $STUDY_ROOT/exclusions/func_exclusions.csv \
+        --min-volumes 200
 
-    # Prepare fALFF
+    # Prepare fALFF with exclusions
     PYTHONUNBUFFERED=1 uv run python scripts/prepare_fmri_voxelwise.py \
         --study-root $STUDY_ROOT \
         --output-dir $STUDY_ROOT/analysis/falff \
-        --metrics fALFF
+        --metrics fALFF \
+        --exclusion-csv $STUDY_ROOT/exclusions/func_exclusions.csv \
+        --min-volumes 200
 """
 
 import argparse
@@ -56,9 +61,61 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def load_exclusions(exclusion_csv: Path) -> set:
+    """
+    Load exclusion CSV and return set of (subject, session) tuples.
+
+    Expected CSV format: subject,session,reason,date_added
+    """
+    df = pd.read_csv(exclusion_csv)
+    excl = set(zip(df['subject'], df['session']))
+    logger.info(f"Loaded {len(excl)} exclusions from {exclusion_csv}")
+    return excl
+
+
+def get_n_volumes(derivatives_dir: Path, subject: str, session: str) -> int:
+    """
+    Get BOLD volume count from fALFF/preprocessing analysis JSON.
+
+    Checks analysis JSON files for n_timepoints (the number of BOLD
+    volumes used in spectral analysis), then falls back to the
+    preprocessed 4D BOLD file header.
+    """
+    func_dir = derivatives_dir / subject / session / 'func'
+
+    # Try fALFF analysis JSON (has n_timepoints in statistics)
+    for json_name in [
+        f'{subject}_{session}_desc-falff_analysis.json',
+        f'{subject}_{session}_desc-reho_analysis.json',
+    ]:
+        analysis_json = func_dir / json_name
+        if analysis_json.exists():
+            try:
+                with open(analysis_json) as f:
+                    data = json.load(f)
+                # n_timepoints nested under statistics.falff.parameters
+                stats = data.get('statistics', {})
+                for key in stats:
+                    params = stats[key].get('parameters', {})
+                    if 'n_timepoints' in params:
+                        return int(params['n_timepoints'])
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+    # Try preprocessed BOLD 4D file
+    preproc_bold = func_dir / f'{subject}_{session}_desc-preproc_bold.nii.gz'
+    if preproc_bold.exists():
+        img = nib.load(preproc_bold)
+        return img.shape[3] if len(img.shape) > 3 else 1
+
+    return 0
+
+
 def discover_fmri_subjects(
     derivatives_dir: Path,
     metrics: List[str],
+    exclusions: set = None,
+    min_volumes: int = 0,
 ) -> List[Dict]:
     """
     Discover subjects with complete fMRI SIGMA-space maps.
@@ -66,9 +123,22 @@ def discover_fmri_subjects(
     Looks for files matching:
         {sub}_{ses}_space-SIGMA_desc-{metric}_bold.nii.gz
 
+    Parameters
+    ----------
+    derivatives_dir : Path
+        Path to derivatives directory.
+    metrics : list[str]
+        Metric names to require (e.g. ['fALFF', 'ReHo']).
+    exclusions : set, optional
+        Set of (subject, session) tuples to exclude.
+    min_volumes : int
+        Minimum BOLD volume count. Sessions with fewer volumes are excluded.
+
     Returns list of dicts with keys: subject, session, subject_key, metric_files.
     """
     subjects = []
+    n_excluded_qc = 0
+    n_excluded_volumes = 0
 
     for subject_dir in sorted(derivatives_dir.iterdir()):
         if not subject_dir.is_dir() or not subject_dir.name.startswith('sub-'):
@@ -79,9 +149,26 @@ def discover_fmri_subjects(
             if not session_dir.is_dir() or not session_dir.name.startswith('ses-'):
                 continue
             session = session_dir.name
+
+            # Check exclusion list
+            if exclusions and (subject, session) in exclusions:
+                n_excluded_qc += 1
+                continue
+
             func_dir = session_dir / 'func'
             if not func_dir.is_dir():
                 continue
+
+            # Check volume count
+            if min_volumes > 0:
+                n_vol = get_n_volumes(derivatives_dir, subject, session)
+                if n_vol < min_volumes:
+                    logger.info(
+                        f"  Excluding {subject}/{session}: "
+                        f"{n_vol} volumes < {min_volumes} minimum"
+                    )
+                    n_excluded_volumes += 1
+                    continue
 
             # Check all metrics present
             metric_files = {}
@@ -97,6 +184,11 @@ def discover_fmri_subjects(
                     'subject_key': f'{subject}_{session}',
                     'metric_files': metric_files,
                 })
+
+    if n_excluded_qc > 0:
+        logger.info(f"Excluded {n_excluded_qc} sessions by QC exclusion list")
+    if n_excluded_volumes > 0:
+        logger.info(f"Excluded {n_excluded_volumes} sessions by volume count (<{min_volumes})")
 
     return subjects
 
@@ -177,6 +269,13 @@ Output structure:
                              '(default: {study-root}/study_tracker_combined_250916.csv)')
     parser.add_argument('--metrics', nargs='+', default=FMRI_METRICS,
                         help=f'Metrics to prepare (default: {FMRI_METRICS})')
+    parser.add_argument('--exclusion-csv', type=Path, default=None,
+                        help='Path to exclusion CSV (columns: subject, session, reason)')
+    parser.add_argument('--min-volumes', type=int, default=0,
+                        help='Minimum BOLD volume count to include a session (0 = no check)')
+    parser.add_argument('--coverage-threshold', type=float, default=0.75,
+                        help='Fraction of subjects required at each voxel for coverage mask '
+                             '(default: 0.75). Set to 0 to use whole-brain SIGMA mask.')
 
     args = parser.parse_args()
 
@@ -213,9 +312,24 @@ Output structure:
         logger.error(f"Study tracker not found: {tracker_path}")
         sys.exit(1)
 
+    # Load exclusions if provided
+    exclusions = None
+    if args.exclusion_csv:
+        if not args.exclusion_csv.exists():
+            logger.error(f"Exclusion CSV not found: {args.exclusion_csv}")
+            sys.exit(1)
+        exclusions = load_exclusions(args.exclusion_csv)
+        logger.info(f"Exclusion CSV: {args.exclusion_csv}")
+    if args.min_volumes > 0:
+        logger.info(f"Minimum volume count: {args.min_volumes}")
+
     # Phase 1: Discover fMRI subjects
     logger.info("\n[Phase 1] Discovering fMRI SIGMA-space maps...")
-    subjects = discover_fmri_subjects(derivatives_dir, args.metrics)
+    subjects = discover_fmri_subjects(
+        derivatives_dir, args.metrics,
+        exclusions=exclusions,
+        min_volumes=args.min_volumes,
+    )
     logger.info(f"Found {len(subjects)} subjects with complete metrics")
 
     if not subjects:
@@ -243,15 +357,17 @@ Output structure:
     stats_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy SIGMA brain mask as analysis mask
-    mask_dst = stats_dir / 'analysis_mask.nii.gz'
-    shutil.copy2(brain_mask_path, mask_dst)
-    logger.info(f"Copied brain mask from {brain_mask_path}")
+    # Load SIGMA brain mask as reference
+    sigma_mask_img = nib.load(brain_mask_path)
+    sigma_mask_data = sigma_mask_img.get_fdata() > 0
+    ref_shape = sigma_mask_img.shape[:3]
+    ref_affine = sigma_mask_img.affine
+    n_sigma_voxels = int(sigma_mask_data.sum())
+    logger.info(f"SIGMA brain mask: {n_sigma_voxels} voxels")
 
-    mask_img = nib.load(mask_dst)
-    mask_data = mask_img.get_fdata() > 0
-    n_mask_voxels = int(mask_data.sum())
-    logger.info(f"Analysis mask (whole-brain): {n_mask_voxels} voxels")
+    # Save SIGMA mask for reference
+    sigma_mask_dst = stats_dir / 'sigma_brain_mask.nii.gz'
+    shutil.copy2(brain_mask_path, sigma_mask_dst)
 
     # Phase 4: Build subject list and manifest
     logger.info("\n[Phase 4] Writing subject list and manifest...")
@@ -275,7 +391,6 @@ Output structure:
         'metrics': args.metrics,
         'date_prepared': datetime.now().isoformat(),
         'n_subjects': len(merged),
-        'mask': 'SIGMA_InVivo_Brain_Mask',
         'subjects': [
             {
                 'subject_key': row['subject_key'],
@@ -291,36 +406,16 @@ Output structure:
     with open(output_dir / 'subject_manifest.json', 'w') as f:
         json.dump(manifest, f, indent=2)
 
-    # Write config.json with provenance
-    subject_list_hash = sha256_file(subject_list_file)
-    config = {
-        'analysis_type': 'voxelwise_whole_brain',
-        'modality': 'func',
-        'metrics': args.metrics,
-        'n_subjects': len(merged),
-        'subject_list_sha256': subject_list_hash,
-        'mask_source': str(brain_mask_path),
-        'mask_type': 'SIGMA_brain_mask',
-        'n_mask_voxels': n_mask_voxels,
-        'tfce_mode': '3D (-T)',
-        'date_prepared': datetime.now().isoformat(),
-    }
-    with open(output_dir / 'config.json', 'w') as f:
-        json.dump(config, f, indent=2)
-
     logger.info(f"Subject list: {len(merged)} subjects")
-    logger.info(f"Subject list SHA256: {subject_list_hash[:16]}...")
 
     # Phase 5: Stack 4D volumes
     logger.info("\n[Phase 5] Building 4D volumes...")
 
-    # Get reference shape from mask
-    ref_shape = mask_img.shape[:3]
-    ref_affine = mask_img.affine
+    n_subjects = len(merged)
+    all_4d = {}  # metric -> 4D array
 
     for metric in args.metrics:
         logger.info(f"\n  {metric}:")
-        n_subjects = len(merged)
         volume_4d = np.zeros((*ref_shape, n_subjects), dtype=np.float32)
 
         for i, (_, row) in enumerate(merged.iterrows()):
@@ -338,22 +433,98 @@ Output structure:
 
             volume_4d[..., i] = data
 
-        # Apply mask
-        mask_4d = mask_data[:, :, :, np.newaxis]
-        volume_4d_masked = volume_4d * mask_4d
+        all_4d[metric] = volume_4d
 
-        # Save
+    # Phase 6: Build coverage mask
+    logger.info("\n[Phase 6] Building coverage mask...")
+
+    # Use the first metric to compute coverage (all metrics share the same FOV)
+    first_metric = args.metrics[0]
+    data_4d = all_4d[first_metric]
+
+    # Count how many subjects have non-zero signal at each voxel
+    coverage = np.sum(np.abs(data_4d) > 0.01, axis=3)
+
+    # Save coverage count map
+    coverage_img = nib.Nifti1Image(coverage.astype(np.float32), ref_affine)
+    nib.save(coverage_img, stats_dir / 'coverage_count.nii.gz')
+
+    if args.coverage_threshold > 0:
+        min_subjects = int(n_subjects * args.coverage_threshold)
+        coverage_mask = (coverage >= min_subjects) & sigma_mask_data
+        n_coverage_voxels = int(coverage_mask.sum())
+
+        logger.info(
+            f"Coverage threshold: {args.coverage_threshold:.0%} "
+            f"({min_subjects}/{n_subjects} subjects)"
+        )
+        logger.info(
+            f"Coverage mask: {n_coverage_voxels:,} voxels "
+            f"({100 * n_coverage_voxels / n_sigma_voxels:.1f}% of SIGMA mask)"
+        )
+
+        if n_coverage_voxels == 0:
+            logger.error(
+                "No voxels meet coverage threshold! "
+                "Try lowering --coverage-threshold."
+            )
+            sys.exit(1)
+
+        mask_data = coverage_mask
+        mask_type = 'coverage_mask'
+        n_mask_voxels = n_coverage_voxels
+    else:
+        mask_data = sigma_mask_data
+        mask_type = 'SIGMA_brain_mask'
+        n_mask_voxels = n_sigma_voxels
+        logger.info("Using whole-brain SIGMA mask (no coverage threshold)")
+
+    # Save analysis mask
+    mask_dst = stats_dir / 'analysis_mask.nii.gz'
+    nib.save(nib.Nifti1Image(mask_data.astype(np.uint8), ref_affine), mask_dst)
+
+    # Phase 7: Apply mask and save 4D volumes
+    logger.info("\n[Phase 7] Applying mask and saving 4D volumes...")
+
+    mask_4d = mask_data[:, :, :, np.newaxis]
+    for metric in args.metrics:
+        volume_4d_masked = all_4d[metric] * mask_4d
+
         out_file = stats_dir / f'all_{metric}.nii.gz'
         nib.save(nib.Nifti1Image(volume_4d_masked, ref_affine), out_file)
 
-        # Summary stats within mask
         masked_vals = volume_4d_masked[mask_data]
-        logger.info(f"    Shape: {volume_4d_masked.shape}")
+        logger.info(f"  {metric}: shape={volume_4d_masked.shape}")
         logger.info(
             f"    Within-mask range: [{masked_vals.min():.4f}, {masked_vals.max():.4f}]"
         )
         logger.info(f"    Within-mask mean: {masked_vals.mean():.4f}")
         logger.info(f"    Saved: {out_file}")
+
+    # Write config.json with provenance
+    subject_list_hash = sha256_file(subject_list_file)
+    config = {
+        'analysis_type': 'voxelwise_whole_brain',
+        'modality': 'func',
+        'metrics': args.metrics,
+        'n_subjects': len(merged),
+        'subject_list_sha256': subject_list_hash,
+        'mask_source': str(brain_mask_path),
+        'mask_type': mask_type,
+        'n_mask_voxels': n_mask_voxels,
+        'n_sigma_mask_voxels': n_sigma_voxels,
+        'coverage_threshold': args.coverage_threshold,
+        'min_subjects_per_voxel': int(n_subjects * args.coverage_threshold)
+            if args.coverage_threshold > 0 else 0,
+        'exclusion_csv': str(args.exclusion_csv) if args.exclusion_csv else None,
+        'min_volumes': args.min_volumes,
+        'tfce_mode': '3D (-T)',
+        'date_prepared': datetime.now().isoformat(),
+    }
+    with open(output_dir / 'config.json', 'w') as f:
+        json.dump(config, f, indent=2)
+
+    logger.info(f"\nSubject list SHA256: {subject_list_hash[:16]}...")
 
     # Summary
     logger.info("\n" + "=" * 70)
@@ -361,7 +532,11 @@ Output structure:
     logger.info("=" * 70)
     logger.info(f"Subjects: {len(merged)}")
     logger.info(f"Metrics: {args.metrics}")
-    logger.info(f"Mask voxels: {n_mask_voxels} (whole-brain)")
+    logger.info(f"Analysis mask: {n_mask_voxels:,} voxels ({mask_type})")
+    if args.exclusion_csv:
+        logger.info(f"Exclusion CSV: {args.exclusion_csv}")
+    if args.min_volumes > 0:
+        logger.info(f"Min volumes: {args.min_volumes}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"\nNext steps:")
     logger.info(f"  1. Generate categorical designs:")

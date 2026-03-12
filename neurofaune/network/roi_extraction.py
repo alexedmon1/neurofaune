@@ -231,6 +231,8 @@ def extract_all_subjects(
     labels_csv_path: Path,
     modality: str,
     metrics: list[str],
+    exclusions: Optional[set] = None,
+    min_volumes: int = 0,
 ) -> dict[str, pd.DataFrame]:
     """
     Extract ROI means for all subjects, one DataFrame per metric.
@@ -247,6 +249,10 @@ def extract_all_subjects(
         Modality subdirectory ('dwi', 'msme', 'func')
     metrics : list[str]
         Metric names to extract (e.g. ['FA', 'MD'])
+    exclusions : set, optional
+        Set of (subject, session) tuples to exclude.
+    min_volumes : int
+        Minimum BOLD volume count for func sessions (0 = no check).
 
     Returns
     -------
@@ -254,6 +260,8 @@ def extract_all_subjects(
         Mapping of metric name → wide DataFrame with columns:
         subject, session + ROI columns + territory columns
     """
+    import json as _json
+
     parcellation_data, labels_df = load_parcellation(
         parcellation_path, labels_csv_path
     )
@@ -262,6 +270,66 @@ def extract_all_subjects(
     if not file_list:
         logger.warning("No SIGMA-space metric images found")
         return {}
+
+    # Apply exclusions
+    if exclusions:
+        n_before = len(file_list)
+        file_list = [
+            e for e in file_list
+            if (e['subject'], e['session']) not in exclusions
+        ]
+        n_excluded = n_before - len(file_list)
+        if n_excluded > 0:
+            logger.info(f"Excluded {n_excluded} sessions by exclusion list")
+
+    # Apply volume count filter for func modality
+    if min_volumes > 0 and modality == 'func':
+        filtered = []
+        n_vol_excluded = 0
+        for entry in file_list:
+            sub, ses = entry['subject'], entry['session']
+            func_dir = derivatives_dir / sub / ses / 'func'
+            n_vol = 0
+            # Check analysis JSONs for n_timepoints
+            for json_name in [
+                f'{sub}_{ses}_desc-falff_analysis.json',
+                f'{sub}_{ses}_desc-reho_analysis.json',
+            ]:
+                analysis_json = func_dir / json_name
+                if analysis_json.exists():
+                    try:
+                        with open(analysis_json) as f:
+                            data = _json.load(f)
+                        stats = data.get('statistics', {})
+                        for key in stats:
+                            params = stats[key].get('parameters', {})
+                            if 'n_timepoints' in params:
+                                n_vol = int(params['n_timepoints'])
+                                break
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                if n_vol > 0:
+                    break
+            # Fall back to preprocessed BOLD header
+            if n_vol == 0:
+                import nibabel as _nib
+                preproc = func_dir / f'{sub}_{ses}_desc-preproc_bold.nii.gz'
+                if preproc.exists():
+                    img = _nib.load(preproc)
+                    n_vol = img.shape[3] if len(img.shape) > 3 else 1
+            if n_vol >= min_volumes:
+                filtered.append(entry)
+            else:
+                logger.info(
+                    f"Excluding {sub}/{ses}: {n_vol} volumes < {min_volumes}"
+                )
+                n_vol_excluded += 1
+        if n_vol_excluded > 0:
+            logger.info(
+                f"Excluded {n_vol_excluded} sessions by volume count "
+                f"(<{min_volumes})"
+            )
+        file_list = filtered
 
     # Group by metric
     by_metric: dict[str, list[dict]] = {}

@@ -1,13 +1,14 @@
 """Covariance Network (CovNet) analysis pipeline.
 
 Provides the ``CovNetAnalysis`` class: prepare data once, then run any
-combination of NBS, territory, graph theory, or whole-network tests.
+combination of NBS, territory, graph theory, or network distance tests.
 Each test has a corresponding standalone script in ``scripts/``:
 
 - ``run_covnet_nbs.py`` — NBS permutation testing
 - ``run_covnet_territory.py`` — Territory-level Fisher z + FDR (post-hoc)
 - ``run_covnet_graph_theory.py`` — Graph-theoretic metric comparisons
-- ``run_covnet_whole_network.py`` — Mantel/Frobenius/spectral tests
+- ``run_covnet_abs_distance.py`` — Absolute network distance (Mantel/Frobenius/spectral)
+- ``run_covnet_rel_distance.py`` — Relative network distance (shift toward/away from reference)
 
 Edge regression (continuous targets) is separate: see
 ``neurofaune.network.edge_regression`` and ``run_edge_regression.py``.
@@ -44,9 +45,9 @@ from .visualization import (
     plot_nbs_network,
 )
 from .whole_network import (
-    run_all_comparisons as _run_whole_network_comparisons,
-    run_maturation_distance as _run_maturation_distance,
-    maturation_distance_comparisons,
+    run_all_comparisons as _run_abs_distance_comparisons,
+    run_rel_distance as _run_rel_distance,
+    rel_distance_comparisons,
 )
 from neurofaune.network.matrices import (
     bilateral_average,
@@ -880,14 +881,17 @@ class CovNetAnalysis:
         )
         return comparison_df
 
-    def run_whole_network(
+    def run_abs_distance(
         self,
         comparisons: list[tuple[str, str]] | None = None,
         n_perm: int = 5000,
         seed: int = 42,
         n_workers: int = 1,
     ) -> tuple[pd.DataFrame, dict]:
-        """Run whole-network tests. Results saved to ``whole_network/{modality}/{metric}/``.
+        """Absolute network distance. Results saved to ``abs_distance/{modality}/{metric}/``.
+
+        Directly compares two groups' covariance networks using Mantel,
+        Frobenius, and Spectral distance metrics with permutation testing.
 
         Parameters
         ----------
@@ -908,14 +912,14 @@ class CovNetAnalysis:
             comparisons = self.resolve_comparisons()
 
         logger.info(
-            f"Whole-network: {self.metric} ({n_perm} permutations, "
+            f"Absolute distance: {self.metric} ({n_perm} permutations, "
             f"{len(comparisons)} comparisons)"
         )
 
-        wn_dir = self._test_dir("whole_network")
+        wn_dir = self._test_dir("abs_distance")
         wn_dir.mkdir(parents=True, exist_ok=True)
 
-        wn_df, wn_nulls = _run_whole_network_comparisons(
+        wn_df, wn_nulls = _run_abs_distance_comparisons(
             group_data=self.group_arrays,
             comparisons=comparisons,
             n_perm=n_perm,
@@ -923,7 +927,7 @@ class CovNetAnalysis:
             n_workers=n_workers,
         )
 
-        wn_df.to_csv(wn_dir / "whole_network_results.csv", index=False)
+        wn_df.to_csv(wn_dir / "abs_distance_results.csv", index=False)
 
         # Save null distributions
         null_arrays = {}
@@ -938,12 +942,15 @@ class CovNetAnalysis:
             .sum()
         )
         logger.info(
-            f"Whole-network {self.metric}: {n_sig}/{len(wn_df)} comparisons "
+            f"Absolute distance {self.metric}: {n_sig}/{len(wn_df)} comparisons "
             f"with at least one significant statistic (p < 0.05)"
         )
         return wn_df, wn_nulls
 
-    def run_maturation_distance(
+    # Backward-compatible alias
+    run_whole_network = run_abs_distance
+
+    def run_rel_distance(
         self,
         triplets: list[tuple[str, str, str]] | None = None,
         n_perm: int = 5000,
@@ -951,15 +958,17 @@ class CovNetAnalysis:
         distance_fns: list[str] | None = None,
         n_workers: int = 1,
     ) -> pd.DataFrame:
-        """Test whether dosed groups' covariance networks are shifted toward
-        or away from a mature reference (accelerated/decelerated maturation).
+        """Relative network distance: test whether a group is shifted toward
+        or away from a reference network.
 
-        For each (dose, early_control, late_control) triplet, computes:
-            Δ = d(dose, late_control) − d(early_control, late_control)
-        Negative Δ = dose group is closer to mature reference → accelerated.
-        Positive Δ = dose group is further from mature reference → decelerated.
+        For each (group_A, group_B, reference) triplet, computes:
+            Δ = d(A, reference) − d(B, reference)
+        Negative Δ = A is closer to reference than B.
+        Positive Δ = A is farther from reference than B.
 
-        Results saved to ``maturation_distance/{modality}/{metric}/``.
+        When reference = older controls, Δ < 0 = accelerated, Δ > 0 = decelerated.
+
+        Results saved to ``rel_distance/{modality}/{metric}/``.
 
         Parameters
         ----------
@@ -981,17 +990,17 @@ class CovNetAnalysis:
         p_accelerated, p_decelerated, n_dose, n_ctrl, n_ref, interpretation.
         """
         if triplets is None:
-            triplets = maturation_distance_comparisons(self.group_labels)
+            triplets = rel_distance_comparisons(self.group_labels)
 
         logger.info(
-            f"Maturation distance: {self.metric} ({n_perm} permutations, "
+            f"Relative distance: {self.metric} ({n_perm} permutations, "
             f"{len(triplets)} triplets)"
         )
 
-        md_dir = self._test_dir("maturation_distance")
+        md_dir = self._test_dir("rel_distance")
         md_dir.mkdir(parents=True, exist_ok=True)
 
-        md_df = _run_maturation_distance(
+        md_df = _run_rel_distance(
             group_data=self.group_arrays,
             triplets=triplets,
             n_perm=n_perm,
@@ -1000,13 +1009,16 @@ class CovNetAnalysis:
             n_workers=n_workers,
         )
 
-        md_df.to_csv(md_dir / "maturation_distance_results.csv", index=False)
+        md_df.to_csv(md_dir / "rel_distance_results.csv", index=False)
 
         n_accel = int((md_df["p_accelerated"] < 0.05).sum())
         n_decel = int((md_df["p_decelerated"] < 0.05).sum())
         logger.info(
-            f"Maturation distance {self.metric}: {n_accel} accelerated, "
+            f"Relative distance {self.metric}: {n_accel} accelerated, "
             f"{n_decel} decelerated (p < 0.05) out of {len(md_df)} tests"
         )
         return md_df
+
+    # Backward-compatible alias
+    run_maturation_distance = run_rel_distance
 

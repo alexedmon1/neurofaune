@@ -219,9 +219,25 @@ fc_matrix = compute_fc_matrix(timeseries)  # Pearson r → Fisher z
 
 ### Covariance Network Analysis (CovNet)
 
-Builds Spearman correlation matrices per experimental group and compares them using NBS, graph theory, and whole-network tests. Each analysis is a separate script that independently prepares data and runs its test, so failures in one don't block others.
+Builds Spearman correlation matrices per experimental group and compares them using network distance tests (absolute and relative), NBS, graph theory, and territory-level analysis. Each analysis is a separate script that independently prepares data and runs its test, so failures in one don't block others.
 
 ```bash
+# Absolute distance — Mantel, Frobenius, spectral divergence (direct group comparison)
+uv run python scripts/run_covnet_abs_distance.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv \
+    --n-permutations 1000 --n-workers 4
+
+# Relative distance — shift toward/away from a reference network
+uv run python scripts/run_covnet_rel_distance.py \
+    --roi-dir /path/to/network/roi \
+    --output-dir /path/to/network/covnet \
+    --modality dwi --metrics FA MD AD RD \
+    --exclusion-csv /path/to/exclusions.csv \
+    --n-permutations 5000 --seed 42
+
 # NBS — edge-level permutation testing (dose vs control within each PND)
 uv run python scripts/run_covnet_nbs.py \
     --roi-dir /path/to/network/roi \
@@ -238,14 +254,6 @@ uv run python scripts/run_covnet_graph_theory.py \
     --exclusion-csv /path/to/exclusions.csv \
     --n-permutations 1000 --densities 0.15 0.20 --n-workers 4
 
-# Whole-network — Mantel, Frobenius, spectral divergence tests
-uv run python scripts/run_covnet_whole_network.py \
-    --roi-dir /path/to/network/roi \
-    --output-dir /path/to/network/covnet \
-    --modality dwi --metrics FA MD AD RD \
-    --exclusion-csv /path/to/exclusions.csv \
-    --n-permutations 1000 --n-workers 4
-
 # Territory — post-hoc Fisher z + FDR at coarse anatomical level
 uv run python scripts/run_covnet_territory.py \
     --roi-dir /path/to/network/roi \
@@ -259,9 +267,10 @@ from neurofaune.network.covnet import CovNetAnalysis
 
 analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
 analysis.save()
+analysis.run_abs_distance(n_perm=1000)      # direct group comparison
+analysis.run_rel_distance(n_perm=5000)      # shift relative to reference
 analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
 analysis.run_graph_metrics(n_perm=1000)
-analysis.run_whole_network(n_perm=1000)
 analysis.run_territory()
 ```
 

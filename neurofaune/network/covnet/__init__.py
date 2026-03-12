@@ -1,4 +1,4 @@
-"""Covariance network analysis (CovNet): NBS, graph metrics, whole-network tests."""
+"""Covariance network analysis (CovNet): NBS, graph metrics, network distance tests."""
 
 from .pipeline import CovNetAnalysis
 
