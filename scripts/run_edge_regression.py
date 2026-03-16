@@ -191,9 +191,21 @@ def main():
         all_summaries[metric] = metric_summary
 
     # Save overall summary
+    try:
+        from neurofaune.reporting.summarize import build_provenance
+        all_summaries["_provenance"] = build_provenance()
+    except Exception:
+        pass
+
     summary_path = args.output_dir / f"edge_regression_summary_{args.modality}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
+
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        summarize_analysis("edge_regression", summary_path, output_dir=args.output_dir)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
     logger.info("\nEdge regression complete. Results in: %s", args.output_dir)

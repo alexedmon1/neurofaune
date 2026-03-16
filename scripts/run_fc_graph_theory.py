@@ -222,8 +222,21 @@ def main():
         "cohorts": all_results,
         "timestamp": datetime.now().isoformat(),
     }
-    with open(args.output_dir / "fc_graph_theory_summary.json", "w") as f:
+    try:
+        from neurofaune.reporting.summarize import build_provenance
+        summary["_provenance"] = build_provenance()
+    except Exception:
+        pass
+
+    summary_path = args.output_dir / "fc_graph_theory_summary.json"
+    with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
+
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        summarize_analysis("fc_graph_theory", summary_path, output_dir=args.output_dir)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
     logger.info("\nFC graph theory analysis complete. Results in: %s", args.output_dir)

@@ -657,7 +657,7 @@ Output structure:
             summary_json = tbss_dir / "randomise" / analysis / "analysis_summary.json"
             if summary_json.exists():
                 findings = summarize_analysis(
-                    "tbss", summary_json,
+                    "randomise", summary_json,
                     output_dir=summary_json.parent,
                 )
                 logger.info("Findings [%s]: %s", analysis, findings.summary_text)

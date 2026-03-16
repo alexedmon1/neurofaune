@@ -144,9 +144,21 @@ def main():
             continue
 
     # Save summary
+    try:
+        from neurofaune.reporting.summarize import build_provenance
+        all_summaries["_provenance"] = build_provenance()
+    except Exception:
+        pass
+
     summary_path = args.output_dir / f"maturation_distance_summary_{args.modality}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
+
+    try:
+        from neurofaune.reporting.summarize import summarize_analysis
+        summarize_analysis("covnet_rel_distance", summary_path, output_dir=args.output_dir)
+    except Exception as exc:
+        logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
     logger.info(
