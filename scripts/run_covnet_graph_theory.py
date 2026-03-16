@@ -108,6 +108,10 @@ def main():
         "--list-graph-metrics", action="store_true",
         help="List available graph metrics and exit",
     )
+    parser.add_argument(
+        "--sex", choices=["F", "M"], default=None,
+        help="Run analysis for one sex only",
+    )
 
     args = parser.parse_args()
 
@@ -136,10 +140,14 @@ def main():
 
     densities = args.densities or DEFAULT_DENSITIES
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    # Adjust output directory for sex-stratified analyses
+    output_dir = args.output_dir
+    if args.sex:
+        output_dir = args.output_dir / f"sex_{args.sex}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     progress = AnalysisProgress(
-        args.output_dir, "run_covnet_graph_theory.py", len(args.metrics)
+        output_dir, "run_covnet_graph_theory.py", len(args.metrics)
     )
     all_summaries = {}
     completed = 0
@@ -153,8 +161,9 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir,
+                args.roi_dir, args.exclusion_csv, output_dir,
                 args.modality, metric, labels_csv=args.labels_csv,
+                sex=args.sex,
             )
             analysis.save()
 
@@ -185,7 +194,8 @@ def main():
             logger.warning("Skipping %s: %s", metric, e)
             continue
 
-    summary_path = args.output_dir / f"graph_theory_summary_{args.modality}.json"
+    sex_suffix = f"_{args.sex}" if args.sex else ""
+    summary_path = output_dir / f"graph_theory_summary_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
@@ -194,12 +204,12 @@ def main():
     # Generate findings summary
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        findings = summarize_analysis("covnet_graph_theory", summary_path, output_dir=args.output_dir)
+        findings = summarize_analysis("covnet_graph_theory", summary_path, output_dir=output_dir)
         logger.info("Findings: %s", findings.summary_text)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
-    logger.info("\nGraph theory analysis complete. Results in: %s", args.output_dir)
+    logger.info("\nGraph theory analysis complete. Results in: %s", output_dir)
 
 
 if __name__ == "__main__":

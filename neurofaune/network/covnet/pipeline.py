@@ -47,6 +47,7 @@ from .visualization import (
 from .whole_network import (
     run_all_comparisons as _run_abs_distance_comparisons,
     run_rel_distance as _run_rel_distance,
+    run_subject_rel_distance as _run_subject_rel_distance,
     rel_distance_comparisons,
 )
 from neurofaune.network.matrices import (
@@ -361,6 +362,7 @@ class CovNetAnalysis:
         modality: str,
         metric: str,
         labels_csv: Path | None = None,
+        sex: str | None = None,
     ) -> "CovNetAnalysis":
         """Load ROI data, bilateral average, compute correlation matrices.
 
@@ -379,6 +381,8 @@ class CovNetAnalysis:
         labels_csv : Path or None
             SIGMA atlas labels CSV for hybrid territory mapping.  If None,
             falls back to the default path on arborea.
+        sex : str or None
+            If set (``"F"`` or ``"M"``), restrict analysis to one sex.
 
         Returns a populated instance ready for save() and run_*() methods.
         """
@@ -398,10 +402,17 @@ class CovNetAnalysis:
 
         inst = cls(covnet_root, modality, metric)
         inst.roi_dir = roi_dir
+        inst.sex = sex
 
         # Phase 1: Load and prepare data
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
         df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
+
+        # Optional sex filter
+        if sex is not None:
+            df = df[df["sex"] == sex].reset_index(drop=True)
+            logger.info("Sex filter '%s': %d subjects remaining", sex, len(df))
+
         inst.n_subjects = len(df)
 
         # Phase 2: Bilateral averaging
@@ -476,6 +487,7 @@ class CovNetAnalysis:
             "metric": self.metric,
             "modality": self.modality,
             "n_subjects": self.n_subjects,
+            "sex": getattr(self, "sex", None),
             "bilateral_region_cols": self.bilateral_region_cols,
             "territory_cols": self.territory_cols,
             "group_labels": self.group_labels,
@@ -1018,6 +1030,61 @@ class CovNetAnalysis:
             f"{n_decel} decelerated (p < 0.05) out of {len(md_df)} tests"
         )
         return md_df
+
+    def run_subject_rel_distance(
+        self,
+        triplets: list[tuple[str, str, str]] | None = None,
+        n_perm: int = 5000,
+        seed: int = 42,
+        similarity_fns: list[str] | None = None,
+    ) -> tuple["pd.DataFrame", "pd.DataFrame"]:
+        """Subject-level relative distance: compare individual subjects'
+        similarity to a reference group.
+
+        For each subject in dose/control groups, computes the similarity of
+        that subject's ROI profile to the reference group mean.  Tests whether
+        dose subjects are systematically more (or less) similar to the
+        reference than controls.
+
+        Results saved to ``subject_rel_distance/{modality}/{metric}/``.
+
+        Returns
+        -------
+        summary_df, per_subject_df
+        """
+        if triplets is None:
+            triplets = rel_distance_comparisons(self.group_labels)
+
+        logger.info(
+            f"Subject-level relative distance: {self.metric} "
+            f"({n_perm} permutations, {len(triplets)} triplets)"
+        )
+
+        out_dir = self._test_dir("subject_rel_distance")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        summary_df, per_subject_df = _run_subject_rel_distance(
+            group_data=self.group_arrays,
+            triplets=triplets,
+            n_perm=n_perm,
+            seed=seed,
+            similarity_fns=similarity_fns,
+        )
+
+        summary_df.to_csv(
+            out_dir / "subject_rel_distance_results.csv", index=False
+        )
+        per_subject_df.to_csv(
+            out_dir / "subject_rel_distance_per_subject.csv", index=False
+        )
+
+        n_accel = int((summary_df["p_accelerated"] < 0.05).sum())
+        n_decel = int((summary_df["p_decelerated"] < 0.05).sum())
+        logger.info(
+            f"Subject rel-distance {self.metric}: {n_accel} accelerated, "
+            f"{n_decel} decelerated (p < 0.05) out of {len(summary_df)} tests"
+        )
+        return summary_df, per_subject_df
 
     # Backward-compatible alias
     run_maturation_distance = run_rel_distance

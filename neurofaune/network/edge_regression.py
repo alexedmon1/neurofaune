@@ -37,6 +37,7 @@ def run_edge_regression(
     covariate_map: dict[str, float],
     covariate_name: str = "log(1+AUC)",
     cohort_filter: str | None = None,
+    sex_filter: str | None = None,
     n_perm: int = 1000,
     threshold: float = 3.0,
     seed: int = 42,
@@ -61,6 +62,8 @@ def run_edge_regression(
         Display name for the covariate.
     cohort_filter : str or None
         If set, restrict to this PND cohort (e.g. ``"p60"``).
+    sex_filter : str or None
+        If set (``"F"`` or ``"M"``), restrict to one sex.
     n_perm : int
         Number of permutations for NBS null distribution.
     threshold : float
@@ -79,6 +82,10 @@ def run_edge_regression(
 
     if cohort_filter:
         df = df[df["cohort"] == cohort_filter].copy()
+
+    if sex_filter is not None:
+        df = df[df["sex"] == sex_filter].reset_index(drop=True)
+        logger.info("Sex filter '%s': %d subjects remaining", sex_filter, len(df))
 
     df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
     region_cols = [c for c in bilateral_cols if not c.startswith("territory_")]

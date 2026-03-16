@@ -89,6 +89,10 @@ def main():
         "--seed", type=int, default=42,
         help="Random seed for reproducibility",
     )
+    parser.add_argument(
+        "--sex", choices=["F", "M"], default=None,
+        help="Run analysis for one sex only",
+    )
 
     args = parser.parse_args()
 
@@ -96,7 +100,11 @@ def main():
         logger.error("ROI directory not found: %s", args.roi_dir)
         sys.exit(1)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    # Adjust output directory for sex-stratified analyses
+    output_dir = args.output_dir
+    if args.sex:
+        output_dir = args.output_dir / f"sex_{args.sex}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Build covariate map
     covariate_map = None
@@ -124,26 +132,28 @@ def main():
             covariate_name = "log(1+AUC)"
 
     # Save analysis configuration
+    sex_suffix = f"_{args.sex}" if args.sex else ""
     config = {
         "roi_dir": str(args.roi_dir),
         "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
-        "output_dir": str(args.output_dir),
+        "output_dir": str(output_dir),
         "modality": args.modality,
         "metrics": args.metrics,
         "target": args.target,
+        "sex": args.sex,
         "auc_csv": str(args.auc_csv) if args.auc_csv else None,
         "n_permutations": args.n_permutations,
         "nbs_threshold": args.nbs_threshold,
         "seed": args.seed,
         "timestamp": datetime.now().isoformat(),
     }
-    with open(args.output_dir / f"edge_regression_config_{args.modality}.json", "w") as f:
+    with open(output_dir / f"edge_regression_config_{args.modality}{sex_suffix}.json", "w") as f:
         json.dump(config, f, indent=2)
 
     # Run for each metric x cohort
     cohorts = [None, "p30", "p60", "p90"]
     total_tasks = len(args.metrics) * len(cohorts)
-    progress = AnalysisProgress(args.output_dir, "run_edge_regression.py", total_tasks)
+    progress = AnalysisProgress(output_dir, "run_edge_regression.py", total_tasks)
     all_summaries = {}
     completed = 0
 
@@ -165,12 +175,13 @@ def main():
             result = run_edge_regression(
                 wide_csv=wide_csv,
                 exclusion_csv=args.exclusion_csv,
-                output_dir=args.output_dir,
+                output_dir=output_dir,
                 modality=args.modality,
                 metric=metric,
                 covariate_map=covariate_map,
                 covariate_name=covariate_name,
                 cohort_filter=cohort,
+                sex_filter=args.sex,
                 n_perm=args.n_permutations,
                 threshold=args.nbs_threshold,
                 seed=args.seed,
@@ -197,18 +208,18 @@ def main():
     except Exception:
         pass
 
-    summary_path = args.output_dir / f"edge_regression_summary_{args.modality}.json"
+    summary_path = output_dir / f"edge_regression_summary_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        summarize_analysis("edge_regression", summary_path, output_dir=args.output_dir)
+        summarize_analysis("edge_regression", summary_path, output_dir=output_dir)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
-    logger.info("\nEdge regression complete. Results in: %s", args.output_dir)
+    logger.info("\nEdge regression complete. Results in: %s", output_dir)
 
 
 if __name__ == "__main__":

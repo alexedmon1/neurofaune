@@ -104,9 +104,7 @@ def load_multiview_data(
 
     for view_name in view_names:
         metrics = views[view_name]
-        all_features = []
-        all_feature_names = []
-        sample_keys = None
+        metric_results = []  # list of (keys, info, X, feature_names)
 
         for metric in metrics:
             csv_path = roi_dir / f"roi_{metric}_wide.csv"
@@ -121,30 +119,41 @@ def load_multiview_data(
                 standardize=False,  # We standardise per-view below
             )
 
-            # Build unique subject-session keys
             info = data["sample_info"]
             keys = (info["subject"] + "_" + info["session"]).values
-
-            if sample_keys is None:
-                sample_keys = keys
-                sample_info = info
-            else:
-                # Should match within a view (same modality coverage)
-                assert np.array_equal(keys, sample_keys), (
-                    f"Subject mismatch within view {view_name}: "
-                    f"{metric} has {len(keys)} vs {len(sample_keys)} subjects"
-                )
-
-            # Prefix feature names with metric
             prefixed = [f"{metric}_{fn}" for fn in data["feature_names"]]
-            all_features.append(data["X"])
-            all_feature_names.extend(prefixed)
+            metric_results.append((keys, info, data["X"], prefixed))
+
+        # Intersect subjects across metrics within this view
+        view_keys = set(metric_results[0][0])
+        for keys, _, _, _ in metric_results[1:]:
+            view_keys &= set(keys)
+        view_keys_sorted = sorted(view_keys)
+
+        if len(view_keys_sorted) < len(metric_results[0][0]):
+            logger.info(
+                "View '%s': intersected %d -> %d subjects across %d metrics",
+                view_name, len(metric_results[0][0]), len(view_keys_sorted),
+                len(metrics),
+            )
+
+        # Align all metrics to the common subject set
+        all_features = []
+        all_feature_names = []
+        sample_info = None
+        for keys, info, X, fnames in metric_results:
+            key_to_idx = {k: i for i, k in enumerate(keys)}
+            idx = [key_to_idx[k] for k in view_keys_sorted]
+            all_features.append(X[idx])
+            all_feature_names.extend(fnames)
+            if sample_info is None:
+                sample_info = info.iloc[idx].reset_index(drop=True)
 
         X_view = np.hstack(all_features)
         view_data[view_name] = {
             "X": X_view,
             "feature_names": all_feature_names,
-            "keys": sample_keys,
+            "keys": np.array(view_keys_sorted),
             "info": sample_info,
         }
         logger.info(

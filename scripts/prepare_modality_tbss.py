@@ -188,6 +188,8 @@ Output structure:
                         help='Metrics to prepare (auto-detected from --modality if not specified)')
     parser.add_argument('--min-coverage', type=float, default=0.75,
                         help='Minimum fraction of subjects with non-zero data per voxel (default: 0.75)')
+    parser.add_argument('--exclusion-csv', type=Path, default=None,
+                        help='CSV with subject,session columns to exclude')
 
     args = parser.parse_args()
 
@@ -231,6 +233,13 @@ Output structure:
     logger.info("\n[Phase 2] Merging with study tracker...")
     merged = merge_with_tracker(subjects, args.study_tracker, modality)
     logger.info(f"Matched {len(merged)} subjects with tracker metadata")
+
+    if args.exclusion_csv:
+        excl = pd.read_csv(args.exclusion_csv)
+        excl_keys = set(excl['subject'] + '_' + excl['session'])
+        before = len(merged)
+        merged = merged[~merged['subject_key'].isin(excl_keys)].reset_index(drop=True)
+        logger.info(f"Excluded {before - len(merged)} sessions via {args.exclusion_csv} ({len(merged)} remaining)")
 
     # Distribution summary
     logger.info("\nDistribution:")

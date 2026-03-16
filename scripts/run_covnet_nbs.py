@@ -83,6 +83,10 @@ def main():
         "--skip-cross-timepoint", action="store_true",
         help="Skip cross-timepoint comparisons (only run dose vs control within PND)",
     )
+    parser.add_argument(
+        "--sex", choices=["F", "M"], default=None,
+        help="Run analysis for one sex only",
+    )
 
     args = parser.parse_args()
 
@@ -90,7 +94,11 @@ def main():
         logger.error("ROI directory not found: %s", args.roi_dir)
         sys.exit(1)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    # Adjust output directory for sex-stratified analyses
+    output_dir = args.output_dir
+    if args.sex:
+        output_dir = args.output_dir / f"sex_{args.sex}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Comparison types
     comp_types = ["dose"]
@@ -98,7 +106,7 @@ def main():
         comp_types.extend(["cross-timepoint", "cross-dose-timepoint"])
 
     progress = AnalysisProgress(
-        args.output_dir, "run_covnet_nbs.py", len(args.metrics)
+        output_dir, "run_covnet_nbs.py", len(args.metrics)
     )
     all_summaries = {}
     completed = 0
@@ -109,8 +117,9 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir,
+                args.roi_dir, args.exclusion_csv, output_dir,
                 args.modality, metric, labels_csv=args.labels_csv,
+                sex=args.sex,
             )
             analysis.save()
 
@@ -140,7 +149,8 @@ def main():
             continue
 
     # Save summary
-    summary_path = args.output_dir / f"nbs_summary_{args.modality}.json"
+    sex_suffix = f"_{args.sex}" if args.sex else ""
+    summary_path = output_dir / f"nbs_summary_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
@@ -149,12 +159,12 @@ def main():
     # Generate findings summary
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        findings = summarize_analysis("covnet_nbs", summary_path, output_dir=args.output_dir)
+        findings = summarize_analysis("covnet_nbs", summary_path, output_dir=output_dir)
         logger.info("Findings: %s", findings.summary_text)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
-    logger.info("\nNBS analysis complete. Results in: %s", args.output_dir)
+    logger.info("\nNBS analysis complete. Results in: %s", output_dir)
 
 
 if __name__ == "__main__":

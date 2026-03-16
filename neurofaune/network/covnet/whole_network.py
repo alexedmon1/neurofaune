@@ -579,6 +579,263 @@ def run_all_comparisons(
     return results_df, null_dists
 
 
+# ---------------------------------------------------------------------------
+#  Subject-level relative distance
+# ---------------------------------------------------------------------------
+
+
+def _subject_similarity(data: np.ndarray, ref_mean: np.ndarray,
+                        similarity_fn: str) -> np.ndarray:
+    """Compute per-subject similarity to a reference mean ROI profile.
+
+    Parameters
+    ----------
+    data : ndarray (n_subjects, n_rois)
+    ref_mean : ndarray (n_rois,)
+    similarity_fn : {"spearman", "euclidean", "cosine"}
+
+    Returns
+    -------
+    similarities : ndarray (n_subjects,)
+    """
+    if similarity_fn == "spearman":
+        return np.array([
+            stats.spearmanr(data[i], ref_mean).statistic
+            for i in range(data.shape[0])
+        ])
+    elif similarity_fn == "euclidean":
+        # Negate so higher = more similar (consistent with spearman)
+        return -np.linalg.norm(data - ref_mean[np.newaxis, :], axis=1)
+    elif similarity_fn == "cosine":
+        norms = np.linalg.norm(data, axis=1) * np.linalg.norm(ref_mean)
+        norms = np.where(norms == 0, 1.0, norms)  # avoid division by zero
+        return (data @ ref_mean) / norms
+    else:
+        raise ValueError(f"Unknown similarity_fn: {similarity_fn!r}")
+
+
+def subject_rel_distance_test(
+    data_dose: np.ndarray,
+    data_early_control: np.ndarray,
+    data_late_control: np.ndarray,
+    n_perm: int = 5000,
+    seed: int = 42,
+    similarity_fn: str = "spearman",
+) -> dict:
+    """Subject-level relative distance: compare individual similarity to a
+    reference group.
+
+    For each subject in dose and early-control groups, computes the similarity
+    of that subject's ROI profile to the reference group mean profile.  Then
+    tests whether the distribution of similarities differs between groups.
+
+    Positive delta → dose subjects are more similar to the reference
+    (accelerated if reference = older controls).
+
+    Parameters
+    ----------
+    data_dose : ndarray (n_dose, n_rois)
+    data_early_control : ndarray (n_ctrl, n_rois)
+    data_late_control : ndarray (n_ref, n_rois)
+    n_perm : int
+    seed : int
+    similarity_fn : {"spearman", "euclidean", "cosine"}
+
+    Returns
+    -------
+    dict with keys: delta, p_accelerated, p_decelerated, p_mann_whitney,
+    mean_dose_sim, mean_ctrl_sim, dose_similarities, ctrl_similarities,
+    similarity_fn, n_dose, n_ctrl, n_ref.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Reference mean profile
+    ref_mean = np.nanmean(data_late_control, axis=0)
+
+    # Per-subject similarities
+    dose_sims = _subject_similarity(data_dose, ref_mean, similarity_fn)
+    ctrl_sims = _subject_similarity(data_early_control, ref_mean, similarity_fn)
+
+    mean_dose = float(np.nanmean(dose_sims))
+    mean_ctrl = float(np.nanmean(ctrl_sims))
+    obs_delta = mean_dose - mean_ctrl
+
+    logger.info(
+        f"  Subject-level ({similarity_fn}): "
+        f"mean_dose={mean_dose:.4f}, mean_ctrl={mean_ctrl:.4f}, "
+        f"Δ={obs_delta:.4f} ({'accelerated' if obs_delta > 0 else 'decelerated'})"
+    )
+
+    # Mann-Whitney U as a secondary non-parametric test
+    valid_dose = dose_sims[~np.isnan(dose_sims)]
+    valid_ctrl = ctrl_sims[~np.isnan(ctrl_sims)]
+    if len(valid_dose) >= 2 and len(valid_ctrl) >= 2:
+        mw_stat, mw_p = stats.mannwhitneyu(
+            valid_dose, valid_ctrl, alternative="two-sided"
+        )
+        p_mw = float(mw_p)
+    else:
+        p_mw = float("nan")
+
+    # Permutation test: shuffle dose/control labels among pre-computed scalars
+    pooled = np.concatenate([dose_sims, ctrl_sims])
+    n_dose = len(dose_sims)
+    null_deltas = np.zeros(n_perm)
+
+    for p in range(n_perm):
+        perm_idx = rng.permutation(len(pooled))
+        null_deltas[p] = (
+            np.nanmean(pooled[perm_idx[:n_dose]])
+            - np.nanmean(pooled[perm_idx[n_dose:]])
+        )
+
+    valid_null = null_deltas[~np.isnan(null_deltas)]
+    if len(valid_null) == 0:
+        p_accel = float("nan")
+        p_decel = float("nan")
+    else:
+        # Accelerated: dose is MORE similar to reference (delta > 0)
+        p_accel = float(np.mean(valid_null >= obs_delta))
+        # Decelerated: dose is LESS similar to reference (delta < 0)
+        p_decel = float(np.mean(valid_null <= obs_delta))
+
+    return {
+        "delta": obs_delta,
+        "p_accelerated": p_accel,
+        "p_decelerated": p_decel,
+        "p_mann_whitney": p_mw,
+        "mean_dose_sim": mean_dose,
+        "mean_ctrl_sim": mean_ctrl,
+        "dose_similarities": dose_sims,
+        "ctrl_similarities": ctrl_sims,
+        "similarity_fn": similarity_fn,
+        "n_dose": data_dose.shape[0],
+        "n_ctrl": data_early_control.shape[0],
+        "n_ref": data_late_control.shape[0],
+    }
+
+
+def _subject_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result):
+    """Build a summary row dict from subject-level rel distance result."""
+    return {
+        "dose_group": dose_lbl,
+        "early_control": ctrl_lbl,
+        "reference": ref_lbl,
+        "comparison": f"{dose_lbl}_ref_{ref_lbl}",
+        "similarity_fn": result["similarity_fn"],
+        "mean_dose_sim": result["mean_dose_sim"],
+        "mean_ctrl_sim": result["mean_ctrl_sim"],
+        "delta": result["delta"],
+        "p_accelerated": result["p_accelerated"],
+        "p_decelerated": result["p_decelerated"],
+        "p_mann_whitney": result["p_mann_whitney"],
+        "n_dose": result["n_dose"],
+        "n_ctrl": result["n_ctrl"],
+        "n_ref": result["n_ref"],
+        "interpretation": (
+            "accelerated" if result["delta"] > 0 else "decelerated"
+        ),
+    }
+
+
+def _subject_rel_dist_per_subject_rows(dose_lbl, ctrl_lbl, ref_lbl, result):
+    """Build per-subject detail rows from subject-level rel distance result."""
+    comp = f"{dose_lbl}_ref_{ref_lbl}"
+    sim_fn = result["similarity_fn"]
+    rows = []
+    for i, s in enumerate(result["dose_similarities"]):
+        rows.append({
+            "comparison": comp,
+            "similarity_fn": sim_fn,
+            "group": dose_lbl,
+            "subject_index": i,
+            "similarity_to_ref": s,
+        })
+    for i, s in enumerate(result["ctrl_similarities"]):
+        rows.append({
+            "comparison": comp,
+            "similarity_fn": sim_fn,
+            "group": ctrl_lbl,
+            "subject_index": i,
+            "similarity_to_ref": s,
+        })
+    return rows
+
+
+def run_subject_rel_distance(
+    group_data: dict[str, np.ndarray],
+    triplets: list[tuple[str, str, str]] | None = None,
+    n_perm: int = 5000,
+    seed: int = 42,
+    similarity_fns: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run subject-level relative distance tests for all triplets.
+
+    Parameters
+    ----------
+    group_data : dict[str, ndarray]
+        Mapping from group label to (n_subjects, n_rois) arrays.
+    triplets : list of (dose_label, early_control, late_control), optional
+    n_perm : int
+    seed : int
+    similarity_fns : list[str], optional
+        Default: ["spearman", "euclidean", "cosine"].
+
+    Returns
+    -------
+    summary_df : DataFrame
+        One row per triplet × similarity_fn.
+    per_subject_df : DataFrame
+        One row per subject per triplet × similarity_fn.
+    """
+    if triplets is None:
+        triplets = rel_distance_comparisons(list(group_data.keys()))
+
+    if similarity_fns is None:
+        similarity_fns = ["spearman", "euclidean", "cosine"]
+
+    # Validate triplets
+    valid_triplets = []
+    for dose_lbl, ctrl_lbl, ref_lbl in triplets:
+        missing = [l for l in (dose_lbl, ctrl_lbl, ref_lbl)
+                   if l not in group_data]
+        if missing:
+            logger.warning(
+                f"Skipping triplet ({dose_lbl}, {ctrl_lbl}, {ref_lbl}): "
+                f"missing groups {missing}"
+            )
+            continue
+        valid_triplets.append((dose_lbl, ctrl_lbl, ref_lbl))
+
+    summary_rows = []
+    per_subject_rows = []
+
+    for dose_lbl, ctrl_lbl, ref_lbl in valid_triplets:
+        comp_label = f"{dose_lbl}_ref_{ref_lbl}"
+        for sim_fn in similarity_fns:
+            logger.info(
+                f"\n--- Subject rel-distance: {comp_label} ({sim_fn}) ---"
+            )
+            result = subject_rel_distance_test(
+                data_dose=group_data[dose_lbl],
+                data_early_control=group_data[ctrl_lbl],
+                data_late_control=group_data[ref_lbl],
+                n_perm=n_perm,
+                seed=seed,
+                similarity_fn=sim_fn,
+            )
+            summary_rows.append(
+                _subject_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result)
+            )
+            per_subject_rows.extend(
+                _subject_rel_dist_per_subject_rows(
+                    dose_lbl, ctrl_lbl, ref_lbl, result
+                )
+            )
+
+    return pd.DataFrame(summary_rows), pd.DataFrame(per_subject_rows)
+
+
 # Backward-compatible aliases
 whole_network_test = abs_distance_test
 maturation_distance_test = rel_distance_test

@@ -22,6 +22,7 @@ def load_and_prepare_data(
     wide_csv: Union[str, Path],
     exclusion_csv: Optional[Union[str, Path]] = None,
     max_zero_frac: float = 0.2,
+    max_subject_zero_frac: float = 0.10,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Load ROI wide CSV, apply exclusions, and filter unreliable ROIs.
 
@@ -36,6 +37,10 @@ def load_and_prepare_data(
     max_zero_frac : float
         Maximum fraction of zero values allowed per ROI across subjects.
         ROIs exceeding this are dropped. Default 0.2.
+    max_subject_zero_frac : float
+        Maximum fraction of ROIs allowed to be zero for a single subject.
+        Subjects exceeding this are dropped (likely FOV coverage issues).
+        Default 0.10.
 
     Returns
     -------
@@ -110,6 +115,30 @@ def load_and_prepare_data(
         if zero_frac > max_zero_frac:
             continue
         valid_territory_cols.append(col)
+
+    # Filter subjects with excessive zeros among VALID ROIs only.
+    # This runs after ROI filtering so FOV-limited ROIs (zero for everyone)
+    # don't count against individual subjects.
+    if max_subject_zero_frac > 0 and valid_region_cols:
+        roi_data = df[valid_region_cols].values
+        zeros_per_subj = (roi_data == 0).sum(axis=1)
+        max_zeros = int(len(valid_region_cols) * max_subject_zero_frac)
+        bad_mask = zeros_per_subj > max_zeros
+        if bad_mask.any():
+            bad_indices = np.where(bad_mask)[0]
+            for idx in bad_indices:
+                row = df.iloc[idx]
+                n_z = int(zeros_per_subj[idx])
+                logger.warning(
+                    f"Dropping {row['subject']}/{row['session']}: "
+                    f"{n_z}/{len(valid_region_cols)} valid ROIs are zero "
+                    f"(>{max_subject_zero_frac:.0%} threshold)"
+                )
+            df = df[~bad_mask].reset_index(drop=True)
+            logger.info(
+                f"Dropped {bad_mask.sum()} subjects with >{max_subject_zero_frac:.0%} "
+                f"zero valid ROIs ({len(df)} remaining)"
+            )
 
     roi_cols = valid_region_cols + valid_territory_cols
     logger.info(
