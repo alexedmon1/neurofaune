@@ -8,7 +8,6 @@ from neurofaune.network.covnet.whole_network import (  # noqa: F401
     whole_network_test,
 )
 from neurofaune.network.matrices import (  # noqa: F401
-    bilateral_average,
     compute_spearman_matrices,
     define_groups,
     fisher_z_transform,
@@ -19,7 +18,6 @@ from neurofaune.network.matrices import (  # noqa: F401
 __all__ = [
     "CovNetAnalysis",
     "load_and_prepare_data",
-    "bilateral_average",
     "define_groups",
     "compute_spearman_matrices",
     "fisher_z_transform",

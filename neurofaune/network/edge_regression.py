@@ -23,7 +23,7 @@ import pandas as pd
 
 from neurofaune.network.covnet.nbs import network_based_regression
 from neurofaune.network.covnet.visualization import plot_nbs_network
-from neurofaune.network.matrices import bilateral_average, load_and_prepare_data
+from neurofaune.network.matrices import load_and_prepare_data
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def run_edge_regression(
     output_dir: Path,
     modality: str,
     metric: str,
-    covariate_map: dict[str, float],
+    covariate_map: dict[str, float] | None,
     covariate_name: str = "log(1+AUC)",
     cohort_filter: str | None = None,
     sex_filter: str | None = None,
@@ -56,8 +56,9 @@ def run_edge_regression(
         Modality name (e.g. ``"dwi"``).
     metric : str
         Metric name (e.g. ``"FA"``).
-    covariate_map : dict[str, float]
+    covariate_map : dict[str, float] or None
         Mapping from subject key (``"sub-Rat001_ses-p60"``) to covariate value.
+        If None, the target column is read directly from the wide CSV.
     covariate_name : str
         Display name for the covariate.
     cohort_filter : str or None
@@ -87,18 +88,37 @@ def run_edge_regression(
         df = df[df["sex"] == sex_filter].reset_index(drop=True)
         logger.info("Sex filter '%s': %d subjects remaining", sex_filter, len(df))
 
-    df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
-    region_cols = [c for c in bilateral_cols if not c.startswith("territory_")]
+    region_cols = [c for c in roi_cols if not c.startswith("territory_")]
 
     # Match with covariate
-    df_bilateral["_key"] = df_bilateral["subject"] + "_" + df_bilateral["session"]
-    matched = df_bilateral[df_bilateral["_key"].isin(covariate_map)].copy()
-    matched["_cov"] = matched["_key"].map(covariate_map)
+    if covariate_map is not None:
+        df["_key"] = df["subject"] + "_" + df["session"]
+        matched = df[df["_key"].isin(covariate_map)].copy()
+        matched["_cov"] = matched["_key"].map(covariate_map)
+    elif covariate_name in df.columns:
+        matched = df.copy()
+        matched["_cov"] = matched[covariate_name].astype(float)
+    else:
+        logger.warning(
+            "No covariate_map and column '%s' not in data, skipping %s/%s",
+            covariate_name, metric, cohort_label,
+        )
+        return None
     matched = matched.dropna(subset=["_cov"])
 
     if len(matched) < 10:
         logger.warning(
             "Too few matched subjects (%d) for edge regression %s/%s",
+            len(matched), metric, cohort_label,
+        )
+        return None
+
+    # Drop subjects with any NaN in region ROIs (out-of-FOV zeros replaced
+    # with NaN by load_and_prepare_data) — regression cannot handle NaN.
+    matched = matched.dropna(subset=region_cols)
+    if len(matched) < 10:
+        logger.warning(
+            "Too few subjects (%d) after NaN drop for edge regression %s/%s",
             len(matched), metric, cohort_label,
         )
         return None

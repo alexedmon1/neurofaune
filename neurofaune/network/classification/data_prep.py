@@ -15,7 +15,6 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 from neurofaune.connectome.matrices import (
-    bilateral_average,
     load_and_prepare_data,
 )
 
@@ -53,9 +52,8 @@ def _load_filter_select(
         logger.info("Cohort filter '%s': n=%d", cohort_filter, len(df))
 
     # Select feature set
-    if feature_set == "bilateral":
-        df, feature_names = bilateral_average(df, roi_cols)
-        feature_names = [c for c in feature_names if not c.startswith("territory_")]
+    if feature_set in ("bilateral", "region"):
+        feature_names = [c for c in roi_cols if not c.startswith("territory_")]
     elif feature_set == "territory":
         feature_names = [c for c in roi_cols if c.startswith("territory_")]
         if not feature_names:

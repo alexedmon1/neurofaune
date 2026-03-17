@@ -82,6 +82,10 @@ def main():
         "--skip-cross-timepoint", action="store_true",
         help="Skip cross-timepoint comparisons",
     )
+    parser.add_argument(
+        "--sex", choices=["F", "M"], default=None,
+        help="Run analysis for one sex only",
+    )
 
     args = parser.parse_args()
 
@@ -89,14 +93,17 @@ def main():
         logger.error("ROI directory not found: %s", args.roi_dir)
         sys.exit(1)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = args.output_dir
+    if args.sex:
+        output_dir = args.output_dir / f"sex_{args.sex}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     comp_types = ["dose"]
     if not args.skip_cross_timepoint:
         comp_types.extend(["cross-timepoint", "cross-dose-timepoint"])
 
     progress = AnalysisProgress(
-        args.output_dir, "run_covnet_abs_distance.py", len(args.metrics)
+        output_dir, "run_covnet_abs_distance.py", len(args.metrics)
     )
     all_summaries = {}
     completed = 0
@@ -107,8 +114,9 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, args.output_dir,
+                args.roi_dir, args.exclusion_csv, output_dir,
                 args.modality, metric, labels_csv=args.labels_csv,
+                sex=args.sex,
             )
             analysis.save()
 
@@ -126,7 +134,7 @@ def main():
             all_summaries[metric] = {
                 "metric": metric,
                 "n_subjects": analysis.n_subjects,
-                "n_bilateral_rois": len(analysis.bilateral_region_cols),
+                "n_region_rois": len(analysis.region_cols),
                 "n_comparisons": len(comparisons),
                 "n_significant": n_sig,
             }
@@ -142,18 +150,19 @@ def main():
     except Exception:
         pass
 
-    summary_path = args.output_dir / f"abs_distance_summary_{args.modality}.json"
+    sex_suffix = f"_{args.sex}" if args.sex else ""
+    summary_path = output_dir / f"abs_distance_summary_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        summarize_analysis("covnet_abs_distance", summary_path, output_dir=args.output_dir)
+        summarize_analysis("covnet_abs_distance", summary_path, output_dir=output_dir)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
-    logger.info("\nAbsolute distance analysis complete. Results in: %s", args.output_dir)
+    logger.info("\nAbsolute distance analysis complete. Results in: %s", output_dir)
 
 
 if __name__ == "__main__":

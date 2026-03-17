@@ -140,6 +140,21 @@ def load_and_prepare_data(
                 f"zero valid ROIs ({len(df)} remaining)"
             )
 
+    # Replace remaining zeros with NaN in region ROIs.
+    # In rodent MRI with limited slice packages, zero values in brain ROIs
+    # are almost always out-of-FOV artifacts, not real measurements.
+    # Leaving them as zeros biases correlations and regressions.
+    if valid_region_cols:
+        roi_data = df[valid_region_cols]
+        n_zeros = (roi_data == 0).sum().sum()
+        if n_zeros > 0:
+            df[valid_region_cols] = roi_data.replace(0, np.nan)
+            n_cells = roi_data.shape[0] * roi_data.shape[1]
+            logger.info(
+                f"Replaced {n_zeros} residual zeros with NaN in region ROIs "
+                f"({n_zeros / n_cells:.1%} of values)"
+            )
+
     roi_cols = valid_region_cols + valid_territory_cols
     logger.info(
         f"Retained {len(valid_region_cols)} region ROIs + "

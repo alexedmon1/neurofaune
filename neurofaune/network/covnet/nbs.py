@@ -339,15 +339,18 @@ def network_based_regression(
         n_subjects, n_rois, threshold, n_perm,
     )
 
-    # Z-score each ROI column across subjects
+    # Z-score each ROI column across subjects (NaN-safe for FOV coverage gaps)
     z_data = np.empty_like(data, dtype=float)
     for j in range(n_rois):
         col = data[:, j].astype(float)
-        mu, sd = col.mean(), col.std(ddof=1)
-        if sd < 1e-12:
+        mu, sd = np.nanmean(col), np.nanstd(col, ddof=1)
+        if sd < 1e-12 or np.isnan(sd):
             z_data[:, j] = 0.0
         else:
             z_data[:, j] = (col - mu) / sd
+    # Replace NaN with 0 in z-scored data so OLS works; edges involving
+    # FOV-limited ROIs will have attenuated statistics, not errors.
+    np.nan_to_num(z_data, copy=False, nan=0.0)
 
     def _compute_edge_tstats(cov_vec):
         """Compute per-edge t-statistics for the covariate."""

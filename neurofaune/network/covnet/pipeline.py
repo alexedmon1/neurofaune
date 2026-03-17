@@ -51,7 +51,6 @@ from .whole_network import (
     rel_distance_comparisons,
 )
 from neurofaune.network.matrices import (
-    bilateral_average,
     compute_spearman_matrices,
     cross_dose_timepoint_comparisons,
     cross_timepoint_comparisons,
@@ -192,10 +191,10 @@ def _save_territory_results(
 
 
 def build_territory_mapping(
-    bilateral_region_cols: list[str],
+    region_cols: list[str],
     labels_csv: Path,
 ) -> dict[str, str]:
-    """Map each bilateral ROI to a hybrid territory group.
+    """Map each ROI to a hybrid territory group.
 
     Cortex ROIs use the "System" column (e.g. Somatosensory System,
     Hippocampus Fomation). Non-Cortex ROIs use the "Territories" column
@@ -203,8 +202,8 @@ def build_territory_mapping(
 
     Parameters
     ----------
-    bilateral_region_cols : list[str]
-        Bilateral ROI column names (no _L/_R suffix).
+    region_cols : list[str]
+        ROI column names (may have _L/_R suffixes).
     labels_csv : Path
         Path to SIGMA atlas labels CSV with columns:
         Territories, System, Region of interest.
@@ -235,11 +234,10 @@ def build_territory_mapping(
         if base not in roi_info:
             roi_info[base] = (territory, system)
 
-    # Map each bilateral ROI to its hybrid group
-    # Bilateral-averaged columns have no suffix (e.g. "Cornu_Ammonis_1"),
-    # but unpaired columns keep their _L/_R suffix.
+    # Map each ROI to its hybrid group.
+    # ROI columns may have _L/_R suffixes; strip them for atlas lookup.
     mapping: dict[str, str] = {}
-    for col in bilateral_region_cols:
+    for col in region_cols:
         info = roi_info.get(col)
         if info is None and (col.endswith("_L") or col.endswith("_R")):
             info = roi_info.get(col[:-2])
@@ -255,7 +253,7 @@ def build_territory_mapping(
     n_groups = len(set(mapping.values()))
     n_mapped = len(mapping)
     logger.info(
-        f"Territory mapping: {n_mapped}/{len(bilateral_region_cols)} ROIs "
+        f"Territory mapping: {n_mapped}/{len(region_cols)} ROIs "
         f"-> {n_groups} hybrid groups"
     )
     return mapping
@@ -263,7 +261,7 @@ def build_territory_mapping(
 
 def compute_territory_means(
     df: pd.DataFrame,
-    bilateral_region_cols: list[str],
+    region_cols: list[str],
     roi_to_territory: dict[str, str],
 ) -> tuple[pd.DataFrame, list[str]]:
     """Compute per-subject mean across ROIs within each territory group.
@@ -271,9 +269,9 @@ def compute_territory_means(
     Parameters
     ----------
     df : DataFrame
-        Must contain all columns in *bilateral_region_cols*.
-    bilateral_region_cols : list[str]
-        Bilateral ROI column names.
+        Must contain all columns in *region_cols*.
+    region_cols : list[str]
+        ROI column names.
     roi_to_territory : dict[str, str]
         Mapping from ROI name to territory group (from
         ``build_territory_mapping``).
@@ -287,7 +285,7 @@ def compute_territory_means(
     """
     # Group ROIs by territory
     groups: dict[str, list[str]] = {}
-    for col in bilateral_region_cols:
+    for col in region_cols:
         grp = roi_to_territory.get(col)
         if grp is not None:
             groups.setdefault(grp, []).append(col)
@@ -335,7 +333,7 @@ class CovNetAnalysis:
         self.n_subjects: int = 0
         self.group_arrays: dict[str, np.ndarray] = {}
         self.territory_arrays: dict[str, np.ndarray] = {}
-        self.bilateral_region_cols: list[str] = []
+        self.region_cols: list[str] = []
         self.territory_cols: list[str] = []
         self.group_labels: list[str] = []
         self.group_sizes: dict[str, int] = {}
@@ -364,7 +362,7 @@ class CovNetAnalysis:
         labels_csv: Path | None = None,
         sex: str | None = None,
     ) -> "CovNetAnalysis":
-        """Load ROI data, bilateral average, compute correlation matrices.
+        """Load ROI data, compute territory means and correlation matrices.
 
         Parameters
         ----------
@@ -415,42 +413,40 @@ class CovNetAnalysis:
 
         inst.n_subjects = len(df)
 
-        # Phase 2: Bilateral averaging
-        logger.info("[Phase 2] Bilateral averaging...")
-        df_bilateral, bilateral_cols = bilateral_average(df, roi_cols)
-        inst.bilateral_region_cols = [
-            c for c in bilateral_cols if not c.startswith("territory_")
+        # Phase 2: Separate region vs territory ROI columns
+        inst.region_cols = [
+            c for c in roi_cols if not c.startswith("territory_")
         ]
 
         # Phase 2b: Hybrid territory mapping from atlas labels
-        logger.info("[Phase 2b] Building hybrid territory mapping...")
+        logger.info("[Phase 2] Building hybrid territory mapping...")
         inst.roi_to_territory = build_territory_mapping(
-            inst.bilateral_region_cols, labels_csv
+            inst.region_cols, labels_csv
         )
         inst.labels_csv = str(labels_csv)
         # Drop old pre-aggregated territory columns before adding new ones
         old_territory_cols = [
-            c for c in df_bilateral.columns if c.startswith("territory_")
+            c for c in df.columns if c.startswith("territory_")
         ]
         if old_territory_cols:
-            df_bilateral = df_bilateral.drop(columns=old_territory_cols)
-        df_bilateral, inst.territory_cols = compute_territory_means(
-            df_bilateral, inst.bilateral_region_cols, inst.roi_to_territory
+            df = df.drop(columns=old_territory_cols)
+        df, inst.territory_cols = compute_territory_means(
+            df, inst.region_cols, inst.roi_to_territory
         )
 
         # Phase 3: Compute correlation matrices
         logger.info("[Phase 3] Computing correlation matrices...")
 
-        logger.info("  PND x dose grouping (bilateral):")
-        groups_pnd_dose = define_groups(df_bilateral, grouping="pnd_dose")
+        logger.info("  PND x dose grouping (region):")
+        groups_pnd_dose = define_groups(df, grouping="pnd_dose")
         inst.matrices_pnd_dose = compute_spearman_matrices(
-            groups_pnd_dose, inst.bilateral_region_cols
+            groups_pnd_dose, inst.region_cols
         )
 
-        logger.info("  Full grouping (bilateral, descriptive):")
-        groups_full = define_groups(df_bilateral, grouping="full")
+        logger.info("  Full grouping (region, descriptive):")
+        groups_full = define_groups(df, grouping="full")
         inst.matrices_full = compute_spearman_matrices(
-            groups_full, inst.bilateral_region_cols
+            groups_full, inst.region_cols
         )
 
         logger.info("  PND x dose grouping (territory):")
@@ -462,7 +458,7 @@ class CovNetAnalysis:
         inst.group_labels = sorted(groups_pnd_dose.keys())
         inst.group_sizes = {k: len(v) for k, v in groups_pnd_dose.items()}
         inst.group_arrays = {
-            label: subset[inst.bilateral_region_cols].values
+            label: subset[inst.region_cols].values
             for label, subset in groups_pnd_dose.items()
         }
         inst.territory_arrays = {
@@ -488,11 +484,11 @@ class CovNetAnalysis:
             "modality": self.modality,
             "n_subjects": self.n_subjects,
             "sex": getattr(self, "sex", None),
-            "bilateral_region_cols": self.bilateral_region_cols,
+            "region_cols": self.region_cols,
             "territory_cols": self.territory_cols,
             "group_labels": self.group_labels,
             "group_sizes": self.group_sizes,
-            "n_bilateral_rois": len(self.bilateral_region_cols),
+            "n_region_rois": len(self.region_cols),
             "n_territory_rois": len(self.territory_cols),
             "roi_to_territory": self.roi_to_territory,
             "labels_csv": self.labels_csv,
@@ -574,7 +570,7 @@ class CovNetAnalysis:
             metadata = json.load(f)
 
         inst.n_subjects = metadata.get("n_subjects", 0)
-        inst.bilateral_region_cols = metadata["bilateral_region_cols"]
+        inst.region_cols = metadata.get("region_cols", metadata.get("bilateral_region_cols", []))
         inst.territory_cols = metadata["territory_cols"]
         inst.group_labels = metadata["group_labels"]
         inst.group_sizes = metadata["group_sizes"]
@@ -691,7 +687,7 @@ class CovNetAnalysis:
         nbs_results = _run_nbs_comparisons(
             group_data=self.group_arrays,
             group_sizes=self.group_sizes,
-            roi_cols=self.bilateral_region_cols,
+            roi_cols=self.region_cols,
             comparisons=comparisons,
             n_perm=n_perm,
             threshold=threshold,
@@ -714,7 +710,7 @@ class CovNetAnalysis:
 
             plot_nbs_network(
                 result["significant_components"],
-                self.bilateral_region_cols,
+                self.region_cols,
                 title=f"NBS {self.metric}: {comp_label}",
                 out_path=nbs_dir / comp_label / "nbs_network.png",
             )
@@ -724,7 +720,7 @@ class CovNetAnalysis:
                 plot_difference_matrix(
                     self.matrices_pnd_dose[ga]["corr"],
                     self.matrices_pnd_dose[gb]["corr"],
-                    self.bilateral_region_cols,
+                    self.region_cols,
                     sig_edges=sig_edges,
                     title=f"{self.metric} \u0394r: {ga} \u2212 {gb}",
                     out_path=nbs_dir / comp_label / "difference_matrix.png",

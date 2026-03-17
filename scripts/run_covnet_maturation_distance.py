@@ -131,7 +131,7 @@ def main():
             all_summaries[metric] = {
                 "metric": metric,
                 "n_subjects": analysis.n_subjects,
-                "n_bilateral_rois": len(analysis.bilateral_region_cols),
+                "n_region_rois": len(analysis.region_cols),
                 "n_triplets": len(md_df) // len(args.distance_fns or ["frobenius", "spectral", "mantel"]),
                 "n_accelerated": n_accel,
                 "n_decelerated": n_decel,

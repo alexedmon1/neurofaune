@@ -182,7 +182,7 @@ def main():
             all_summaries[metric] = {
                 "metric": metric,
                 "n_subjects": analysis.n_subjects,
-                "n_bilateral_rois": len(analysis.bilateral_region_cols),
+                "n_region_rois": len(analysis.region_cols),
                 "graph_metrics": gm_names,
                 "densities": densities,
                 "n_significant": n_sig,
