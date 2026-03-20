@@ -140,10 +140,7 @@ def main():
 
     densities = args.densities or DEFAULT_DENSITIES
 
-    # Adjust output directory for sex-stratified analyses
     output_dir = args.output_dir
-    if args.sex:
-        output_dir = args.output_dir / f"sex_{args.sex}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     progress = AnalysisProgress(

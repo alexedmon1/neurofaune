@@ -98,8 +98,6 @@ def main():
         sys.exit(1)
 
     output_dir = args.output_dir
-    if args.sex:
-        output_dir = args.output_dir / f"sex_{args.sex}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     progress = AnalysisProgress(

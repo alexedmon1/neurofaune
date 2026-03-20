@@ -375,7 +375,7 @@ def run_rel_distance(
     seed: int = 42,
     distance_fns: list[str] | None = None,
     n_workers: int = 1,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict]:
     """Run relative distance tests for all triplets and distance functions.
 
     Parameters
@@ -396,6 +396,8 @@ def run_rel_distance(
     Returns
     -------
     results_df : DataFrame
+    null_dists : dict
+        Mapping ``"{dose}_ref_{ref}__{distance_fn}"`` → null delta array.
     """
     if triplets is None:
         triplets = rel_distance_comparisons(list(group_data.keys()))
@@ -424,6 +426,7 @@ def run_rel_distance(
     ]
 
     rows = []
+    null_dists: dict[str, np.ndarray] = {}
 
     def _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn):
         return rel_distance_test(
@@ -445,14 +448,17 @@ def run_rel_distance(
                 dose_lbl, ctrl_lbl, ref_lbl, dfn = futures[future]
                 result = future.result()
                 rows.append(_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+                key = f"{dose_lbl}_ref_{ref_lbl}__{dfn}"
+                null_dists[key] = result["null_deltas"]
     else:
         for dose_lbl, ctrl_lbl, ref_lbl, dfn in work_items:
             comp_label = f"{dose_lbl}_ref_{ref_lbl}"
             logger.info(f"\n--- Relative distance: {comp_label} ({dfn}) ---")
             result = _do_one(dose_lbl, ctrl_lbl, ref_lbl, dfn)
             rows.append(_rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result))
+            null_dists[f"{comp_label}__{dfn}"] = result["null_deltas"]
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), null_dists
 
 
 def _rel_dist_row(dose_lbl, ctrl_lbl, ref_lbl, result):

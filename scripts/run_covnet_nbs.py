@@ -87,6 +87,10 @@ def main():
         "--sex", choices=["F", "M"], default=None,
         help="Run analysis for one sex only",
     )
+    parser.add_argument(
+        "--posthoc", action="store_true",
+        help="Run post-hoc centrality and hub-vulnerability analyses on significant components",
+    )
 
     args = parser.parse_args()
 
@@ -94,10 +98,7 @@ def main():
         logger.error("ROI directory not found: %s", args.roi_dir)
         sys.exit(1)
 
-    # Adjust output directory for sex-stratified analyses
     output_dir = args.output_dir
-    if args.sex:
-        output_dir = args.output_dir / f"sex_{args.sex}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Comparison types
@@ -129,6 +130,7 @@ def main():
             nbs_results = analysis.run_nbs(
                 comparisons, args.n_permutations, args.nbs_threshold,
                 args.seed, args.n_workers,
+                posthoc=args.posthoc,
             )
 
             n_sig = sum(

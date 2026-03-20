@@ -78,10 +78,7 @@ def main():
         logger.error("ROI directory not found: %s", args.roi_dir)
         sys.exit(1)
 
-    # Adjust output directory for sex-stratified analyses
     output_dir = args.output_dir
-    if args.sex:
-        output_dir = args.output_dir / f"sex_{args.sex}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     comp_types = ["dose"]

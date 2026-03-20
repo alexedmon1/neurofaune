@@ -702,6 +702,105 @@ def network_based_interaction(
     }
 
 
+def nbs_posthoc(
+    component: dict,
+    test_stat: np.ndarray,
+    roi_cols: list[str],
+) -> dict:
+    """Post-hoc characterisation of a significant NBS component.
+
+    Runs two analyses on the subgraph defined by the component edges:
+
+    1. **Node centrality** — degree, betweenness, and eigenvector centrality
+       for every node in the component. Nodes with high betweenness are
+       structural bridges; high eigenvector centrality indicates influence
+       via well-connected neighbours.
+
+    2. **Hub vulnerability (leave-one-out)** — for each node, remove it and
+       all its edges, then record how much the largest remaining connected
+       sub-component shrinks relative to the original size. A large drop
+       identifies load-bearing hubs whose removal fragments the network.
+
+    Parameters
+    ----------
+    component : dict
+        A single component dict from ``significant_components`` (must have
+        ``"edges"`` as a list of ``(u, v)`` tuples and ``"nodes"`` as a list
+        of ROI indices).
+    test_stat : ndarray, shape (n_rois, n_rois)
+        Per-edge test statistics (used to annotate centrality output).
+    roi_cols : list[str]
+        ROI names indexed by position.
+
+    Returns
+    -------
+    result : dict
+        - ``"centrality"`` : list of dicts, one per node, sorted by
+          betweenness descending. Keys: ``roi``, ``degree``,
+          ``betweenness``, ``eigenvector``, ``mean_abs_z``.
+        - ``"hub_vulnerability"`` : list of dicts, one per node, sorted by
+          ``size_drop`` descending. Keys: ``roi``, ``original_size``,
+          ``size_after_removal``, ``size_drop``, ``fraction_drop``.
+    """
+    edges = component["edges"]
+    nodes = component["nodes"]
+    original_size = component["size"]
+
+    G = nx.Graph()
+    G.add_nodes_from(nodes)
+    for u, v in edges:
+        G.add_edge(u, v)
+
+    # --- Centrality ---
+    degree = dict(G.degree())
+    betweenness = nx.betweenness_centrality(G, normalized=True)
+    try:
+        eigenvector = nx.eigenvector_centrality(G, max_iter=1000)
+    except nx.PowerIterationFailedConvergence:
+        eigenvector = {n: 0.0 for n in G.nodes()}
+
+    centrality_rows = []
+    for node in nodes:
+        # Mean |z| of all edges incident to this node
+        incident = [(node, v) for v in G.neighbors(node)]
+        mean_z = float(np.mean([abs(test_stat[u, v]) for u, v in incident])) if incident else 0.0
+        centrality_rows.append({
+            "roi": roi_cols[node],
+            "degree": degree.get(node, 0),
+            "betweenness": round(betweenness.get(node, 0.0), 6),
+            "eigenvector": round(eigenvector.get(node, 0.0), 6),
+            "mean_abs_z": round(mean_z, 4),
+        })
+    centrality_rows.sort(key=lambda r: r["betweenness"], reverse=True)
+
+    # --- Hub vulnerability ---
+    vulnerability_rows = []
+    for node in nodes:
+        H = G.copy()
+        H.remove_node(node)
+        if H.number_of_edges() == 0:
+            remaining = 0
+        else:
+            remaining = max(
+                H.subgraph(c).number_of_edges()
+                for c in nx.connected_components(H)
+            )
+        drop = original_size - remaining
+        vulnerability_rows.append({
+            "roi": roi_cols[node],
+            "original_size": original_size,
+            "size_after_removal": remaining,
+            "size_drop": drop,
+            "fraction_drop": round(drop / original_size, 4) if original_size > 0 else 0.0,
+        })
+    vulnerability_rows.sort(key=lambda r: r["size_drop"], reverse=True)
+
+    return {
+        "centrality": centrality_rows,
+        "hub_vulnerability": vulnerability_rows,
+    }
+
+
 def fisher_z_edge_test(
     corr_a: np.ndarray,
     n_a: int,
