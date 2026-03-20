@@ -375,14 +375,28 @@ def main():
             if result['status'] == 'failed':
                 print(f"  {result['key']}: {result['error']}")
 
-    # Generate omnibus skull strip QC report
+    # Generate batch QC summary (registration overlay gallery + motion metrics dashboard)
     if completed > 0:
         try:
-            from neurofaune.preprocess.qc.batch_summary import generate_skull_strip_omnibus
+            from neurofaune.preprocess.qc.batch_summary import (
+                generate_skull_strip_omnibus,
+                generate_batch_qc_summary,
+            )
             report = generate_skull_strip_omnibus(args.output_root, 'func')
             print(f"\nSkull strip omnibus report: {report}")
+
+            qc_reports = generate_batch_qc_summary(
+                qc_dir=args.output_root / 'qc',
+                modality='func',
+            )
+            if qc_reports.get('summary_html'):
+                print(f"Batch QC summary:  {qc_reports['summary_html']}")
+            if qc_reports.get('gallery_html'):
+                print(f"Registration gallery: {qc_reports['gallery_html']}")
+            if qc_reports.get('outliers_json'):
+                print(f"Outliers flagged:     {qc_reports['outliers_json']}")
         except Exception as e:
-            print(f"\nWarning: Could not generate omnibus QC report: {e}")
+            print(f"\nWarning: Could not generate QC reports: {e}")
 
     return 0 if failed == 0 else 1
 

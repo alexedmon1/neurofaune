@@ -852,7 +852,7 @@ def generate_thumbnail_gallery(
     image_patterns = {
         'dwi': ['*FA_montage.png', '*motion_params.png'],
         'anat': ['*mask_overlay*.png', '*segmentation*.png'],
-        'func': ['*motion_params.png', '*fd_dvars.png'],
+        'func': ['*bold_to_t2w_overlay.png', '*motion_params.png', '*fd_dvars.png'],
         'msme': ['*t2_montage.png', '*mwf_montage.png'],
     }
 

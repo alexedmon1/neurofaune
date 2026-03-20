@@ -26,7 +26,9 @@ from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.func import (
     generate_motion_qc_report,
     generate_confounds_qc_report,
+    generate_registration_qc,
 )
+from neurofaune.preprocess.qc.func.registration_qc import calculate_registration_metrics
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.utils.func.ica_denoising import (
     run_melodic_ica,
@@ -2406,6 +2408,32 @@ def run_functional_preprocessing(
                     print(f"  - Transform: {registration_results['affine_transform']}")
                     print(f"  - Metadata: {reg_metadata_file}")
 
+                    # Registration QC: overlay + metrics JSON for batch dashboard
+                    warped_bold_path = registration_results.get('warped_bold')
+                    if warped_bold_path and warped_bold_path.exists():
+                        try:
+                            reg_qc_report = generate_registration_qc(
+                                subject=subject,
+                                session=session,
+                                bold_file=bold_ref_for_reg,
+                                t2w_file=template_file,
+                                bold_in_t2w=warped_bold_path,
+                                output_dir=qc_dir,
+                            )
+                            results['qc_reports']['registration'] = reg_qc_report
+                            # Save flat metrics JSON so batch_summary can aggregate them
+                            reg_metrics = calculate_registration_metrics(template_file, warped_bold_path)
+                            metrics_json = qc_dir / f'{subject}_{session}_func_registration_metrics.json'
+                            with open(metrics_json, 'w') as f:
+                                json.dump({
+                                    'registration_correlation': reg_metrics.get('correlation'),
+                                    'registration_nmi': reg_metrics.get('normalized_mutual_information'),
+                                    'registration_n_voxels_overlap': reg_metrics.get('n_voxels_overlap'),
+                                }, f, indent=2)
+                            print(f"  - Registration QC: {reg_qc_report}")
+                        except Exception as qc_err:
+                            print(f"  Warning: Registration QC failed: {qc_err}")
+
                 except Exception as e:
                     print(f"\n  Registration failed: {e}")
                     print("  Continuing without registration...")
@@ -2473,6 +2501,8 @@ def run_functional_preprocessing(
     print(f"\nQC Reports:")
     print(f"  Motion QC: {motion_qc_report}")
     print(f"  Confounds QC: {confounds_qc_report}")
+    if results.get('qc_reports', {}).get('registration'):
+        print(f"  Registration QC: {results['qc_reports']['registration']}")
 
     if is_multiecho and 'tedana' in results:
         print(f"\nTEDANA Multi-Echo Denoising:")
