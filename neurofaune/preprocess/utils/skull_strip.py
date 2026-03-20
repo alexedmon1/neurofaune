@@ -40,8 +40,11 @@ def skull_strip(
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: Optional[list] = None,
     class_strategy: str = 'middle',
-    # 3D method parameters
+    # Template-guided parameters
     template_file: Optional[Path] = None,
+    template_brain_mask: Optional[Path] = None,
+    dilation_voxels: int = 2,
+    # Legacy parameter name (unused, kept for API compatibility)
     template_mask: Optional[Path] = None,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """
@@ -69,8 +72,17 @@ def skull_strip(
         - 'atropos_bet': force two-pass Atropos+BET (for ≥10 slices)
         - 'atropos': force Atropos-only (no BET refinement)
         - 'bet': force standard 3D BET only
+        - 'template': Z-NCC projection of cohort template brain mask (for fMRI)
     cohort : str
         Age cohort for 3D methods ('p30', 'p60', 'p90')
+    template_file : Path, optional
+        Cohort T2w template — required for method='template'.
+    template_brain_mask : Path, optional
+        Brain mask in template space (e.g. WM+GM+CSF>0.5) — required for
+        method='template'.
+    dilation_voxels : int
+        Number of voxels to dilate the projected mask (method='template').
+        Provides a safety margin for in-plane positional uncertainty.
     target_ratio : float
         Target brain extraction ratio per slice for adaptive method (0-1)
     frac_range : Tuple[float, float]
@@ -127,7 +139,21 @@ def skull_strip(
             print(f"  Auto-selected two-pass Atropos+BET ({n_slices} slices >= {SLICE_THRESHOLD})")
 
     # Dispatch to appropriate method
-    if method == 'adaptive':
+    if method == 'template':
+        if template_file is None or template_brain_mask is None:
+            raise ValueError(
+                "method='template' requires template_file and template_brain_mask"
+            )
+        return _skull_strip_template_guided(
+            input_file=input_file,
+            output_file=output_file,
+            mask_file=mask_file,
+            work_dir=work_dir,
+            template_file=template_file,
+            template_brain_mask=template_brain_mask,
+            dilation_voxels=dilation_voxels,
+        )
+    elif method == 'adaptive':
         return _skull_strip_adaptive(
             input_file=input_file,
             output_file=output_file,
@@ -620,6 +646,136 @@ def _skull_strip_bet(
     }
 
     return output_file, mask_file, info
+
+
+def _skull_strip_template_guided(
+    input_file: Path,
+    output_file: Path,
+    mask_file: Path,
+    work_dir: Path,
+    template_file: Path,
+    template_brain_mask: Path,
+    dilation_voxels: int = 2,
+) -> Tuple[Path, Path, Dict[str, Any]]:
+    """
+    Template-guided brain masking for partial-coverage EPI acquisitions.
+
+    Uses the NCC-based Z-offset scan to determine where the BOLD FOV sits
+    within the cohort template, then projects the template brain mask into
+    BOLD voxel space via slice-wise resampling.  No BET is involved — the
+    mask is anatomically grounded in the template rather than derived from
+    EPI contrast, which is ill-suited to BET's spherical model.
+
+    The projected mask is dilated by ``dilation_voxels`` (per-slice, 2D) to
+    provide a safety margin for in-plane positional uncertainty; the final
+    registration step (BOLD → template, rigid) will refine the alignment.
+
+    Parameters
+    ----------
+    input_file : Path
+        N4-normalised BOLD reference volume (3D).
+    output_file : Path
+        Output brain-extracted volume.
+    mask_file : Path
+        Output brain mask.
+    work_dir : Path
+        Working directory for intermediate files.
+    template_file : Path
+        Cohort T2w template used for the Z-NCC scan.
+    template_brain_mask : Path
+        Binary brain mask in template space (e.g. WM+GM+CSF > 0.5).
+    dilation_voxels : int
+        In-plane dilation radius in BOLD voxels (default 2).
+    """
+    import numpy as np
+    from scipy.ndimage import zoom as scipy_zoom, binary_dilation, generate_binary_structure
+    from neurofaune.preprocess.utils.registration_utils import find_z_offset_ncc
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    bold_img = nib.load(input_file)
+    bold_data = bold_img.get_fdata()
+    bold_zooms = bold_img.header.get_zooms()
+
+    tpl_img = nib.load(template_file)
+    tpl_zooms = tpl_img.header.get_zooms()
+
+    print("\n  BOLD:     ", bold_img.shape[:3], "zooms", tuple(round(float(z), 2) for z in bold_zooms[:3]))
+    print("  Template: ", tpl_img.shape[:3],  "zooms", tuple(round(float(z), 2) for z in tpl_zooms[:3]))
+
+    # ── Step 1: Z-NCC scan ────────────────────────────────────────────────────
+    print("  Finding Z-offset via NCC scan...")
+    _, z_info = find_z_offset_ncc(bold_img, tpl_img, work_dir)
+    z_offset = z_info["z_offset_slice"]
+
+    # ── Step 2: Project template brain mask → BOLD voxel space ───────────────
+    tpl_mask_data = nib.load(template_brain_mask).get_fdata().squeeze() > 0.5
+
+    # Ratio: how many template slices per BOLD slice
+    z_scale = float(bold_zooms[2]) / float(tpl_zooms[2])
+    # Ratio: template in-plane → BOLD in-plane (shrink factor < 1)
+    in_plane_scale = float(tpl_zooms[0]) / float(bold_zooms[0])
+
+    bold_mask = np.zeros(bold_data.shape[:3], dtype=bool)
+    h, w = bold_data.shape[:2]
+
+    for bz in range(bold_data.shape[2]):
+        fz = int(round(z_offset + bz * z_scale))
+        if fz < 0 or fz >= tpl_mask_data.shape[2]:
+            continue
+
+        tpl_sl = tpl_mask_data[:, :, fz].astype(np.float32)
+
+        # Resample from template in-plane resolution to BOLD in-plane resolution
+        resampled = scipy_zoom(tpl_sl, (in_plane_scale, in_plane_scale), order=1)
+
+        # Centre-crop or centre-pad to exact BOLD in-plane shape
+        rh, rw = resampled.shape
+        out_sl = np.zeros((h, w), dtype=np.float32)
+        # Source window
+        src_r0 = max(0, (rh - h) // 2);  src_r1 = src_r0 + min(rh, h)
+        src_c0 = max(0, (rw - w) // 2);  src_c1 = src_c0 + min(rw, w)
+        # Destination window
+        dst_r0 = max(0, (h - rh) // 2);  dst_r1 = dst_r0 + (src_r1 - src_r0)
+        dst_c0 = max(0, (w - rw) // 2);  dst_c1 = dst_c0 + (src_c1 - src_c0)
+        out_sl[dst_r0:dst_r1, dst_c0:dst_c1] = resampled[src_r0:src_r1, src_c0:src_c1]
+
+        bold_mask[:, :, bz] = out_sl > 0.3   # threshold after partial-volume resampling
+
+    # ── Step 3: Per-slice dilation for safety margin ─────────────────────────
+    if dilation_voxels > 0:
+        struct_2d = generate_binary_structure(2, 1)
+        for bz in range(bold_mask.shape[2]):
+            bold_mask[:, :, bz] = binary_dilation(
+                bold_mask[:, :, bz], structure=struct_2d, iterations=dilation_voxels
+            )
+
+    n_voxels = int(bold_mask.sum())
+    total_voxels = int(np.prod(bold_mask.shape))
+    extraction_ratio = n_voxels / total_voxels
+    print(f"  Projected mask: {n_voxels:,} voxels ({100 * extraction_ratio:.1f}% of FOV), "
+          f"dilation={dilation_voxels}px")
+
+    # ── Save outputs ──────────────────────────────────────────────────────────
+    nib.save(
+        nib.Nifti1Image(bold_mask.astype(np.uint8), bold_img.affine, bold_img.header),
+        mask_file,
+    )
+    brain_data = bold_data * bold_mask
+    nib.save(
+        nib.Nifti1Image(brain_data.astype(np.float32), bold_img.affine, bold_img.header),
+        output_file,
+    )
+
+    return output_file, mask_file, {
+        "method": "template_guided",
+        "z_offset_slice": z_offset,
+        "z_offset_ncc": z_info["ncc"],
+        "dilation_voxels": dilation_voxels,
+        "template_file": str(template_file),
+        "total_voxels": n_voxels,
+        "extraction_ratio": extraction_ratio,
+    }
 
 
 def get_recommended_method(n_slices: int) -> str:

@@ -47,6 +47,7 @@ from neurofaune.preprocess.utils.func.slice_timing import (
     run_slice_timing_correction,
     detect_slice_order
 )
+from neurofaune.preprocess.utils.registration_utils import find_z_offset_ncc
 
 from typing import Union
 
@@ -55,123 +56,10 @@ def _find_z_offset_ncc(
     bold_img: nib.Nifti1Image,
     t2w_img: nib.Nifti1Image,
     work_dir: Path,
-    z_range: Optional[Tuple[int, int]] = None
+    z_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Path, Dict]:
-    """
-    Find optimal Z offset for partial-coverage BOLD to full T2w registration.
-
-    Scans Z translations and computes normalized cross-correlation between
-    resampled BOLD slices and corresponding T2w slices. Writes an ITK-format
-    initial transform encoding the optimal Z translation for use with
-    antsRegistration --initial-moving-transform.
-
-    Parameters
-    ----------
-    bold_img : Nifti1Image
-        BOLD reference volume
-    t2w_img : Nifti1Image
-        T2w volume
-    work_dir : Path
-        Working directory
-    z_range : tuple of (int, int), optional
-        (min_slice, max_slice) to constrain the Z search. If None, searches
-        all valid positions. Use this to avoid spurious NCC peaks when the
-        expected slab position is known (e.g., hippocampal MSME at slices
-        14-28 in template space).
-
-    Returns
-    -------
-    tuple of (Path, dict)
-        Path to initial transform .mat file, and dict with offset info
-    """
-    from scipy.ndimage import zoom as scipy_zoom
-
-    bold_data = bold_img.get_fdata()
-    t2w_data = t2w_img.get_fdata()
-    bold_zooms = bold_img.header.get_zooms()
-    t2w_zooms = t2w_img.header.get_zooms()
-
-    # Resample BOLD in-plane to T2w resolution
-    scale_xy = float(bold_zooms[0]) / float(t2w_zooms[0])
-    bold_resampled = scipy_zoom(bold_data, (scale_xy, scale_xy, 1), order=1)
-
-    # Z scale: how many T2w slices per BOLD slice
-    z_scale = float(bold_zooms[2]) / float(t2w_zooms[2])
-    n_bold_in_t2w = int(round(bold_data.shape[2] * z_scale))
-
-    # Determine Z search range
-    max_offset = t2w_data.shape[2] - n_bold_in_t2w
-    if z_range is not None:
-        z_start = max(0, z_range[0])
-        z_end = min(max_offset, z_range[1]) + 1
-        print(f"  Z search range: slices {z_start}-{min(max_offset, z_range[1])} "
-              f"(constrained from full range 0-{max_offset})")
-    else:
-        z_start = 0
-        z_end = max(max_offset, 1)
-
-    # Scan Z offsets
-    best_ncc = -1
-    best_offset = 0
-
-    for z_offset in range(z_start, z_end):
-        total_ncc = 0
-        n_valid = 0
-
-        for bz in range(bold_data.shape[2]):
-            t2w_zi = int(round(z_offset + bz * z_scale))
-            if t2w_zi < 0 or t2w_zi >= t2w_data.shape[2]:
-                continue
-
-            # Compare in common region
-            min_x = min(bold_resampled.shape[0], t2w_data.shape[0])
-            min_y = min(bold_resampled.shape[1], t2w_data.shape[1])
-
-            b_slice = bold_resampled[:min_x, :min_y, bz]
-            t_slice = t2w_data[:min_x, :min_y, t2w_zi]
-
-            mask = b_slice > 0
-            if np.sum(mask) < 500:
-                continue
-
-            b_vals = b_slice[mask]
-            t_vals = t_slice[mask]
-
-            b_norm = (b_vals - b_vals.mean()) / (b_vals.std() + 1e-10)
-            t_norm = (t_vals - t_vals.mean()) / (t_vals.std() + 1e-10)
-            ncc = np.mean(b_norm * t_norm)
-            total_ncc += ncc
-            n_valid += 1
-
-        if n_valid > 0:
-            avg_ncc = total_ncc / n_valid
-            if avg_ncc > best_ncc:
-                best_ncc = avg_ncc
-                best_offset = z_offset
-
-    # Convert slice offset to mm
-    z_offset_mm = best_offset * float(t2w_zooms[2])
-    print(f"  Best Z offset: T2w slice {best_offset} ({z_offset_mm:.1f} mm), NCC={best_ncc:.4f}")
-    print(f"  BOLD maps to T2w slices {best_offset}-{best_offset + n_bold_in_t2w}")
-
-    # Write ITK initial transform with Z translation
-    # ANTs transform maps fixed (T2w) → moving (BOLD) coordinates
-    # BOLD Z=0 should map to T2w Z=z_offset_mm, so tz = -z_offset_mm
-    work_dir.mkdir(parents=True, exist_ok=True)
-    initial_transform_file = work_dir / 'initial_z_offset.txt'
-    with open(initial_transform_file, 'w') as f:
-        f.write("#Insight Transform File V1.0\n")
-        f.write("#Transform 0\n")
-        f.write("Transform: AffineTransform_double_3_3\n")
-        f.write(f"Parameters: 1 0 0 0 1 0 0 0 1 0 0 {-z_offset_mm}\n")
-        f.write("FixedParameters: 0 0 0\n")
-
-    return initial_transform_file, {
-        'z_offset_slice': best_offset,
-        'z_offset_mm': z_offset_mm,
-        'ncc': best_ncc,
-        'bold_t2w_range': (best_offset, best_offset + n_bold_in_t2w)
-    }
+    """Thin wrapper — delegates to :func:`registration_utils.find_z_offset_ncc`."""
+    return find_z_offset_ncc(bold_img, t2w_img, work_dir, z_range=z_range)
 
 
 def register_bold_to_template(
@@ -1851,7 +1739,9 @@ def run_functional_preprocessing(
 
         brain_ref = work_dir / f"{subject}_{session}_bold_brain_ref.nii.gz"
 
-        skull_strip_params = config.get('functional', {}).get('skull_strip_adaptive', {})
+        func_config = config.get('functional', {})
+        skull_strip_params = func_config.get('skull_strip_adaptive', {})
+        ss_method = func_config.get('skull_strip_method', 'adaptive')
         target_ratio = skull_strip_params.get('target_ratio', 0.15)
         frac_range = tuple(skull_strip_params.get('frac_range', [0.30, 0.90]))
         frac_step = skull_strip_params.get('frac_step', 0.05)
@@ -1878,19 +1768,62 @@ def run_functional_preprocessing(
         ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
         nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
 
-        print("  Running skull stripping (adaptive per-slice BET for all fMRI)...")
-        brain_ref, brain_mask, skull_strip_info = skull_strip(
-            input_file=ref_norm,
-            output_file=brain_ref,
-            mask_file=brain_mask,
-            work_dir=skull_strip_work_dir,
-            method='adaptive',
-            target_ratio=target_ratio,
-            frac_range=frac_range,
-            frac_step=frac_step,
-            invert_intensity=invert_intensity,
-            n_classes=skull_strip_params.get('n_classes', 3),
-        )
+        # Build template brain mask on first use (WM + GM + CSF > 0.5 in template space)
+        tpl_brain_mask_file = None
+        if ss_method == 'template' and template_file is not None:
+            tpl_prefix = template_file.name.replace('_T2w.nii.gz', '')
+            tpl_dir = template_file.parent
+            wm_p = tpl_dir / f"{tpl_prefix}_label-WM_probseg.nii.gz"
+            gm_p = tpl_dir / f"{tpl_prefix}_label-GM_probseg.nii.gz"
+            csf_p = tpl_dir / f"{tpl_prefix}_label-CSF_probseg.nii.gz"
+            if all(p.exists() for p in [wm_p, gm_p, csf_p]):
+                tpl_brain_mask_file = skull_strip_work_dir / 'template_brain_mask.nii.gz'
+                if not tpl_brain_mask_file.exists():
+                    wm_img = nib.load(wm_p)
+                    brain_prob = (
+                        wm_img.get_fdata()
+                        + nib.load(gm_p).get_fdata()
+                        + nib.load(csf_p).get_fdata()
+                    )
+                    nib.save(
+                        nib.Nifti1Image(
+                            (brain_prob > 0.5).astype(np.uint8),
+                            wm_img.affine, wm_img.header,
+                        ),
+                        tpl_brain_mask_file,
+                    )
+            else:
+                print("  WARNING: template tissue probsegs not found — falling back to adaptive BET")
+                ss_method = 'adaptive'
+        elif ss_method == 'template':
+            print("  WARNING: template_file not provided — falling back to adaptive BET")
+            ss_method = 'adaptive'
+
+        print(f"  Running skull stripping (method={ss_method})...")
+        if ss_method == 'template':
+            brain_ref, brain_mask, skull_strip_info = skull_strip(
+                input_file=ref_norm,
+                output_file=brain_ref,
+                mask_file=brain_mask,
+                work_dir=skull_strip_work_dir,
+                method='template',
+                template_file=template_file,
+                template_brain_mask=tpl_brain_mask_file,
+                dilation_voxels=func_config.get('skull_strip_template_dilation', 2),
+            )
+        else:
+            brain_ref, brain_mask, skull_strip_info = skull_strip(
+                input_file=ref_norm,
+                output_file=brain_ref,
+                mask_file=brain_mask,
+                work_dir=skull_strip_work_dir,
+                method='adaptive',
+                target_ratio=target_ratio,
+                frac_range=frac_range,
+                frac_step=frac_step,
+                invert_intensity=invert_intensity,
+                n_classes=skull_strip_params.get('n_classes', 3),
+            )
 
         print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
         print(f"  Mask created: {skull_strip_info.get('total_voxels', 0):,} voxels")

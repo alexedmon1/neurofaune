@@ -280,9 +280,15 @@ functional:
     custom_order: [0, 2, 4, 6, 8, 1, 3, 5, 7]  # Bruker interleaved odd-first for 9 slices
     reference_slice: middle  # Slice to align to (middle = middle in time, or integer)
 
-  # Optimized adaptive skull stripping (PRODUCTION)
-  # Strategy: N4 bias correction + intensity normalization + adaptive per-slice BET with -R flag
-  # Achieves 0.8% protocol generalization across 2-4mm voxel sizes (tested on 6 protocols, 203 scans)
+  # Brain extraction method for BOLD
+  # 'adaptive'  – per-slice BET (original; works for T2w-like contrast)
+  # 'template'  – Z-NCC projection of cohort template brain mask (recommended for EPI)
+  skull_strip_method: adaptive
+
+  # Template-guided skull stripping parameters (skull_strip_method: template)
+  skull_strip_template_dilation: 2   # in-plane dilation in BOLD voxels (safety margin)
+
+  # Adaptive per-slice BET parameters (skull_strip_method: adaptive)
   skull_strip_adaptive:
     target_ratio: 0.15           # Target 15% extraction per slice
     frac_range: [0.30, 0.90]     # Wide range accommodates all protocols (2× voxel size requires 2× frac)
