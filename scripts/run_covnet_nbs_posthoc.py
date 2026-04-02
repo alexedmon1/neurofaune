@@ -2,25 +2,22 @@
 """
 Post-hoc characterization of NBS components.
 
-Loads previously saved NBS results and computes edge directionality
-(increased vs. decreased covariance) and node centrality (degree,
-betweenness) within each significant component. Does not re-run
-permutation testing.
+Loads previously saved NBS results and runs two analyses:
+
+1. Edge direction test (unthresholded): binomial sign test and Wilcoxon
+   signed-rank test on ALL edges to assess whether the overall covariance
+   difference is directionally biased, independent of NBS thresholding.
+
+2. Component characterization (for significant components): edge
+   directionality and node centrality within each component.
 
 Usage:
     uv run python scripts/run_covnet_nbs_posthoc.py \
         --roi-dir $STUDY_ROOT/network/roi \
         --output-dir $STUDY_ROOT/network/covnet \
+        --nbs-dir $STUDY_ROOT/network/covnet/nbs/pooled \
         --modality dwi \
         --metrics FA MD AD RD \
-        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
-        --design pooled
-
-    uv run python scripts/run_covnet_nbs_posthoc.py \
-        --roi-dir $STUDY_ROOT/network/roi \
-        --output-dir $STUDY_ROOT/network/covnet \
-        --modality msme \
-        --metrics T2 MWF IWF CSFF \
         --design pooled
 """
 
@@ -29,9 +26,13 @@ import logging
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.network.covnet.nbs import characterize_components, edge_direction_test
+from neurofaune.network.covnet.pipeline import _save_nbs_characterization
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,8 +53,7 @@ def main():
     parser.add_argument("--design", default="pooled",
                         choices=["pooled", "sex_stratified"])
     parser.add_argument("--nbs-dir", type=Path, default=None,
-                        help="Direct path to NBS results dir (overrides "
-                             "default path from output-dir/design)")
+                        help="Direct path to NBS results dir")
     parser.add_argument("--p-threshold", type=float, default=0.05)
     args = parser.parse_args()
 
@@ -69,42 +69,70 @@ def main():
             metric=metric,
         )
 
-        # Allow direct NBS path for legacy directory structures
         if args.nbs_dir:
             nbs_dir = args.nbs_dir / args.modality / metric
             nbs_results = analysis._load_nbs_results(nbs_dir)
+
+            direction_rows = []
             posthoc = {}
+
             for comp_label, result in nbs_results.items():
-                from neurofaune.network.covnet.nbs import characterize_components
-                from neurofaune.network.covnet.pipeline import _save_nbs_characterization as _save_nbs_posthoc
+                out_dir = nbs_dir / comp_label / "posthoc"
+                out_dir.mkdir(parents=True, exist_ok=True)
+
+                # Edge direction test on full matrix
+                dir_test = edge_direction_test(result["test_stat"])
+                dir_test["comparison"] = comp_label
+                direction_rows.append(dir_test)
+
+                # Component characterization
                 characterized = characterize_components(
                     result,
                     roi_cols=result.get("roi_cols", analysis.region_cols),
                     p_threshold=args.p_threshold,
                 )
                 if characterized:
-                    out_dir = nbs_dir / comp_label / "posthoc"
-                    _save_nbs_posthoc(characterized, result, out_dir)
-                    posthoc[comp_label] = characterized
+                    _save_nbs_characterization(characterized, result, out_dir)
+
+                posthoc[comp_label] = {
+                    "direction_test": dir_test,
+                    "components": characterized,
+                }
+
+            # Save direction summary
+            if direction_rows:
+                dir_df = pd.DataFrame(direction_rows)
+                cols = ["comparison", "n_edges", "n_positive", "n_negative",
+                        "frac_positive", "mean_z", "median_z",
+                        "sign_test_p", "wilcoxon_p"]
+                dir_df[cols].to_csv(
+                    nbs_dir / "edge_direction_summary.csv", index=False
+                )
         else:
             posthoc = analysis.run_nbs_posthoc(p_threshold=args.p_threshold)
 
-        n_comparisons = len(posthoc)
-        n_components = sum(len(v) for v in posthoc.values())
-        logger.info(
-            f"  {metric}: {n_components} significant components "
-            f"across {n_comparisons} comparisons"
-        )
+        # Report results
+        logger.info(f"  {metric} Edge Direction Tests:")
+        for comp_label, data in sorted(posthoc.items()):
+            dt = data["direction_test"]
+            sig = "*" if dt["sign_test_p"] < 0.05 else " "
+            direction = "POS" if dt["frac_positive"] > 0.55 else (
+                "NEG" if dt["frac_positive"] < 0.45 else "BAL")
+            logger.info(
+                f"  {sig} {comp_label:30s} | "
+                f"{direction} ({dt['frac_positive']:.0%} pos) | "
+                f"mean z={dt['mean_z']:+.3f} | "
+                f"sign p={dt['sign_test_p']:.4f} | "
+                f"wilcoxon p={dt['wilcoxon_p']:.4f}"
+            )
 
-        for comp_label, components in posthoc.items():
-            for i, comp in enumerate(components):
-                logger.info(
-                    f"  {comp_label} component {i}: "
-                    f"{comp['n_nodes']} nodes, {comp['n_edges']} edges, "
-                    f"{comp['n_increased']} increased / {comp['n_decreased']} decreased, "
-                    f"mean z={comp['mean_z']:.3f}, "
-                    f"hubs: {', '.join(comp['hub_nodes'][:5]) or 'none'}"
-                )
+        n_with_components = sum(
+            1 for v in posthoc.values() if v["components"]
+        )
+        logger.info(
+            f"  {metric}: {n_with_components} comparisons with "
+            f"significant NBS components"
+        )
 
 
 if __name__ == "__main__":

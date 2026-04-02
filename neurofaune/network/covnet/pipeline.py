@@ -35,7 +35,7 @@ from neurofaune.network.graph_theory import (
     compute_metric_curve,
     list_metrics,
 )
-from .nbs import characterize_components, fisher_z_edge_test, nbs_posthoc
+from .nbs import characterize_components, edge_direction_test, fisher_z_edge_test, nbs_posthoc
 from .nbs import run_all_comparisons as _run_nbs_comparisons
 from .visualization import (
     plot_all_group_heatmaps,
@@ -853,24 +853,30 @@ class CovNetAnalysis:
         self,
         nbs_results: dict[str, dict] | None = None,
         p_threshold: float = 0.05,
-    ) -> dict[str, list[dict]]:
-        """Run post-hoc characterization of NBS components.
+    ) -> dict[str, dict]:
+        """Run post-hoc characterization of NBS results.
 
-        For each comparison with significant components, computes edge
-        directionality (increased vs. decreased covariance) and node centrality
-        (degree, betweenness) within each component.
+        For each comparison, runs two analyses:
+
+        1. **Edge direction test** (unthresholded): tests whether the full
+           z-statistic distribution is directionally biased using a binomial
+           sign test and Wilcoxon signed-rank test on ALL edges, independent
+           of NBS component selection.
+
+        2. **Component characterization** (for significant components only):
+           edge directionality and node centrality within each component.
 
         Parameters
         ----------
         nbs_results : dict, optional
-            Output from ``run_nbs()``. If None, loads saved NBS results from
-            disk (reads test_statistics.csv and components.json).
+            Output from ``run_nbs()``. If None, loads from disk.
         p_threshold : float
             Only characterize components with p < this value.
 
         Returns
         -------
-        dict mapping comparison labels to lists of characterized components.
+        dict mapping comparison labels to dicts with keys
+        ``"direction_test"`` and ``"components"``.
         """
         nbs_dir = self._test_dir("nbs")
 
@@ -878,27 +884,53 @@ class CovNetAnalysis:
             nbs_results = self._load_nbs_results(nbs_dir)
 
         all_posthoc = {}
+        direction_rows = []
+
         for comp_label, result in nbs_results.items():
+            out_dir = nbs_dir / comp_label / "posthoc"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. Edge direction test on full unthresholded matrix
+            dir_test = edge_direction_test(result["test_stat"])
+            dir_test["comparison"] = comp_label
+            direction_rows.append(dir_test)
+
+            # 2. Component characterization (only if significant components)
             sig_comps = [
                 c for c in result["significant_components"]
                 if c["pvalue"] < p_threshold
             ]
-            if not sig_comps:
-                continue
+            characterized = []
+            if sig_comps:
+                characterized = characterize_components(
+                    result,
+                    roi_cols=result.get("roi_cols", self.region_cols),
+                    p_threshold=p_threshold,
+                )
+                if characterized:
+                    _save_nbs_characterization(characterized, result, out_dir)
 
-            characterized = characterize_components(
-                result,
-                roi_cols=result.get("roi_cols", self.region_cols),
-                p_threshold=p_threshold,
+            all_posthoc[comp_label] = {
+                "direction_test": dir_test,
+                "components": characterized,
+            }
+
+        # Save direction test summary across all comparisons
+        if direction_rows:
+            dir_df = pd.DataFrame(direction_rows)
+            cols = ["comparison", "n_edges", "n_positive", "n_negative",
+                    "frac_positive", "mean_z", "median_z",
+                    "sign_test_p", "wilcoxon_p"]
+            dir_df[cols].to_csv(
+                nbs_dir / "edge_direction_summary.csv", index=False
             )
-            if characterized:
-                out_dir = nbs_dir / comp_label / "posthoc"
-                _save_nbs_characterization(characterized, result, out_dir)
-                all_posthoc[comp_label] = characterized
 
+        n_sig_dir = sum(
+            1 for r in direction_rows if r["sign_test_p"] < 0.05
+        )
         logger.info(
-            f"NBS post-hoc {self.metric}: characterized components in "
-            f"{len(all_posthoc)} comparisons"
+            f"NBS post-hoc {self.metric}: {n_sig_dir}/{len(direction_rows)} "
+            f"comparisons with significant directional bias (sign test p<0.05)"
         )
         return all_posthoc
 

@@ -187,6 +187,78 @@ def network_based_statistic(
     }
 
 
+def edge_direction_test(
+    test_stat: np.ndarray,
+) -> dict:
+    """Test whether the overall covariance difference is directionally biased.
+
+    Uses the full unthresholded z-statistic matrix (upper triangle) to assess
+    whether there are more positive or negative edge differences than expected
+    by chance, independent of NBS component selection.
+
+    Parameters
+    ----------
+    test_stat : ndarray, shape (n_rois, n_rois)
+        Fisher z-statistic matrix from NBS (positive = group A > group B).
+
+    Returns
+    -------
+    result : dict
+        - ``n_edges``: total number of unique edges
+        - ``n_positive``: edges where z > 0 (group A covariance > group B)
+        - ``n_negative``: edges where z < 0
+        - ``n_zero``: edges where z == 0
+        - ``frac_positive``: proportion of non-zero edges that are positive
+        - ``mean_z``: mean z across all edges
+        - ``median_z``: median z across all edges
+        - ``sign_test_p``: two-sided binomial test p-value (H0: equal positive
+          and negative edges)
+        - ``wilcoxon_p``: Wilcoxon signed-rank test p-value (H0: symmetric
+          distribution around zero)
+    """
+    # Extract upper triangle (excluding diagonal)
+    triu_idx = np.triu_indices_from(test_stat, k=1)
+    z_values = test_stat[triu_idx]
+
+    # Remove exact zeros (edges with identical correlations)
+    nonzero = z_values[z_values != 0]
+    n_positive = int(np.sum(nonzero > 0))
+    n_negative = int(np.sum(nonzero < 0))
+    n_total_nonzero = n_positive + n_negative
+
+    # Binomial sign test: H0 = equal probability of positive/negative
+    if n_total_nonzero > 0:
+        sign_p = float(stats.binom_test(
+            n_positive, n_total_nonzero, 0.5
+        )) if hasattr(stats, 'binom_test') else float(
+            stats.binomtest(n_positive, n_total_nonzero, 0.5).pvalue
+        )
+    else:
+        sign_p = 1.0
+
+    # Wilcoxon signed-rank test on all z-values: H0 = symmetric around 0
+    if len(nonzero) > 10:
+        try:
+            _, wilcoxon_p = stats.wilcoxon(nonzero)
+            wilcoxon_p = float(wilcoxon_p)
+        except ValueError:
+            wilcoxon_p = 1.0
+    else:
+        wilcoxon_p = float("nan")
+
+    return {
+        "n_edges": len(z_values),
+        "n_positive": n_positive,
+        "n_negative": n_negative,
+        "n_zero": int(np.sum(z_values == 0)),
+        "frac_positive": round(n_positive / n_total_nonzero, 4) if n_total_nonzero > 0 else 0.5,
+        "mean_z": round(float(np.mean(z_values)), 4),
+        "median_z": round(float(np.median(z_values)), 4),
+        "sign_test_p": round(sign_p, 6),
+        "wilcoxon_p": round(wilcoxon_p, 6),
+    }
+
+
 def characterize_components(
     nbs_result: dict,
     roi_cols: list[str] | None = None,
