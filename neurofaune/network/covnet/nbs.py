@@ -187,6 +187,140 @@ def network_based_statistic(
     }
 
 
+def characterize_components(
+    nbs_result: dict,
+    roi_cols: list[str] | None = None,
+    p_threshold: float = 0.05,
+) -> list[dict]:
+    """Post-hoc characterization of significant NBS components.
+
+    For each significant component, computes edge directionality (how many
+    edges show increased vs. decreased covariance in group A relative to
+    group B) and node-level centrality within the component subgraph.
+
+    Parameters
+    ----------
+    nbs_result : dict
+        Output from ``network_based_statistic``, containing ``test_stat``
+        (z-statistic matrix) and ``significant_components``.
+    roi_cols : list of str, optional
+        ROI names for labeling. If None, nodes are labeled by index.
+    p_threshold : float
+        Only characterize components with p < this value.
+
+    Returns
+    -------
+    characterized : list of dict
+        One dict per significant component with keys:
+
+        - ``n_edges``, ``n_nodes``, ``pvalue``: basic component info
+        - ``n_increased``: edges where group A > group B (z > 0)
+        - ``n_decreased``: edges where group A < group B (z < 0)
+        - ``mean_z``: mean z-statistic across component edges
+        - ``median_z``: median z-statistic across component edges
+        - ``edges``: list of dicts per edge with ``roi_u``, ``roi_v``,
+          ``z_stat``, ``direction`` ("increased" or "decreased")
+        - ``nodes``: list of dicts per node with ``roi``, ``degree``,
+          ``betweenness``, ``mean_edge_z``, ``n_increased``, ``n_decreased``
+        - ``hub_nodes``: top nodes by degree (degree > mean + 1 SD)
+    """
+    test_stat = nbs_result["test_stat"]
+    components = nbs_result["significant_components"]
+
+    characterized = []
+    for comp in components:
+        if comp["pvalue"] >= p_threshold:
+            continue
+
+        edges = comp["edges"]
+        nodes = comp["nodes"]
+
+        # Edge directionality
+        edge_details = []
+        edge_z_values = []
+        for u, v in edges:
+            z = test_stat[u, v]
+            edge_z_values.append(z)
+            roi_u = roi_cols[u] if roi_cols else str(u)
+            roi_v = roi_cols[v] if roi_cols else str(v)
+            edge_details.append({
+                "roi_u": roi_u,
+                "roi_v": roi_v,
+                "u_idx": int(u),
+                "v_idx": int(v),
+                "z_stat": round(float(z), 4),
+                "direction": "increased" if z > 0 else "decreased",
+            })
+
+        edge_z_arr = np.array(edge_z_values)
+        n_increased = int(np.sum(edge_z_arr > 0))
+        n_decreased = int(np.sum(edge_z_arr < 0))
+
+        # Build component subgraph for node metrics
+        n_rois = test_stat.shape[0]
+        comp_adj = np.zeros((n_rois, n_rois))
+        for u, v in edges:
+            comp_adj[u, v] = comp_adj[v, u] = 1.0
+        G = nx.from_numpy_array(comp_adj)
+        G_sub = G.subgraph(nodes).copy()
+
+        degree = dict(G_sub.degree())
+        betweenness = nx.betweenness_centrality(G_sub)
+
+        # Per-node edge z summary
+        node_edge_z = {n: [] for n in nodes}
+        for u, v in edges:
+            z = test_stat[u, v]
+            node_edge_z[u].append(z)
+            node_edge_z[v].append(z)
+
+        node_details = []
+        for n in sorted(nodes):
+            roi_name = roi_cols[n] if roi_cols else str(n)
+            z_vals = node_edge_z[n]
+            node_details.append({
+                "roi": roi_name,
+                "idx": int(n),
+                "degree": degree.get(n, 0),
+                "betweenness": round(betweenness.get(n, 0.0), 4),
+                "mean_edge_z": round(float(np.mean(z_vals)), 4) if z_vals else 0.0,
+                "n_increased": int(sum(1 for z in z_vals if z > 0)),
+                "n_decreased": int(sum(1 for z in z_vals if z < 0)),
+            })
+
+        # Identify hub nodes (degree > mean + 1 SD)
+        degrees = [nd["degree"] for nd in node_details]
+        if len(degrees) > 1:
+            deg_mean = np.mean(degrees)
+            deg_std = np.std(degrees)
+            hub_threshold = deg_mean + deg_std
+            hub_nodes = [
+                nd["roi"] for nd in node_details
+                if nd["degree"] > hub_threshold
+            ]
+        else:
+            hub_nodes = []
+
+        characterized.append({
+            "n_edges": len(edges),
+            "n_nodes": len(nodes),
+            "pvalue": comp["pvalue"],
+            "n_increased": n_increased,
+            "n_decreased": n_decreased,
+            "frac_increased": round(n_increased / len(edges), 3) if edges else 0.0,
+            "mean_z": round(float(np.mean(edge_z_arr)), 4),
+            "median_z": round(float(np.median(edge_z_arr)), 4),
+            "edges": edge_details,
+            "nodes": sorted(node_details, key=lambda x: x["degree"], reverse=True),
+            "hub_nodes": hub_nodes,
+        })
+
+    logger.info(
+        f"Characterized {len(characterized)} significant components "
+        f"(p < {p_threshold})"
+    )
+    return characterized
+
 
 def run_all_comparisons(
     group_data: dict[str, np.ndarray],

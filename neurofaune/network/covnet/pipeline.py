@@ -35,7 +35,7 @@ from neurofaune.network.graph_theory import (
     compute_metric_curve,
     list_metrics,
 )
-from .nbs import fisher_z_edge_test, nbs_posthoc
+from .nbs import characterize_components, fisher_z_edge_test, nbs_posthoc
 from .nbs import run_all_comparisons as _run_nbs_comparisons
 from .visualization import (
     plot_all_group_heatmaps,
@@ -176,8 +176,7 @@ def _save_nbs_posthoc(
 
     Only runs on components with p < 0.05. Results saved to
     ``{comparison}/posthoc/`` as ``centrality.csv`` and
-    ``hub_vulnerability.csv`` — one file per significant component,
-    prefixed by component index.
+    ``hub_vulnerability.csv``, one file per significant component.
     """
     for comp_label, result in nbs_results.items():
         rois = result["roi_cols"]
@@ -204,6 +203,50 @@ def _save_nbs_posthoc(
             "Post-hoc saved for %s (%d significant component(s))",
             comp_label, len(sig_comps),
         )
+
+
+def _save_nbs_characterization(
+    characterized: list[dict],
+    nbs_result: dict,
+    out_dir: Path,
+) -> None:
+    """Save edge directionality and node centrality characterization."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(out_dir / "component_characterization.json", "w") as f:
+        json.dump(characterized, f, indent=2)
+
+    rows = []
+    for i, comp in enumerate(characterized):
+        rows.append({
+            "component": i,
+            "n_nodes": comp["n_nodes"],
+            "n_edges": comp["n_edges"],
+            "pvalue": comp["pvalue"],
+            "n_increased": comp["n_increased"],
+            "n_decreased": comp["n_decreased"],
+            "frac_increased": comp["frac_increased"],
+            "mean_z": comp["mean_z"],
+            "median_z": comp["median_z"],
+            "hub_nodes": "; ".join(comp["hub_nodes"]),
+        })
+    if rows:
+        pd.DataFrame(rows).to_csv(out_dir / "component_summary.csv", index=False)
+
+    node_rows = []
+    for i, comp in enumerate(characterized):
+        for node in comp["nodes"]:
+            node_rows.append({
+                "component": i,
+                "roi": node["roi"],
+                "degree": node["degree"],
+                "betweenness": node["betweenness"],
+                "mean_edge_z": node["mean_edge_z"],
+                "n_increased": node["n_increased"],
+                "n_decreased": node["n_decreased"],
+            })
+    if node_rows:
+        pd.DataFrame(node_rows).to_csv(out_dir / "node_centrality.csv", index=False)
 
 
 def _save_territory_results(
@@ -805,6 +848,103 @@ class CovNetAnalysis:
         )
         logger.info(f"NBS {self.metric}: {n_sig} significant comparisons")
         return nbs_results
+
+    def run_nbs_posthoc(
+        self,
+        nbs_results: dict[str, dict] | None = None,
+        p_threshold: float = 0.05,
+    ) -> dict[str, list[dict]]:
+        """Run post-hoc characterization of NBS components.
+
+        For each comparison with significant components, computes edge
+        directionality (increased vs. decreased covariance) and node centrality
+        (degree, betweenness) within each component.
+
+        Parameters
+        ----------
+        nbs_results : dict, optional
+            Output from ``run_nbs()``. If None, loads saved NBS results from
+            disk (reads test_statistics.csv and components.json).
+        p_threshold : float
+            Only characterize components with p < this value.
+
+        Returns
+        -------
+        dict mapping comparison labels to lists of characterized components.
+        """
+        nbs_dir = self._test_dir("nbs")
+
+        if nbs_results is None:
+            nbs_results = self._load_nbs_results(nbs_dir)
+
+        all_posthoc = {}
+        for comp_label, result in nbs_results.items():
+            sig_comps = [
+                c for c in result["significant_components"]
+                if c["pvalue"] < p_threshold
+            ]
+            if not sig_comps:
+                continue
+
+            characterized = characterize_components(
+                result,
+                roi_cols=result.get("roi_cols", self.region_cols),
+                p_threshold=p_threshold,
+            )
+            if characterized:
+                out_dir = nbs_dir / comp_label / "posthoc"
+                _save_nbs_characterization(characterized, result, out_dir)
+                all_posthoc[comp_label] = characterized
+
+        logger.info(
+            f"NBS post-hoc {self.metric}: characterized components in "
+            f"{len(all_posthoc)} comparisons"
+        )
+        return all_posthoc
+
+    def _load_nbs_results(self, nbs_dir: Path) -> dict[str, dict]:
+        """Load previously saved NBS results from disk."""
+        results = {}
+        if not nbs_dir.exists():
+            logger.warning(f"NBS directory not found: {nbs_dir}")
+            return results
+
+        for comp_dir in sorted(nbs_dir.iterdir()):
+            if not comp_dir.is_dir():
+                continue
+            stat_path = comp_dir / "test_statistics.csv"
+            comp_path = comp_dir / "components.json"
+            if not stat_path.exists() or not comp_path.exists():
+                continue
+
+            stat_df = pd.read_csv(stat_path, index_col=0)
+            test_stat = stat_df.values
+
+            with open(comp_path) as f:
+                comp_json = json.load(f)
+
+            components = []
+            for c in comp_json.get("components", []):
+                components.append({
+                    "nodes": c["nodes"],
+                    "edges": [tuple(e) for e in c["edges"]],
+                    "size": c["size"],
+                    "pvalue": c.get("pvalue", c.get("p_value", 1.0)),
+                })
+
+            results[comp_dir.name] = {
+                "test_stat": test_stat,
+                "significant_components": components,
+                "null_distribution": np.array([]),
+                "n_a": comp_json.get("n_a", 0),
+                "n_b": comp_json.get("n_b", 0),
+                "roi_cols": list(stat_df.columns),
+                "group_a": comp_json.get("group_a", ""),
+                "group_b": comp_json.get("group_b", ""),
+            }
+
+        logger.info(f"Loaded NBS results from {len(results)} comparisons")
+        return results
 
     def run_territory(
         self, comparisons: list[tuple[str, str]] | None = None
