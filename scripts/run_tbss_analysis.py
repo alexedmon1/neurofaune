@@ -578,7 +578,11 @@ Output structure:
 
     # Run each analysis
     results = {}
-    progress = AnalysisProgress(tbss_dir, "run_tbss_analysis.py", len(args.analyses))
+    # Progress file goes in the per-analysis output dir to avoid races
+    # when multiple analyses share the same tbss_dir concurrently.
+    first_analysis_output = tbss_dir / "randomise" / args.analyses[0]
+    first_analysis_output.mkdir(parents=True, exist_ok=True)
+    progress = AnalysisProgress(first_analysis_output, "run_tbss_analysis.py", len(args.analyses))
     completed = 0
     failed = 0
 

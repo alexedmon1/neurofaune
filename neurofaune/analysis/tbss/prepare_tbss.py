@@ -1147,15 +1147,32 @@ def prepare_tbss_data(
         erosion_voxels=erosion_voxels
     )
 
-    # Phase 4: Analysis mask = interior WM mask
-    # The WM mask is based on SIGMA WM probability with boundary erosion,
-    # making it modality-agnostic (usable for DTI, MSME, etc.).
+    # Phase 4: Analysis mask = interior WM mask ∩ common subject FOV
+    # The WM mask is based on SIGMA WM probability with boundary erosion.
+    # We additionally restrict to the common acquisition FOV by requiring
+    # all subjects to have valid (non-zero) FA at each voxel. Voxels outside
+    # any subject's FOV are zero-filled after warping and must be excluded to
+    # prevent spurious findings in atlas regions (e.g. brainstem) that lie
+    # outside the actual DTI acquisition volume.
     logger.info("\n[Phase 4] Creating analysis mask...")
-    analysis_mask_data = (nib.load(interior_mask).get_fdata() > 0).astype(np.uint8)
+    wm_mask_data = (nib.load(interior_mask).get_fdata() > 0).astype(np.uint8)
+    n_wm_voxels = int(wm_mask_data.sum())
+    logger.info(f"  Interior WM mask: {n_wm_voxels} voxels")
+
+    # Common FOV mask: voxels where every subject has FA > 0 after warping.
+    # A small positive threshold (0.01) guards against near-zero interpolation
+    # artefacts at FOV edges while excluding true zero-fill from out-of-FOV regions.
+    fov_mask = np.all(fa_stack > 0.01, axis=-1).astype(np.uint8)
+    n_fov_voxels = int(fov_mask.sum())
+    logger.info(f"  Common FOV mask:  {n_fov_voxels} voxels (all subjects non-zero FA)")
+
+    analysis_mask_data = (wm_mask_data & fov_mask).astype(np.uint8)
     analysis_mask_file = stats_dir / 'analysis_mask.nii.gz'
     nib.save(nib.Nifti1Image(analysis_mask_data, affine), analysis_mask_file)
     n_mask_voxels = int(analysis_mask_data.sum())
-    logger.info(f"Analysis mask: {n_mask_voxels} voxels (interior WM)")
+    n_excluded = n_wm_voxels - n_mask_voxels
+    logger.info(f"  Final analysis mask: {n_mask_voxels} voxels "
+                f"({n_excluded} WM voxels excluded as outside subject FOV)")
 
     # Phase 5: Mask metrics with analysis mask
     logger.info("\n[Phase 5] Masking metrics...")
