@@ -8,9 +8,9 @@ All network analysis modules should follow the CovNetAnalysis pattern:
 
 Reference implementation: `neurofaune/network/covnet/pipeline.py`
 
-## Quick Wins
+## Quick Wins (ALL COMPLETE)
 
-### QW-1: CovNet Territory script
+### QW-1: CovNet Territory script ✅
 **Files:** `scripts/run_covnet_territory.py`
 **Effort:** Small — already uses CovNetAnalysis, just missing --config/--force in the CLI wrapper.
 - Add `--config`, `--force` args
@@ -19,19 +19,19 @@ Reference implementation: `neurofaune/network/covnet/pipeline.py`
 - Pass `force` to `prepare()`
 - Move progress/summary to `_variant_dir()` level
 
-### QW-2: VBM analysis script
+### QW-2: VBM analysis script ✅ (--force added; full refactor in MR-5)
 **Files:** `scripts/run_vbm_analysis.py`, `neurofaune/analysis/vbm.py`
 **Effort:** Small — module already calls `load_config()` internally.
 - Expose `--config` in argparse
 - Add `--force` with directory existence check before running
 
-### QW-3: Voxelwise fMRI script
+### QW-3: Voxelwise fMRI script ✅ (--force added; full refactor in MR-5)
 **Files:** `scripts/run_voxelwise_fmri.py`, `neurofaune/analysis/voxelwise_fmri.py`
 **Effort:** Small — same as VBM, module already loads config.
 - Expose `--config` in argparse
 - Add `--force`
 
-### QW-4: FC Graph Theory script
+### QW-4: FC Graph Theory script ✅ (--config/--force added)
 **Files:** `scripts/run_fc_graph_theory.py`, `neurofaune/network/fc_graph_theory.py`
 **Effort:** Small — clean module API, just needs --config/--force in CLI.
 - Add `--config`, `--force` args
@@ -150,7 +150,50 @@ class MVPAAnalysis:
 4. Add force/config pattern
 5. Reduce script
 
-### MR-5: EdgeRegressionAnalysis class
+### MR-5: RandomiseAnalysis base class (VBM + Voxelwise fMRI)
+**Files:**
+- `neurofaune/analysis/randomise_analysis.py` (NEW — shared base class)
+- `neurofaune/analysis/vbm.py` or `vbm_analysis.py` (may need creation)
+- `neurofaune/analysis/voxelwise_fmri.py` or similar (may need creation)
+- `scripts/run_vbm_analysis.py` (622 lines → ~80)
+- `scripts/run_voxelwise_fmri_analysis.py` (621 lines → ~80)
+
+**Current state:** Both scripts are ~620 lines and nearly identical. They share:
+- `setup_logging()`, `load_subject_list()`, `validate_provenance()`, `subset_4d_volume()`
+- `run_single_analysis()` (~200 lines each, identical structure)
+- Same FSL randomise + cluster report + reporting registration pattern
+
+Only differences: tissue list (GM/WM vs fALFF/ReHo), TFCE mode labeling, config auto-discovery in VBM.
+
+**Target:**
+```python
+class RandomiseAnalysis:
+    """Base class for FSL randomise-based voxelwise analyses."""
+    @classmethod
+    def prepare(cls, config_path=None, analysis_dir=None,
+                analyses=None, metrics=None, force=False): ...
+    
+    def run(self, n_permutations=5000, seed=None,
+            cluster_threshold=0.95, min_cluster_size=10,
+            skip_existing=False): ...
+
+class VBMAnalysis(RandomiseAnalysis):
+    DEFAULT_METRICS = ['GM', 'WM']
+    ANALYSIS_TYPE = 'vbm'
+
+class VoxelwiseFMRIAnalysis(RandomiseAnalysis):
+    DEFAULT_METRICS = ['fALFF', 'ReHo']
+    ANALYSIS_TYPE = 'voxelwise_fmri'
+```
+
+**Steps:**
+1. Create `neurofaune/analysis/randomise_analysis.py` with shared base class
+2. Move `subset_4d_volume`, `validate_provenance`, `load_subject_list`, `run_single_analysis` to base
+3. Create `VBMAnalysis` and `VoxelwiseFMRIAnalysis` subclasses with metric defaults
+4. Add force/config pattern (prepare checks for existing randomise dirs)
+5. Reduce both scripts to thin wrappers
+
+### MR-6: EdgeRegressionAnalysis class
 **Files:**
 - `neurofaune/network/edge_regression.py` (module — exists)
 - `scripts/run_edge_regression.py` (~200 lines → ~80)
@@ -201,12 +244,14 @@ paths:
 
 ## Execution Order
 
-1. **Quick wins first** (QW-1 through QW-4) — small changes, immediate consistency
-2. **Edge regression** (MR-5) — smallest major refactor, good warmup
-3. **Classification** (MR-1) — template for regression
-4. **Regression** (MR-2) — mirrors classification pattern
-5. **MCCA** (MR-3) — unique but similar pattern
-6. **MVPA** (MR-4) — most complex, do last
+1. ~~**Quick wins** (QW-1 through QW-4)~~ DONE
+2. ~~**Config path additions**~~ DONE
+3. **Edge regression** (MR-6) — smallest major refactor, good warmup
+4. **Classification** (MR-1) — template for regression
+5. **Regression** (MR-2) — mirrors classification pattern
+6. **MCCA** (MR-3) — unique but similar pattern
+7. **VBM + Voxelwise fMRI** (MR-5) — shared base class, two scripts
+8. **MVPA** (MR-4) — most complex, do last
 
 Each step gets its own commit. Config path additions (all at once) get a separate commit before the refactors.
 
