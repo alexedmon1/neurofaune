@@ -232,6 +232,29 @@ uv run pytest tests/unit/test_slice_correspondence.py -v
 
 Tests use synthetic data generation - no external data files required. Integration tests marked with `@pytest.mark.integration` require FSL/ANTs installed.
 
+## Development Philosophy
+
+All analysis logic lives at the **module level** (`neurofaune/`). The `config.yaml` is the single source of truth for paths and analysis parameters.
+
+**Scripts in `scripts/` are examples.** They are kept updated as reference CLI wrappers, but they are not the primary interface. Each study should create its own wrapper scripts that import from the library directly. For example:
+
+```python
+from neurofaune.network.covnet import CovNetAnalysis
+
+analysis = CovNetAnalysis.prepare(
+    config_path=Path("/path/to/config.yaml"),
+    modality="dwi", metric="FA", sex="M", force=True,
+)
+analysis.save()
+analysis.run_abs_distance(n_perm=1000, seed=42)
+```
+
+When making changes:
+1. Implement at the module level first
+2. Update example scripts to reflect the new API
+3. Update study-specific wrappers as needed
+4. Never add logic that only exists in scripts — if it's useful, it belongs in the module
+
 ## Development Scripts
 
 Development scripts in `scripts/dev_registration/` follow numbered naming for workflow order:
