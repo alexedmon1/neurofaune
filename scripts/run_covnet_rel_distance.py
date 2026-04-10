@@ -7,20 +7,28 @@ a reference network, relative to a comparison group. When the reference is
 older controls, this tests developmental trajectory shifts:
 
 For each (group_A, group_B, reference) triplet:
-    Δ = d(A, reference) − d(B, reference)
-    Δ < 0 → A is closer to reference (accelerated if reference is older)
-    Δ > 0 → A is farther from reference (decelerated if reference is older)
+    delta = d(A, reference) - d(B, reference)
+    delta < 0 -> A is closer to reference (accelerated if reference is older)
+    delta > 0 -> A is farther from reference (decelerated if reference is older)
 
 Significance is assessed via permutation of A/B labels, keeping the
 reference group fixed.
 
 Usage:
+    # Config-driven (recommended):
+    uv run python scripts/run_covnet_rel_distance.py \
+        --config $STUDY_ROOT/config.yaml \
+        --modality dwi \
+        --metrics FA MD AD RD \
+        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
+        --n-permutations 5000 --seed 42
+
+    # Explicit paths (backwards-compatible):
     uv run python scripts/run_covnet_rel_distance.py \
         --roi-dir $STUDY_ROOT/network/roi \
         --output-dir $STUDY_ROOT/network/covnet \
         --modality dwi \
         --metrics FA MD AD RD \
-        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
         --n-permutations 5000 --seed 42
 """
 
@@ -33,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.network.covnet.pipeline import resolve_covnet_paths
 from neurofaune.analysis.progress import AnalysisProgress
 
 logging.basicConfig(
@@ -41,17 +50,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCRIPT_NAME = "run_covnet_rel_distance.py"
+ANALYSIS_NAME = "rel_distance"
+SUMMARY_PREFIX = "rel_distance_summary"
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="CovNet relative network distance analysis"
     )
     parser.add_argument(
-        "--roi-dir", type=Path, required=True,
+        "--config", type=Path, default=None,
+        help="Path to study config.yaml (derives --roi-dir and --output-dir)",
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, default=None,
         help="Directory containing roi_*_wide.csv files",
     )
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
+        "--output-dir", type=Path, default=None,
         help="Root output directory for CovNet results",
     )
     parser.add_argument(
@@ -90,19 +107,30 @@ def main():
         "--sex", choices=["F", "M"], default=None,
         help="Run analysis for one sex only",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Delete existing results before running",
+    )
 
     args = parser.parse_args()
 
-    if not args.roi_dir.exists():
-        logger.error("ROI directory not found: %s", args.roi_dir)
+    # Resolve paths from config or explicit arguments
+    if not args.config and not (args.roi_dir and args.output_dir):
+        parser.error("Either --config or both --roi-dir and --output-dir are required")
+
+    roi_dir, covnet_root = resolve_covnet_paths(
+        config_path=args.config, roi_dir=args.roi_dir, covnet_root=args.output_dir,
+    )
+
+    if not roi_dir.exists():
+        logger.error("ROI directory not found: %s", roi_dir)
         sys.exit(1)
 
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    variant = "pooled" if args.sex is None else f"sex_stratified/{args.sex}"
+    progress_dir = covnet_root / ANALYSIS_NAME / variant
+    progress_dir.mkdir(parents=True, exist_ok=True)
 
-    progress = AnalysisProgress(
-        output_dir, "run_covnet_rel_distance.py", len(args.metrics)
-    )
+    progress = AnalysisProgress(progress_dir, SCRIPT_NAME, len(args.metrics))
     all_summaries = {}
     completed = 0
 
@@ -115,9 +143,15 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, output_dir,
-                args.modality, metric, labels_csv=args.labels_csv,
+                config_path=args.config,
+                roi_dir=args.roi_dir,
+                covnet_root=args.output_dir,
+                modality=args.modality,
+                metric=metric,
+                exclusion_csv=args.exclusion_csv,
+                labels_csv=args.labels_csv,
                 sex=args.sex,
+                force=args.force,
             )
             analysis.save()
 
@@ -157,20 +191,20 @@ def main():
         pass
 
     sex_suffix = f"_{args.sex}" if args.sex else ""
-    summary_path = output_dir / f"rel_distance_summary_{args.modality}{sex_suffix}.json"
+    summary_path = progress_dir / f"{SUMMARY_PREFIX}_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        summarize_analysis("covnet_rel_distance", summary_path, output_dir=output_dir)
+        summarize_analysis("covnet_rel_distance", summary_path, output_dir=progress_dir)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
     logger.info(
         "\nRelative distance analysis complete. Results in: %s",
-        output_dir,
+        progress_dir,
     )
 
 

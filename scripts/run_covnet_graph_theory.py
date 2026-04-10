@@ -10,19 +10,25 @@ Each graph metric is run independently, so you can select which to compute.
 Use --list-graph-metrics to see all available metrics.
 
 Usage:
-    # Run all graph metrics
+    # Config-driven (recommended):
     uv run python scripts/run_covnet_graph_theory.py \
-        --roi-dir $STUDY_ROOT/network/roi \
-        --output-dir $STUDY_ROOT/network/covnet \
+        --config $STUDY_ROOT/config.yaml \
         --modality dwi \
         --metrics FA MD AD RD \
         --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
         --n-permutations 1000 --seed 42
 
-    # Run specific graph metrics only
+    # Explicit paths (backwards-compatible):
     uv run python scripts/run_covnet_graph_theory.py \
         --roi-dir $STUDY_ROOT/network/roi \
         --output-dir $STUDY_ROOT/network/covnet \
+        --modality dwi \
+        --metrics FA MD AD RD \
+        --n-permutations 1000 --seed 42
+
+    # Run specific graph metrics only
+    uv run python scripts/run_covnet_graph_theory.py \
+        --config $STUDY_ROOT/config.yaml \
         --modality dwi \
         --metrics FA MD AD RD \
         --graph-metrics global_efficiency clustering_coefficient modularity \
@@ -42,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.network.covnet.pipeline import resolve_covnet_paths
 from neurofaune.network.graph_theory import (
     DEFAULT_DENSITIES,
     METRIC_REGISTRY,
@@ -55,17 +62,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCRIPT_NAME = "run_covnet_graph_theory.py"
+ANALYSIS_NAME = "graph_metrics"
+SUMMARY_PREFIX = "graph_theory_summary"
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="CovNet graph theory analysis with density-curve AUC testing"
     )
     parser.add_argument(
-        "--roi-dir", type=Path,
+        "--config", type=Path, default=None,
+        help="Path to study config.yaml (derives --roi-dir and --output-dir)",
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, default=None,
         help="Directory containing roi_*_wide.csv files",
     )
     parser.add_argument(
-        "--output-dir", type=Path,
+        "--output-dir", type=Path, default=None,
         help="Root output directory for CovNet results",
     )
     parser.add_argument(
@@ -112,6 +127,10 @@ def main():
         "--sex", choices=["F", "M"], default=None,
         help="Run analysis for one sex only",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Delete existing results before running",
+    )
 
     args = parser.parse_args()
 
@@ -122,11 +141,19 @@ def main():
         sys.exit(0)
 
     # Validate required args when not just listing
-    if not args.roi_dir or not args.output_dir or not args.modality or not args.metrics:
-        parser.error("--roi-dir, --output-dir, --modality, and --metrics are required")
+    if not args.modality or not args.metrics:
+        parser.error("--modality and --metrics are required")
 
-    if not args.roi_dir.exists():
-        logger.error("ROI directory not found: %s", args.roi_dir)
+    # Resolve paths from config or explicit arguments
+    if not args.config and not (args.roi_dir and args.output_dir):
+        parser.error("Either --config or both --roi-dir and --output-dir are required")
+
+    roi_dir, covnet_root = resolve_covnet_paths(
+        config_path=args.config, roi_dir=args.roi_dir, covnet_root=args.output_dir,
+    )
+
+    if not roi_dir.exists():
+        logger.error("ROI directory not found: %s", roi_dir)
         sys.exit(1)
 
     # Validate graph metric names
@@ -140,12 +167,11 @@ def main():
 
     densities = args.densities or DEFAULT_DENSITIES
 
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    variant = "pooled" if args.sex is None else f"sex_stratified/{args.sex}"
+    progress_dir = covnet_root / ANALYSIS_NAME / variant
+    progress_dir.mkdir(parents=True, exist_ok=True)
 
-    progress = AnalysisProgress(
-        output_dir, "run_covnet_graph_theory.py", len(args.metrics)
-    )
+    progress = AnalysisProgress(progress_dir, SCRIPT_NAME, len(args.metrics))
     all_summaries = {}
     completed = 0
 
@@ -158,9 +184,15 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, output_dir,
-                args.modality, metric, labels_csv=args.labels_csv,
+                config_path=args.config,
+                roi_dir=args.roi_dir,
+                covnet_root=args.output_dir,
+                modality=args.modality,
+                metric=metric,
+                exclusion_csv=args.exclusion_csv,
+                labels_csv=args.labels_csv,
                 sex=args.sex,
+                force=args.force,
             )
             analysis.save()
 
@@ -192,7 +224,7 @@ def main():
             continue
 
     sex_suffix = f"_{args.sex}" if args.sex else ""
-    summary_path = output_dir / f"graph_theory_summary_{args.modality}{sex_suffix}.json"
+    summary_path = progress_dir / f"{SUMMARY_PREFIX}_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
@@ -201,12 +233,12 @@ def main():
     # Generate findings summary
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        findings = summarize_analysis("covnet_graph_theory", summary_path, output_dir=output_dir)
+        findings = summarize_analysis("covnet_graph_theory", summary_path, output_dir=progress_dir)
         logger.info("Findings: %s", findings.summary_text)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
-    logger.info("\nGraph theory analysis complete. Results in: %s", output_dir)
+    logger.info("\nGraph theory analysis complete. Results in: %s", progress_dir)
 
 
 if __name__ == "__main__":
