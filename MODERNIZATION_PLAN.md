@@ -101,7 +101,7 @@ class RegressionAnalysis:
 5. Add force/config pattern
 6. Reduce script
 
-### MR-3: MCCAAnalysis class
+### MR-3: MCCAAnalysis class ✅
 **Files:**
 - `neurofaune/network/mcca.py` (module — multiple functions)
 - `scripts/run_mcca_analysis.py` (660 lines → ~150)
