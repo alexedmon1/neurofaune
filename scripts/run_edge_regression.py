@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-Edge-level regression for continuous targets.
+Edge-level regression for continuous targets (example CLI wrapper).
 
-Tests whether pairwise ROI co-variation scales with a continuous covariate
-(e.g. log-AUC) using NBS-style component extraction and permutation FWER.
-This is appropriate ONLY for continuous targets — for categorical group
-comparisons, use run_covnet_nbs.py instead.
-
-Results are saved to network/edge_regression/{modality}/{metric}/{cohort}/,
-separate from CovNet results.
+Example scripts in scripts/ are reference wrappers. Each study should
+create its own wrapper scripts that import from the library.
 
 Usage:
-    uv run python scripts/run_edge_regression.py \
-        --roi-dir $STUDY_ROOT/network/roi \
-        --output-dir $STUDY_ROOT/network/edge_regression \
-        --modality dwi \
-        --metrics FA MD AD RD \
-        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
-        --target log_auc \
-        --auc-csv $STUDY_ROOT/network/roi/roi_FA_wide.csv \
-        --n-permutations 1000 --seed 42
+    # Config-driven (recommended)
+    uv run python scripts/run_edge_regression.py \\
+        --config /path/to/config.yaml \\
+        --modality dwi --metrics FA MD AD RD \\
+        --target log_auc --auc-csv /path/to/auc_lookup.csv \\
+        --n-permutations 1000 --seed 42 --force
+
+    # Explicit paths (backwards compatible)
+    uv run python scripts/run_edge_regression.py \\
+        --roi-dir /path/to/network/roi \\
+        --output-dir /path/to/network/edge_regression \\
+        --modality dwi --metrics FA MD AD RD \\
+        --target log_auc --n-permutations 1000 --seed 42
 """
 
 import argparse
@@ -29,13 +28,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from neurofaune.network.edge_regression import EdgeRegressionAnalysis
 from neurofaune.analysis.progress import AnalysisProgress
-from neurofaune.network.edge_regression import run_edge_regression
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,17 +39,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCRIPT_NAME = "run_edge_regression.py"
+COHORTS = [None, "p30", "p60", "p90"]
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Edge-level regression for continuous targets (log_auc, auc, etc.)"
+        description="Edge-level regression for continuous targets"
     )
     parser.add_argument(
-        "--roi-dir", type=Path, required=True,
+        "--config", type=Path, default=None,
+        help="Path to study config.yaml (derives --roi-dir and --output-dir)",
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, default=None,
         help="Directory containing roi_*_wide.csv files",
     )
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
+        "--output-dir", type=Path, default=None,
         help="Output directory for edge regression results",
     )
     parser.add_argument(
@@ -66,7 +69,7 @@ def main():
     )
     parser.add_argument(
         "--exclusion-csv", type=Path, default=None,
-        help="CSV of sessions to exclude (must have subject, session columns)",
+        help="CSV of sessions to exclude",
     )
     parser.add_argument(
         "--target", type=str, required=True,
@@ -74,97 +77,62 @@ def main():
     )
     parser.add_argument(
         "--auc-csv", type=Path, default=None,
-        help="CSV with subject, session, and target columns. "
-             "If not provided, the target column is read from the ROI wide CSV.",
+        help="CSV with subject, session, and target columns",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=1000,
-        help="Number of permutations for NBS null distribution (default: 1000)",
+        help="Number of permutations (default: 1000)",
     )
     parser.add_argument(
         "--nbs-threshold", type=float, default=3.0,
-        help="|t|-statistic threshold for suprathreshold edges (default: 3.0)",
+        help="|t|-statistic threshold (default: 3.0)",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
-        help="Random seed for reproducibility",
+        help="Random seed",
     )
     parser.add_argument(
         "--sex", choices=["F", "M"], default=None,
         help="Run analysis for one sex only",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Delete existing results before running",
+    )
 
     args = parser.parse_args()
 
-    if not args.roi_dir.exists():
-        logger.error("ROI directory not found: %s", args.roi_dir)
-        sys.exit(1)
+    if not args.config and not (args.roi_dir and args.output_dir):
+        parser.error("Provide --config or both --roi-dir and --output-dir")
 
-    # Adjust output directory for sex-stratified analyses
-    output_dir = args.output_dir
-    if args.sex:
-        output_dir = args.output_dir / f"sex_{args.sex}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build covariate map
-    covariate_map = None
-    covariate_name = args.target
-    if args.auc_csv is not None:
-        auc_df = pd.read_csv(args.auc_csv)
-        if args.target not in auc_df.columns:
-            logger.error(
-                "Target column %r not found in %s. Available: %s",
-                args.target, args.auc_csv, list(auc_df.columns),
-            )
-            sys.exit(1)
-        if not {"subject", "session"}.issubset(auc_df.columns):
-            logger.error("AUC CSV must have 'subject' and 'session' columns")
-            sys.exit(1)
-        covariate_map = dict(
-            zip(
-                auc_df["subject"] + "_" + auc_df["session"],
-                auc_df[args.target].astype(float),
-            )
-        )
-        covariate_map = {k: v for k, v in covariate_map.items() if not np.isnan(v)}
-        logger.info("Loaded %d %s values from %s", len(covariate_map), args.target, args.auc_csv)
-        if args.target == "log_auc":
-            covariate_name = "log(1+AUC)"
-
-    # Save analysis configuration
-    sex_suffix = f"_{args.sex}" if args.sex else ""
-    config = {
-        "roi_dir": str(args.roi_dir),
-        "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
-        "output_dir": str(output_dir),
-        "modality": args.modality,
-        "metrics": args.metrics,
-        "target": args.target,
-        "sex": args.sex,
-        "auc_csv": str(args.auc_csv) if args.auc_csv else None,
-        "n_permutations": args.n_permutations,
-        "nbs_threshold": args.nbs_threshold,
-        "seed": args.seed,
-        "timestamp": datetime.now().isoformat(),
-    }
-    with open(output_dir / f"edge_regression_config_{args.modality}{sex_suffix}.json", "w") as f:
-        json.dump(config, f, indent=2)
-
-    # Run for each metric x cohort
-    cohorts = [None, "p30", "p60", "p90"]
-    total_tasks = len(args.metrics) * len(cohorts)
-    progress = AnalysisProgress(output_dir, "run_edge_regression.py", total_tasks)
+    total_tasks = len(args.metrics) * len(COHORTS)
     all_summaries = {}
     completed = 0
 
     for metric in args.metrics:
-        wide_csv = args.roi_dir / f"roi_{metric}_wide.csv"
-        if not wide_csv.exists():
-            logger.warning("Wide CSV not found: %s, skipping %s", wide_csv, metric)
+        try:
+            analysis = EdgeRegressionAnalysis.prepare(
+                config_path=args.config,
+                roi_dir=args.roi_dir,
+                output_dir=args.output_dir,
+                modality=args.modality,
+                metric=metric,
+                target=args.target,
+                auc_csv=args.auc_csv,
+                exclusion_csv=args.exclusion_csv,
+                sex=args.sex,
+                force=args.force,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning("Skipping %s: %s", metric, e)
             continue
 
+        progress = AnalysisProgress(
+            analysis.output_dir, SCRIPT_NAME, total_tasks
+        )
+
         metric_summary = {}
-        for cohort in cohorts:
+        for cohort in COHORTS:
             cohort_label = cohort if cohort else "pooled"
             progress.update(
                 task=f"{metric} / {cohort_label}",
@@ -172,16 +140,8 @@ def main():
                 completed=completed,
             )
 
-            result = run_edge_regression(
-                wide_csv=wide_csv,
-                exclusion_csv=args.exclusion_csv,
-                output_dir=output_dir,
-                modality=args.modality,
-                metric=metric,
-                covariate_map=covariate_map,
-                covariate_name=covariate_name,
-                cohort_filter=cohort,
-                sex_filter=args.sex,
+            result = analysis.run(
+                cohort=cohort,
                 n_perm=args.n_permutations,
                 threshold=args.nbs_threshold,
                 seed=args.seed,
@@ -201,25 +161,33 @@ def main():
 
         all_summaries[metric] = metric_summary
 
-    # Save overall summary
+    # Save summary
     try:
         from neurofaune.reporting.summarize import build_provenance
         all_summaries["_provenance"] = build_provenance()
     except Exception:
         pass
 
-    summary_path = output_dir / f"edge_regression_summary_{args.modality}{sex_suffix}.json"
+    sex_suffix = f"_{args.sex}" if args.sex else ""
+    summary_path = (
+        analysis.output_dir
+        / f"edge_regression_summary_{args.modality}{sex_suffix}.json"
+    )
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        summarize_analysis("edge_regression", summary_path, output_dir=output_dir)
+        summarize_analysis(
+            "edge_regression", summary_path, output_dir=analysis.output_dir
+        )
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
-    logger.info("\nEdge regression complete. Results in: %s", output_dir)
+    logger.info(
+        "\nEdge regression complete. Results in: %s", analysis.output_dir
+    )
 
 
 if __name__ == "__main__":

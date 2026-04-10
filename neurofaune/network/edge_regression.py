@@ -12,10 +12,24 @@ individual-level edge contributions.
 
 Appropriate for continuous targets only (AUC, log_auc, behavioural
 scores, etc.). For categorical group comparisons, use NBS instead.
+
+Typical usage::
+
+    from pathlib import Path
+    from neurofaune.network.edge_regression import EdgeRegressionAnalysis
+
+    analysis = EdgeRegressionAnalysis.prepare(
+        config_path=Path("config.yaml"),
+        modality="dwi", metric="FA",
+        target="log_auc", auc_csv=Path("auc_lookup.csv"),
+        force=True,
+    )
+    analysis.run(cohort="p30", n_perm=1000, threshold=3.0, seed=42)
 """
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +40,236 @@ from neurofaune.network.covnet.visualization import plot_nbs_network
 from neurofaune.network.matrices import load_and_prepare_data
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_edge_regression_paths(
+    config_path: Path | None = None,
+    roi_dir: Path | None = None,
+    output_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve ROI and edge regression output paths from config or args."""
+    cfg_roi = None
+    cfg_output = None
+
+    if config_path is not None:
+        from neurofaune.config import load_config, get_config_value
+
+        config = load_config(Path(config_path))
+        cfg_roi = get_config_value(config, "paths.network.roi")
+        cfg_output = get_config_value(config, "paths.network.edge_regression")
+        if cfg_roi is not None:
+            cfg_roi = Path(cfg_roi)
+        if cfg_output is not None:
+            cfg_output = Path(cfg_output)
+
+    resolved_roi = roi_dir if roi_dir is not None else cfg_roi
+    resolved_output = output_dir if output_dir is not None else cfg_output
+
+    if resolved_roi is None:
+        raise ValueError(
+            "ROI directory not specified. Provide config_path or roi_dir."
+        )
+    if resolved_output is None:
+        raise ValueError(
+            "Output directory not specified. Provide config_path or output_dir."
+        )
+
+    return Path(resolved_roi), Path(resolved_output)
+
+
+class EdgeRegressionAnalysis:
+    """Edge-level regression analysis for continuous targets.
+
+    Follows the same pattern as ``CovNetAnalysis``: resolve paths from
+    config, check for existing results before running, and provide a
+    clean Python API that scripts can wrap.
+    """
+
+    def __init__(
+        self,
+        roi_dir: Path,
+        output_dir: Path,
+        modality: str,
+        metric: str,
+        sex: str | None = None,
+        force: bool = False,
+    ):
+        self.roi_dir = Path(roi_dir)
+        self.output_dir = Path(output_dir)
+        self.modality = modality
+        self.metric = metric
+        self.sex = sex
+        self.force = force
+        self.covariate_map: dict[str, float] | None = None
+        self.covariate_name: str = ""
+        self.exclusion_csv: Path | None = None
+
+    @classmethod
+    def prepare(
+        cls,
+        config_path: Path | None = None,
+        roi_dir: Path | None = None,
+        output_dir: Path | None = None,
+        modality: str = "",
+        metric: str = "",
+        target: str = "log_auc",
+        auc_csv: Path | None = None,
+        exclusion_csv: Path | None = None,
+        sex: str | None = None,
+        force: bool = False,
+    ) -> "EdgeRegressionAnalysis":
+        """Prepare an edge regression analysis.
+
+        Parameters
+        ----------
+        config_path : Path, optional
+            Study config.yaml. Derives roi_dir and output_dir from
+            ``paths.network.roi`` and ``paths.network.edge_regression``.
+        roi_dir, output_dir : Path, optional
+            Explicit path overrides.
+        modality : str
+            Modality name (e.g. ``"dwi"``).
+        metric : str
+            Metric name (e.g. ``"FA"``).
+        target : str
+            Continuous target column name (e.g. ``"log_auc"``).
+        auc_csv : Path, optional
+            CSV with subject, session, and target columns. If None,
+            the target column is read from the ROI wide CSV.
+        exclusion_csv : Path, optional
+            CSV of sessions to exclude.
+        sex : str, optional
+            If set (``"F"`` or ``"M"``), restrict to one sex.
+        force : bool
+            If True, delete existing results before running.
+        """
+        resolved_roi, resolved_output = _resolve_edge_regression_paths(
+            config_path, roi_dir, output_dir
+        )
+
+        # Adjust output for sex stratification
+        if sex:
+            resolved_output = resolved_output / f"sex_{sex}"
+
+        inst = cls(
+            roi_dir=resolved_roi,
+            output_dir=resolved_output,
+            modality=modality,
+            metric=metric,
+            sex=sex,
+            force=force,
+        )
+        inst.exclusion_csv = exclusion_csv
+
+        # Build covariate map
+        inst.covariate_name = target
+        if auc_csv is not None:
+            auc_df = pd.read_csv(auc_csv)
+            if target not in auc_df.columns:
+                raise ValueError(
+                    f"Target column {target!r} not found in {auc_csv}. "
+                    f"Available: {list(auc_df.columns)}"
+                )
+            if not {"subject", "session"}.issubset(auc_df.columns):
+                raise ValueError(
+                    "AUC CSV must have 'subject' and 'session' columns"
+                )
+            inst.covariate_map = dict(
+                zip(
+                    auc_df["subject"] + "_" + auc_df["session"],
+                    auc_df[target].astype(float),
+                )
+            )
+            inst.covariate_map = {
+                k: v for k, v in inst.covariate_map.items()
+                if not np.isnan(v)
+            }
+            logger.info(
+                "Loaded %d %s values from %s",
+                len(inst.covariate_map), target, auc_csv,
+            )
+            if target == "log_auc":
+                inst.covariate_name = "log(1+AUC)"
+
+        wide_csv = resolved_roi / f"roi_{metric}_wide.csv"
+        if not wide_csv.exists():
+            raise FileNotFoundError(f"Wide CSV not found: {wide_csv}")
+
+        return inst
+
+    def _result_dir(self, cohort: str | None = None) -> Path:
+        """Output directory for a specific cohort."""
+        cohort_label = cohort if cohort else "pooled"
+        return self.output_dir / self.modality / self.metric / cohort_label
+
+    def _check_or_clear(self, cohort: str | None = None) -> None:
+        """Check for existing results; error unless force is set."""
+        target = self._result_dir(cohort)
+        if not target.exists():
+            return
+
+        result_files = [f for f in target.rglob("*") if f.is_file()]
+        if not result_files:
+            return
+
+        if not self.force:
+            file_list = "\n  ".join(str(f) for f in result_files[:10])
+            extra = (
+                f"\n  ... and {len(result_files) - 10} more"
+                if len(result_files) > 10
+                else ""
+            )
+            raise FileExistsError(
+                f"Results already exist at {target} "
+                f"({len(result_files)} files):\n  {file_list}{extra}\n\n"
+                f"Use force=True (or --force) to delete existing results "
+                f"and rerun."
+            )
+
+        logger.warning("--force: removing existing results at %s", target)
+        shutil.rmtree(target)
+
+    def run(
+        self,
+        cohort: str | None = None,
+        n_perm: int = 1000,
+        threshold: float = 3.0,
+        seed: int = 42,
+    ) -> dict | None:
+        """Run edge regression for one cohort.
+
+        Parameters
+        ----------
+        cohort : str, optional
+            PND cohort filter (e.g. ``"p30"``). None = pooled.
+        n_perm : int
+            Number of permutations.
+        threshold : float
+            |t|-statistic threshold for suprathreshold edges.
+        seed : int
+            Random seed.
+
+        Returns
+        -------
+        dict with NBS regression results, or None if skipped.
+        """
+        self._check_or_clear(cohort)
+
+        wide_csv = self.roi_dir / f"roi_{self.metric}_wide.csv"
+        return run_edge_regression(
+            wide_csv=wide_csv,
+            exclusion_csv=self.exclusion_csv,
+            output_dir=self.output_dir,
+            modality=self.modality,
+            metric=self.metric,
+            covariate_map=self.covariate_map,
+            covariate_name=self.covariate_name,
+            cohort_filter=cohort,
+            sex_filter=self.sex,
+            n_perm=n_perm,
+            threshold=threshold,
+            seed=seed,
+        )
 
 
 def run_edge_regression(

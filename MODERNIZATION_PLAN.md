@@ -193,7 +193,7 @@ class VoxelwiseFMRIAnalysis(RandomiseAnalysis):
 4. Add force/config pattern (prepare checks for existing randomise dirs)
 5. Reduce both scripts to thin wrappers
 
-### MR-6: EdgeRegressionAnalysis class
+### MR-6: EdgeRegressionAnalysis class ✅
 **Files:**
 - `neurofaune/network/edge_regression.py` (module — exists)
 - `scripts/run_edge_regression.py` (~200 lines → ~80)
