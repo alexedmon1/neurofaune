@@ -2,26 +2,26 @@
 
 Provides the ``CovNetAnalysis`` class: prepare data once, then run any
 combination of NBS, territory, graph theory, or network distance tests.
-Each test has a corresponding standalone script in ``scripts/``:
-
-- ``run_covnet_nbs.py`` — NBS permutation testing
-- ``run_covnet_territory.py`` — Territory-level Fisher z + FDR (post-hoc)
-- ``run_covnet_graph_theory.py`` — Graph-theoretic metric comparisons
-- ``run_covnet_abs_distance.py`` — Absolute network distance (Mantel/Frobenius/spectral)
-- ``run_covnet_rel_distance.py`` — Relative network distance (shift toward/away from reference)
-
-Edge regression (continuous targets) is separate: see
-``neurofaune.network.edge_regression`` and ``run_edge_regression.py``.
+Example scripts in ``scripts/`` show CLI usage, but the primary interface
+is the Python API — each study should create its own wrapper scripts.
 
 Typical usage::
 
-    analysis = CovNetAnalysis.prepare(roi_dir, exclusion_csv, covnet_root, "dwi", "FA")
+    from pathlib import Path
+    from neurofaune.network.covnet import CovNetAnalysis
+
+    analysis = CovNetAnalysis.prepare(
+        config_path=Path("config.yaml"),
+        modality="dwi", metric="FA", force=True,
+    )
     analysis.save()
-    analysis.run_nbs(comparisons=analysis.resolve_comparisons(["dose"]))
+    analysis.run_abs_distance(n_perm=1000)
+    analysis.run_nbs(n_perm=1000, posthoc=True)
 """
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +65,58 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def resolve_covnet_paths(
+    config_path: Path | None = None,
+    roi_dir: Path | None = None,
+    covnet_root: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve ROI and CovNet root directories from config or explicit args.
+
+    Priority: explicit arguments override config values.
+
+    Parameters
+    ----------
+    config_path : Path, optional
+        Study config.yaml. If provided, ``paths.network.roi`` and
+        ``paths.network.covnet`` are extracted.
+    roi_dir : Path, optional
+        Explicit ROI directory override.
+    covnet_root : Path, optional
+        Explicit CovNet root directory override.
+
+    Returns
+    -------
+    (roi_dir, covnet_root) : tuple of Path
+    """
+    cfg_roi = None
+    cfg_covnet = None
+
+    if config_path is not None:
+        from neurofaune.config import load_config, get_config_value
+
+        config = load_config(Path(config_path))
+        cfg_roi = get_config_value(config, "paths.network.roi")
+        cfg_covnet = get_config_value(config, "paths.network.covnet")
+        if cfg_roi is not None:
+            cfg_roi = Path(cfg_roi)
+        if cfg_covnet is not None:
+            cfg_covnet = Path(cfg_covnet)
+
+    resolved_roi = roi_dir if roi_dir is not None else cfg_roi
+    resolved_covnet = covnet_root if covnet_root is not None else cfg_covnet
+
+    if resolved_roi is None:
+        raise ValueError(
+            "ROI directory not specified. Provide config_path or roi_dir."
+        )
+    if resolved_covnet is None:
+        raise ValueError(
+            "CovNet root not specified. Provide config_path or covnet_root."
+        )
+
+    return Path(resolved_roi), Path(resolved_covnet)
 
 
 def fdr_correct_matrix(p_values: np.ndarray) -> np.ndarray:
@@ -420,6 +472,7 @@ class CovNetAnalysis:
         self.modality = modality
         self.metric = metric
         self.roi_dir: Path | None = None
+        self.force: bool = False
 
         # Populated by prepare() or load()
         self.n_subjects: int = 0
@@ -459,6 +512,47 @@ class CovNetAnalysis:
         v = variant if variant is not None else self._variant
         return self.covnet_root / analysis / v / self.modality / self.metric
 
+    def _variant_dir(self, analysis: str) -> Path:
+        """Analysis + variant directory (no modality/metric).
+
+        Structure: ``{covnet_root}/{analysis}/{variant}/``
+
+        Used for summary JSONs and progress files that span multiple metrics.
+        """
+        return self.covnet_root / analysis / self._variant
+
+    def _check_or_clear(self, analysis: str) -> None:
+        """Check for existing results; error unless force is set.
+
+        If ``self.force`` is True, removes the target directory for a clean
+        slate. If False and the directory has result files, raises
+        ``FileExistsError``.
+        """
+        target = self._test_dir(analysis)
+        if not target.exists():
+            return
+
+        result_files = [f for f in target.rglob("*") if f.is_file()]
+        if not result_files:
+            return
+
+        if not self.force:
+            file_list = "\n  ".join(str(f) for f in result_files[:10])
+            extra = (
+                f"\n  ... and {len(result_files) - 10} more"
+                if len(result_files) > 10
+                else ""
+            )
+            raise FileExistsError(
+                f"Results already exist at {target} "
+                f"({len(result_files)} files):\n  {file_list}{extra}\n\n"
+                f"Use force=True (or --force) to delete existing results "
+                f"and rerun."
+            )
+
+        logger.warning("--force: removing existing results at %s", target)
+        shutil.rmtree(target)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -466,24 +560,28 @@ class CovNetAnalysis:
     @classmethod
     def prepare(
         cls,
-        roi_dir: Path,
-        exclusion_csv: Path | None,
-        covnet_root: Path,
-        modality: str,
-        metric: str,
+        roi_dir: Path | None = None,
+        exclusion_csv: Path | None = None,
+        covnet_root: Path | None = None,
+        modality: str = "",
+        metric: str = "",
         labels_csv: Path | None = None,
         sex: str | None = None,
+        config_path: Path | None = None,
+        force: bool = False,
     ) -> "CovNetAnalysis":
         """Load ROI data, compute territory means and correlation matrices.
 
         Parameters
         ----------
-        roi_dir : Path
+        roi_dir : Path, optional
             Directory containing ``roi_<metric>_wide.csv`` files.
+            Resolved from config if not provided.
         exclusion_csv : Path or None
             CSV of sessions to exclude.
-        covnet_root : Path
+        covnet_root : Path, optional
             Root output directory for CovNet results.
+            Resolved from config if not provided.
         modality : str
             Modality name (e.g. ``"dwi"``, ``"msme"``, ``"func"``).
         metric : str
@@ -493,11 +591,18 @@ class CovNetAnalysis:
             falls back to the default path on arborea.
         sex : str or None
             If set (``"F"`` or ``"M"``), restrict analysis to one sex.
+        config_path : Path, optional
+            Study config.yaml. Derives roi_dir and covnet_root from
+            ``paths.network.roi`` and ``paths.network.covnet``.
+        force : bool
+            If True, delete existing results before running analyses.
+            If False (default), raise FileExistsError when results exist.
 
         Returns a populated instance ready for save() and run_*() methods.
         """
-        roi_dir = Path(roi_dir)
-        covnet_root = Path(covnet_root)
+        roi_dir, covnet_root = resolve_covnet_paths(
+            config_path, roi_dir, covnet_root
+        )
 
         if labels_csv is None:
             labels_csv = Path(
@@ -513,6 +618,7 @@ class CovNetAnalysis:
         inst = cls(covnet_root, modality, metric)
         inst.roi_dir = roi_dir
         inst.sex = sex
+        inst.force = force
 
         # Phase 1: Load and prepare data
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
@@ -789,6 +895,8 @@ class CovNetAnalysis:
         -------
         dict of NBS results keyed by comparison label.
         """
+        self._check_or_clear("nbs")
+
         if comparisons is None:
             comparisons = self.resolve_comparisons()
 
@@ -994,6 +1102,8 @@ class CovNetAnalysis:
         -------
         DataFrame of territory results.
         """
+        self._check_or_clear("system_connectivity")
+
         if comparisons is None:
             comparisons = self.resolve_comparisons()
 
@@ -1067,6 +1177,8 @@ class CovNetAnalysis:
         -------
         DataFrame of AUC comparison p-values across all requested metrics.
         """
+        self._check_or_clear("graph_metrics")
+
         if densities is None:
             densities = DEFAULT_DENSITIES
         if graph_metrics is None:
@@ -1160,6 +1272,8 @@ class CovNetAnalysis:
         -------
         (DataFrame of results, dict of null distributions)
         """
+        self._check_or_clear("abs_distance")
+
         if comparisons is None:
             comparisons = self.resolve_comparisons()
 
@@ -1241,6 +1355,8 @@ class CovNetAnalysis:
         comparison, distance_fn, d_dose_to_ref, d_ctrl_to_ref, delta,
         p_accelerated, p_decelerated, n_dose, n_ctrl, n_ref, interpretation.
         """
+        self._check_or_clear("rel_distance")
+
         if triplets is None:
             triplets = rel_distance_comparisons(self.group_labels)
 
@@ -1293,6 +1409,8 @@ class CovNetAnalysis:
         -------
         summary_df, per_subject_df
         """
+        self._check_or_clear("subject_rel_distance")
+
         if triplets is None:
             triplets = rel_distance_comparisons(self.group_labels)
 
