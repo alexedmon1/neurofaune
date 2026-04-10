@@ -316,3 +316,483 @@ def run_regression(
             )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Path resolution helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_regression_paths(
+    config_path: Path | None = None,
+    roi_dir: Path | None = None,
+    output_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve ROI and regression output paths from config or args.
+
+    Priority: explicit arguments override config values.
+
+    Parameters
+    ----------
+    config_path : Path, optional
+        Study config.yaml.  Derives roi_dir and output_dir from
+        ``paths.network.roi`` and ``paths.network.regression``.
+    roi_dir : Path, optional
+        Explicit ROI directory override.
+    output_dir : Path, optional
+        Explicit regression output directory override.
+
+    Returns
+    -------
+    (roi_dir, output_dir) : tuple of Path
+    """
+    cfg_roi = None
+    cfg_output = None
+
+    if config_path is not None:
+        from neurofaune.config import load_config, get_config_value
+
+        config = load_config(Path(config_path))
+        cfg_roi = get_config_value(config, "paths.network.roi")
+        cfg_output = get_config_value(config, "paths.network.regression")
+        if cfg_roi is not None:
+            cfg_roi = Path(cfg_roi)
+        if cfg_output is not None:
+            cfg_output = Path(cfg_output)
+
+    resolved_roi = roi_dir if roi_dir is not None else cfg_roi
+    resolved_output = output_dir if output_dir is not None else cfg_output
+
+    if resolved_roi is None:
+        raise ValueError(
+            "ROI directory not specified. Provide config_path or roi_dir."
+        )
+    if resolved_output is None:
+        raise ValueError(
+            "Output directory not specified. Provide config_path or output_dir."
+        )
+
+    return Path(resolved_roi), Path(resolved_output)
+
+
+# ---------------------------------------------------------------------------
+# RegressionAnalysis
+# ---------------------------------------------------------------------------
+
+
+class RegressionAnalysis:
+    """Multivariate dose-response regression analysis.
+
+    Follows the same pattern as ``ClassificationAnalysis``: resolve paths
+    from config, check for existing results before running, and provide a
+    clean Python API that scripts can wrap.
+    """
+
+    def __init__(
+        self,
+        roi_dir: Path,
+        output_dir: Path,
+        metric: str,
+        exclusion_csv: Path | None = None,
+        atlas_labels: Path | None = None,
+        target: str = "dose",
+        force: bool = False,
+    ):
+        self.roi_dir = Path(roi_dir)
+        self.output_dir = Path(output_dir)
+        self.metric = metric
+        self.exclusion_csv = exclusion_csv
+        self.atlas_labels = atlas_labels
+        self.target = target
+        self.force = force
+
+    @classmethod
+    def prepare(
+        cls,
+        config_path: Path | None = None,
+        roi_dir: Path | None = None,
+        output_dir: Path | None = None,
+        metric: str = "FA",
+        exclusion_csv: Path | None = None,
+        atlas_labels: Path | None = None,
+        target: str = "dose",
+        force: bool = False,
+    ) -> "RegressionAnalysis":
+        """Prepare a regression analysis.
+
+        Parameters
+        ----------
+        config_path : Path, optional
+            Study config.yaml.  Derives roi_dir and output_dir from
+            ``paths.network.roi`` and ``paths.network.regression``.
+        roi_dir, output_dir : Path, optional
+            Explicit path overrides.
+        metric : str
+            Metric name (e.g. ``"FA"``).
+        exclusion_csv : Path, optional
+            CSV of sessions to exclude.
+        atlas_labels : Path, optional
+            SIGMA atlas labels CSV for territory mapping in weight plots.
+        target : str
+            Target variable: ``"dose"`` (ordinal C=0..H=3) or any column
+            name from the wide CSV.
+        force : bool
+            If True, delete existing results before running.
+        """
+        resolved_roi, resolved_output = _resolve_regression_paths(
+            config_path, roi_dir, output_dir
+        )
+
+        # Validate wide CSV exists
+        wide_csv = resolved_roi / f"roi_{metric}_wide.csv"
+        if not wide_csv.exists():
+            raise FileNotFoundError(f"Wide CSV not found: {wide_csv}")
+
+        return cls(
+            roi_dir=resolved_roi,
+            output_dir=resolved_output,
+            metric=metric,
+            exclusion_csv=exclusion_csv,
+            atlas_labels=atlas_labels,
+            target=target,
+            force=force,
+        )
+
+    # ------------------------------------------------------------------
+    # Path helpers
+    # ------------------------------------------------------------------
+
+    def _result_dir(
+        self, cohort: str | None = None, feature_set: str = "all"
+    ) -> Path:
+        """Output dir for one combo: ``{output_dir}/{metric}/{cohort}/{feature_set}/``."""
+        cohort_label = cohort or "pooled"
+        if self.target != "dose":
+            return self.output_dir / self.target / self.metric / cohort_label / feature_set
+        return self.output_dir / self.metric / cohort_label / feature_set
+
+    def _check_or_clear(
+        self, cohort: str | None = None, feature_set: str = "all"
+    ) -> None:
+        """Check for existing results; error unless force is set.
+
+        If ``self.force`` is True, removes the target directory for a clean
+        slate.  If False and the directory has result files, raises
+        ``FileExistsError``.
+        """
+        import shutil
+
+        target = self._result_dir(cohort, feature_set)
+        if not target.exists():
+            return
+
+        result_files = [f for f in target.rglob("*") if f.is_file()]
+        if not result_files:
+            return
+
+        if not self.force:
+            file_list = "\n  ".join(str(f) for f in result_files[:10])
+            extra = (
+                f"\n  ... and {len(result_files) - 10} more"
+                if len(result_files) > 10
+                else ""
+            )
+            raise FileExistsError(
+                f"Results already exist at {target} "
+                f"({len(result_files)} files):\n  {file_list}{extra}\n\n"
+                f"Use force=True (or --force) to delete existing results "
+                f"and rerun."
+            )
+
+        logger.warning("--force: removing existing results at %s", target)
+        shutil.rmtree(target)
+
+    # ------------------------------------------------------------------
+    # Main pipeline
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        cohort: str | None = None,
+        feature_set: str = "all",
+        n_permutations: int = 1000,
+        seed: int = 42,
+    ) -> dict:
+        """Run regression pipeline for one metric/cohort/feature_set combo.
+
+        Parameters
+        ----------
+        cohort : str, optional
+            PND cohort filter (e.g. ``"p30"``).  None = pooled.
+        feature_set : str
+            Feature set name (``"all"``, ``"bilateral"``, ``"territory"``).
+        n_permutations : int
+            Number of permutations for the regression test.
+        seed : int
+            Random seed.
+
+        Returns
+        -------
+        dict
+            Summary dictionary with status, metrics, and results.
+        """
+        import json
+
+        from neurofaune.network.classification.data_prep import prepare_regression_data
+
+        self._check_or_clear(cohort, feature_set)
+
+        cohort_label = cohort or "pooled"
+        combo_dir = self._result_dir(cohort, feature_set)
+        wide_csv = self.roi_dir / f"roi_{self.metric}_wide.csv"
+
+        logger.info(
+            "\n%s\n  Metric: %s | Cohort: %s | Features: %s | Target: %s\n%s",
+            "=" * 60, self.metric, cohort_label, feature_set, self.target,
+            "=" * 60,
+        )
+
+        # Phase 1: Data preparation
+        logger.info("[Phase 1] Preparing data...")
+        try:
+            data = prepare_regression_data(
+                wide_csv=wide_csv,
+                feature_set=feature_set,
+                cohort_filter=cohort if cohort else None,
+                exclusion_csv=self.exclusion_csv,
+                target=self.target,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Skipping %s/%s/%s: %s",
+                self.metric, cohort_label, feature_set, exc,
+            )
+            return {"status": "skipped", "reason": str(exc)}
+
+        X, y = data["X"], data["y"]
+        label_names = data["label_names"]
+        feature_names = data["feature_names"]
+        dose_labels = data["dose_labels"]
+        target_name = data["target_name"]
+        n_samples, n_features = X.shape
+        continuous = self.target != "dose"
+
+        if n_samples < 10:
+            logger.warning("Too few samples (n=%d) — skipping", n_samples)
+            return {"status": "skipped", "reason": f"n={n_samples} too small"}
+
+        if len(np.unique(y)) < 2:
+            logger.warning("Fewer than 2 unique target values — skipping")
+            return {"status": "skipped", "reason": "fewer than 2 unique values"}
+
+        summary: dict = {
+            "status": "completed",
+            "metric": self.metric,
+            "cohort": cohort_label,
+            "feature_set": feature_set,
+            "target": self.target,
+            "target_name": target_name,
+            "n_samples": n_samples,
+            "n_features": n_features,
+            "label_names": label_names,
+            "group_sizes": {
+                name: int((dose_labels == i).sum())
+                for i, name in enumerate(label_names)
+            },
+        }
+
+        # Phase 2: Regression
+        use_pca = feature_set == "all"
+        logger.info(
+            "[Phase 2] Regression (LOOCV %s + permutation)...", target_name
+        )
+        reg_dir = combo_dir / "regression"
+        reg_results = run_regression(
+            X, y, label_names, feature_names,
+            n_permutations=n_permutations,
+            seed=seed,
+            output_dir=reg_dir,
+            use_pca=use_pca,
+            continuous_target=continuous,
+            dose_labels=dose_labels,
+            target_name=target_name if continuous else None,
+        )
+
+        # Serialise regression results
+        reg_json: dict = {}
+        for reg_name, result in reg_results.items():
+            reg_json[reg_name] = {
+                "r_squared": result["r_squared"],
+                "mae": result["mae"],
+                "spearman_rho": result["spearman_rho"],
+                "permutation_p_value": result["permutation_p_value"],
+            }
+            if "pca_n_components" in result:
+                reg_json[reg_name]["pca_n_components"] = result[
+                    "pca_n_components"
+                ]
+                reg_json[reg_name]["top_features"] = result["top_features"]
+            summary[f"regression_{reg_name}"] = {
+                "r_squared": result["r_squared"],
+                "mae": result["mae"],
+                "spearman_rho": result["spearman_rho"],
+                "permutation_p_value": result["permutation_p_value"],
+            }
+            if "pca_n_components" in result:
+                summary[f"regression_{reg_name}"]["pca_n_components"] = result[
+                    "pca_n_components"
+                ]
+
+            # Territory-grouped weight plot
+            if "roi_weights" in result and self.atlas_labels is not None:
+                try:
+                    from neurofaune.network.covnet.pipeline import (
+                        build_territory_mapping,
+                    )
+                    from neurofaune.network.classification.visualization import (
+                        plot_territory_weights,
+                    )
+
+                    roi_to_territory = build_territory_mapping(
+                        list(feature_names), self.atlas_labels,
+                    )
+                    plot_territory_weights(
+                        result["roi_weights"],
+                        feature_names,
+                        roi_to_territory,
+                        title=(
+                            f"{reg_name.upper()} — {self.metric} "
+                            f"{cohort_label} weights"
+                        ),
+                        out_path=reg_dir / f"{reg_name}_territory_weights.png",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to plot territory weights for %s: %s",
+                        reg_name, exc,
+                    )
+
+        with open(reg_dir / "regression.json", "w") as f:
+            json.dump(reg_json, f, indent=2)
+
+        # Save per-combo summary
+        combo_dir.mkdir(parents=True, exist_ok=True)
+        with open(combo_dir / "summary.json", "w") as f:
+            json.dump(summary, f, indent=2, default=str)
+
+        return summary
+
+    # ------------------------------------------------------------------
+    # Design description
+    # ------------------------------------------------------------------
+
+    def write_design_description(
+        self,
+        feature_sets: list[str],
+        n_permutations: int,
+        seed: int,
+    ) -> None:
+        """Write human-readable analysis description to output_dir.
+
+        Parameters
+        ----------
+        feature_sets : list[str]
+            Feature sets being analysed (e.g. ``["all", "bilateral"]``).
+        n_permutations : int
+            Number of permutations for the regression test.
+        seed : int
+            Random seed.
+        """
+        from datetime import datetime
+
+        if self.target == "dose":
+            target_desc = "Dose as ordinal: C=0, L=1, M=2, H=3"
+        else:
+            target_desc = f"{self.target} (continuous column from wide CSV)"
+
+        lines = [
+            "ANALYSIS DESCRIPTION",
+            "====================",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Analysis: {self.target.upper() if self.target != 'dose' else 'Dose'}-Response Regression",
+            "",
+            "DATA SOURCE",
+            "-----------",
+            f"ROI directory: {self.roi_dir}",
+            f"Exclusion list: {self.exclusion_csv or 'None'}",
+            f"Metric: {self.metric}",
+            f"Feature sets: {', '.join(feature_sets)}",
+            "",
+            "EXPERIMENTAL DESIGN",
+            "-------------------",
+            f"Target: {target_desc}",
+            "Cohorts analysed: p30, p60, p90, and pooled",
+            "",
+            "FEATURE SETS",
+            "------------",
+        ]
+
+        if "bilateral" in feature_sets:
+            lines.append(
+                "- bilateral: Bilateral-averaged region ROIs (~50 features)"
+            )
+            lines.append("  L/R ROI pairs averaged, territories excluded")
+
+        if "territory" in feature_sets:
+            lines.append("- territory: Territory aggregate ROIs (~15 features)")
+            lines.append("  Coarser anatomical groupings")
+
+        if "all" in feature_sets:
+            lines.append("- all: All individual L/R ROIs (~234 features)")
+            lines.append(
+                "  PCA reduction to 95% variance inside each LOOCV fold"
+            )
+            lines.append(
+                "  Model weights mapped back to ROI space for interpretation"
+            )
+
+        lines.extend([
+            "",
+            "STATISTICAL METHODS",
+            "-------------------",
+            "1. Linear SVR (C=1.0)",
+            "   - Support Vector Regression with linear kernel",
+            "   - Leave-one-out cross-validation",
+            "",
+            "2. Ridge Regression (alpha=1.0)",
+            "   - L2-regularised linear regression",
+            "   - Leave-one-out cross-validation",
+            "",
+            "3. PLS Regression",
+            "   - Partial Least Squares (n_components = min(n_classes-1, n_features, n-1))",
+            "   - Leave-one-out cross-validation",
+            "",
+            "PERMUTATION TESTING",
+            "-------------------",
+            f"- {n_permutations} label shuffles per regressor",
+            "- Null distribution of LOOCV R²",
+            "- Empirical p-value: (n_null >= observed + 1) / (n_perm + 1)",
+            "",
+            "METRICS REPORTED",
+            "----------------",
+            "- R² (coefficient of determination)",
+            "- MAE (mean absolute error)",
+            "- Spearman rho (rank correlation)",
+            "- Permutation p-value for R²",
+            "",
+            "PREPROCESSING",
+            "-------------",
+            "- Z-score standardisation (StandardScaler)",
+            "- Median imputation for remaining NaN values",
+            "- ROIs with >20% zeros or all-NaN excluded",
+            "",
+            "PARAMETERS",
+            "----------",
+            f"Permutations: {n_permutations}",
+            f"Random seed: {seed}",
+        ])
+
+        output_path = self.output_dir / "design_description.txt"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("\n".join(lines))
+        logger.info("Saved analysis description: %s", output_path)

@@ -72,7 +72,7 @@ class ClassificationAnalysis:
 6. Reduce script to thin CLI wrapper
 7. Update README.md with new API
 
-### MR-2: RegressionAnalysis class
+### MR-2: RegressionAnalysis class ✅
 **Files:**
 - `neurofaune/network/regression.py` (module — single function)
 - `scripts/run_regression_analysis.py` (475 lines → ~100)
