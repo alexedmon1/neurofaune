@@ -22,6 +22,16 @@ paths:
   network:
     roi: "${paths.study_root}/network/roi"
     covnet: "${paths.study_root}/network/covnet"
+    classification: "${paths.study_root}/network/classification"
+    regression: "${paths.study_root}/network/regression"
+    mcca: "${paths.study_root}/network/mcca"
+    edge_regression: "${paths.study_root}/network/edge_regression"
+    fc_graph_theory: "${paths.study_root}/network/fc_graph_theory"
+  analysis:
+    tbss: "${paths.study_root}/analysis/tbss"
+    vbm: "${paths.study_root}/analysis/vbm"
+    voxelwise_fmri: "${paths.study_root}/analysis/voxelwise_fmri"
+    mvpa: "${paths.study_root}/analysis/mvpa"
 
 # Atlas configuration
 atlas:
