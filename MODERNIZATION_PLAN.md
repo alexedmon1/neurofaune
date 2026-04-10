@@ -41,7 +41,7 @@ Reference implementation: `neurofaune/network/covnet/pipeline.py`
 
 ## Major Refactors
 
-### MR-1: ClassificationAnalysis class
+### MR-1: ClassificationAnalysis class ✅
 **Files:**
 - `neurofaune/network/classification/` (module — exists, has functions)
 - `scripts/run_classification_analysis.py` (565 lines → ~100)

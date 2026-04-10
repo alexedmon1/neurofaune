@@ -16,8 +16,10 @@ from neurofaune.network.classification.data_prep import (
 from neurofaune.network.classification.lda import run_lda
 from neurofaune.network.classification.omnibus import run_manova, run_permanova
 from neurofaune.network.classification.pca import run_pca
+from neurofaune.network.classification.pipeline import ClassificationAnalysis
 
 __all__ = [
+    "ClassificationAnalysis",
     "prepare_classification_data",
     "prepare_regression_data",
     "run_permanova",

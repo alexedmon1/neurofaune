@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-Multivariate Group Classification Analysis for ROI-level DTI metrics.
+Multivariate group classification analysis (example CLI wrapper).
 
-Runs PERMANOVA, LDA, cross-validated classification (SVM + logistic),
-and PCA visualization per metric, cohort, and feature set. Complements
-TBSS (mass-univariate) and CovNet (correlation structure) with
-multivariate discriminative approaches.
-
-For dose-response regression (SVR, Ridge, PLS), see run_regression_analysis.py.
+Example scripts in scripts/ are reference wrappers. Each study should
+create its own wrapper scripts that import from the library.
 
 Usage:
-    uv run python scripts/run_classification_analysis.py \
-        --roi-dir $STUDY_ROOT/network/roi \
-        --output-dir $STUDY_ROOT/network/classification/dwi \
-        --metrics FA MD AD RD \
-        --feature-sets all \
-        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv \
-        --n-permutations 1000 \
-        --seed 42
+    # Config-driven (recommended)
+    uv run python scripts/run_classification_analysis.py \\
+        --config /path/to/config.yaml \\
+        --metrics FA MD AD RD \\
+        --feature-sets all \\
+        --n-permutations 1000 --seed 42 --force
+
+    # Explicit paths (backwards compatible)
+    uv run python scripts/run_classification_analysis.py \\
+        --roi-dir /path/to/network/roi \\
+        --output-dir /path/to/network/classification/dwi \\
+        --metrics FA MD AD RD --feature-sets all \\
+        --n-permutations 1000 --seed 42
 """
 
 import argparse
@@ -27,15 +28,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neurofaune.network.classification.classifiers import run_classification
-from neurofaune.network.classification.data_prep import prepare_classification_data
-from neurofaune.network.classification.lda import run_lda
-from neurofaune.network.classification.omnibus import run_manova, run_permanova
-from neurofaune.network.classification.pca import run_pca
+from neurofaune.network.classification.pipeline import ClassificationAnalysis
 from neurofaune.analysis.progress import AnalysisProgress
 
 logging.basicConfig(
@@ -44,341 +39,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def run_single_analysis(
-    wide_csv: Path,
-    metric: str,
-    cohort: str,
-    feature_set: str,
-    exclusion_csv: Path,
-    output_dir: Path,
-    n_permutations: int,
-    seed: int,
-    skip_manova: bool,
-    skip_classification: bool,
-    atlas_labels: Path = None,
-    target: str = "dose",
-) -> dict:
-    """Run full classification pipeline for one metric/cohort/feature_set combo."""
-    cohort_label = cohort if cohort else "pooled"
-    if target != "dose":
-        combo_dir = output_dir / target / metric / cohort_label / feature_set
-    else:
-        combo_dir = output_dir / metric / cohort_label / feature_set
-
-    logger.info(
-        "\n%s\n  Metric: %s | Cohort: %s | Features: %s\n%s",
-        "=" * 60, metric, cohort_label, feature_set, "=" * 60,
-    )
-
-    # Phase 1: Data preparation
-    logger.info("[Phase 1] Preparing data...")
-    try:
-        data = prepare_classification_data(
-            wide_csv=wide_csv,
-            feature_set=feature_set,
-            cohort_filter=cohort if cohort else None,
-            exclusion_csv=exclusion_csv,
-        )
-    except ValueError as exc:
-        logger.warning("Skipping %s/%s/%s: %s", metric, cohort_label, feature_set, exc)
-        return {"status": "skipped", "reason": str(exc)}
-
-    X, y = data["X"], data["y"]
-    label_names = data["label_names"]
-    feature_names = data["feature_names"]
-    n_samples, n_features = X.shape
-
-    if n_samples < 10:
-        logger.warning("Too few samples (n=%d) — skipping", n_samples)
-        return {"status": "skipped", "reason": f"n={n_samples} too small"}
-
-    if len(np.unique(y)) < 2:
-        logger.warning("Fewer than 2 groups — skipping")
-        return {"status": "skipped", "reason": "fewer than 2 groups"}
-
-    summary = {
-        "status": "completed",
-        "metric": metric,
-        "cohort": cohort_label,
-        "feature_set": feature_set,
-        "n_samples": n_samples,
-        "n_features": n_features,
-        "label_names": label_names,
-        "group_sizes": {
-            name: int((y == i).sum()) for i, name in enumerate(label_names)
-        },
-    }
-
-    # Phase 2: PERMANOVA
-    logger.info("[Phase 2] PERMANOVA...")
-    omnibus_dir = combo_dir / "omnibus"
-    omnibus_dir.mkdir(parents=True, exist_ok=True)
-
-    permanova = run_permanova(X, y, label_names, n_perm=min(n_permutations * 10, 9999), seed=seed)
-    summary["permanova"] = {
-        "pseudo_f": permanova["pseudo_f"],
-        "p_value": permanova["p_value"],
-        "r_squared": permanova["r_squared"],
-    }
-
-    # Save PERMANOVA results
-    permanova_out = {k: v for k, v in permanova.items() if k != "null_distribution"}
-    with open(omnibus_dir / "permanova.json", "w") as f:
-        json.dump(permanova_out, f, indent=2)
-
-    # Permutation null plot
-    from neurofaune.network.classification.visualization import plot_permutation_distribution
-    plot_permutation_distribution(
-        permanova["null_distribution"],
-        permanova["pseudo_f"],
-        permanova["p_value"],
-        title=f"PERMANOVA — {metric} {cohort_label} {feature_set}",
-        xlabel="Pseudo-F",
-        out_path=omnibus_dir / "permanova_null.png",
-    )
-
-    # Optional MANOVA
-    if not skip_manova:
-        logger.info("[Phase 2b] MANOVA (optional)...")
-        manova = run_manova(X, y, label_names, feature_names)
-        if manova is not None:
-            summary["manova"] = manova
-            with open(omnibus_dir / "manova.json", "w") as f:
-                json.dump(manova, f, indent=2)
-
-    # Phase 3: PCA
-    logger.info("[Phase 3] PCA...")
-    pca_dir = combo_dir / "pca"
-    pca_results = run_pca(X, y, label_names, feature_names, pca_dir)
-    summary["pca"] = {
-        "n_components_95pct": pca_results["n_components_95pct"],
-        "pc1_variance": float(pca_results["explained_variance_ratio"][0]),
-        "pc2_variance": float(pca_results["explained_variance_ratio"][1])
-        if len(pca_results["explained_variance_ratio"]) > 1 else 0.0,
-    }
-
-    # Phase 4: LDA
-    logger.info("[Phase 4] LDA...")
-    lda_dir = combo_dir / "lda"
-    lda_results = run_lda(X, y, label_names, feature_names, lda_dir)
-    summary["lda"] = {
-        "n_discriminants": len(lda_results["explained_variance_ratio"]),
-        "ld1_variance": float(lda_results["explained_variance_ratio"][0]),
-        "top_features_ld1": lda_results["top_features"].get("LD1", [])[:5],
-    }
-
-    # Save LDA results (serialisable parts)
-    lda_json = {
-        "explained_variance_ratio": lda_results["explained_variance_ratio"].tolist(),
-        "top_features": lda_results["top_features"],
-    }
-    with open(lda_dir / "results.json", "w") as f:
-        json.dump(lda_json, f, indent=2)
-
-    # Phase 5: Classification
-    use_pca = feature_set == "all"
-    if not skip_classification:
-        logger.info("[Phase 5] Classification (LOOCV + permutation)...")
-        clf_dir = combo_dir / "classification"
-        clf_results = run_classification(
-            X, y, label_names, feature_names,
-            n_permutations=n_permutations,
-            seed=seed,
-            output_dir=clf_dir,
-            use_pca=use_pca,
-        )
-
-        # Serialise classification results
-        clf_json = {}
-        for clf_name, result in clf_results.items():
-            clf_json[clf_name] = {
-                "accuracy": result["accuracy"],
-                "balanced_accuracy": result["balanced_accuracy"],
-                "permutation_p_value": result["permutation_p_value"],
-                "per_class_accuracy": result["per_class_accuracy"],
-                "confusion_matrix": result["confusion_matrix"].tolist(),
-            }
-            if "pca_n_components" in result:
-                clf_json[clf_name]["pca_n_components"] = result["pca_n_components"]
-                clf_json[clf_name]["top_features"] = result["top_features"]
-            summary[f"classification_{clf_name}"] = {
-                "accuracy": result["accuracy"],
-                "balanced_accuracy": result["balanced_accuracy"],
-                "permutation_p_value": result["permutation_p_value"],
-            }
-            if "pca_n_components" in result:
-                summary[f"classification_{clf_name}"]["pca_n_components"] = result["pca_n_components"]
-
-            # Territory-grouped weight plot
-            if "roi_weights" in result and atlas_labels is not None:
-                try:
-                    from neurofaune.network.covnet.pipeline import build_territory_mapping
-                    from neurofaune.network.classification.visualization import plot_territory_weights
-
-                    roi_to_territory = build_territory_mapping(list(feature_names), atlas_labels)
-                    plot_territory_weights(
-                        result["roi_weights"], feature_names, roi_to_territory,
-                        title=f"{clf_name.upper()} — {metric} {cohort_label} weights",
-                        out_path=clf_dir / f"{clf_name}_territory_weights.png",
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to plot territory weights for %s: %s", clf_name, exc)
-
-        with open(clf_dir / "classification.json", "w") as f:
-            json.dump(clf_json, f, indent=2)
-    else:
-        logger.info("[Phase 5] Skipping classification (--skip-classification)")
-
-    # Save per-combo summary
-    with open(combo_dir / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2, default=str)
-
-    return summary
-
-
-def write_design_description(args: argparse.Namespace, output_path: Path) -> None:
-    """Write a human-readable description of the classification analysis design."""
-    lines = [
-        "ANALYSIS DESCRIPTION",
-        "====================",
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "Analysis: Multivariate Group Classification",
-        "",
-        "DATA SOURCE",
-        "-----------",
-        f"ROI directory: {args.roi_dir}",
-        f"Exclusion list: {args.exclusion_csv or 'None'}",
-        f"Metrics: {', '.join(args.metrics)}",
-        f"Feature sets: {', '.join(args.feature_sets)}",
-        "",
-        "EXPERIMENTAL DESIGN",
-        "-------------------",
-        f"Grouping: {args.target} ({'C, L, M, H — 4 groups' if args.target == 'dose' else 'from wide CSV column'})",
-        "Cohorts analysed: p30, p60, p90, and pooled",
-        "",
-        "FEATURE SETS",
-        "------------",
-    ]
-
-    if "bilateral" in args.feature_sets:
-        lines.append("- bilateral: Bilateral-averaged region ROIs (~50 features)")
-        lines.append("  L/R ROI pairs averaged, territories excluded")
-
-    if "territory" in args.feature_sets:
-        lines.append("- territory: Territory aggregate ROIs (~15 features)")
-        lines.append("  Coarser anatomical groupings")
-
-    if "all" in args.feature_sets:
-        lines.append("- all: All individual L/R ROIs (~234 features)")
-        lines.append("  PCA reduction to 95% variance inside each LOOCV fold")
-        lines.append("  Model weights mapped back to ROI space for interpretation")
-
-    lines.extend([
-        "",
-        "STATISTICAL METHODS",
-        "-------------------",
-        "1. PERMANOVA (Permutational MANOVA)",
-        "   - Non-parametric omnibus test using Euclidean distances",
-        f"   - Permutations: up to {min(args.n_permutations * 10, 9999)}",
-        "   - Reports pseudo-F, R², and permutation p-value",
-        "",
-    ])
-
-    if not args.skip_manova:
-        lines.extend([
-            "2. MANOVA (optional, if statsmodels available)",
-            "   - Parametric complement to PERMANOVA",
-            "   - Pillai's trace (most robust to violations)",
-            "",
-        ])
-
-    lines.extend([
-        "3. PCA (Principal Component Analysis)",
-        "   - Unsupervised dimensionality reduction",
-        "   - PC1 vs PC2 scatter with 95% confidence ellipses",
-        "   - Scree plot and feature loading charts",
-        "",
-        "4. LDA (Linear Discriminant Analysis)",
-        "   - Supervised dimensionality reduction",
-        "   - Maximises between-group separation",
-        "   - 3 discriminant functions for 4 dose groups",
-        "   - Structure correlations for feature interpretation",
-        "",
-    ])
-
-    if not args.skip_classification:
-        lines.extend([
-            "5. Classification (LOOCV + permutation test)",
-            "   - Linear SVM (C=1.0) and multinomial logistic regression",
-            "   - Leave-one-out cross-validation (standard for n < 100)",
-            f"   - Permutation test: {args.n_permutations} shuffles",
-            "   - Reports accuracy, balanced accuracy, confusion matrix",
-            "",
-        ])
-
-    lines.extend([
-        "PREPROCESSING",
-        "-------------",
-        "- Z-score standardisation (StandardScaler)",
-        "- Median imputation for remaining NaN values",
-        "- ROIs with >20% zeros or all-NaN excluded",
-        "",
-        "PARAMETERS",
-        "----------",
-        f"Permutations (classification): {args.n_permutations}",
-        f"Permutations (PERMANOVA): up to {min(args.n_permutations * 10, 9999)}",
-        f"Random seed: {args.seed}",
-        "",
-        "NOTE: For dose-response regression (SVR, Ridge, PLS), see",
-        "run_regression_analysis.py",
-    ])
-
-    output_path.write_text("\n".join(lines))
-    logger.info("Saved analysis description: %s", output_path)
+SCRIPT_NAME = "run_classification_analysis.py"
+COHORTS = [None, "p30", "p60", "p90"]
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Multivariate Group Classification Analysis for ROI-level DTI metrics"
+        description="Multivariate group classification analysis"
     )
     parser.add_argument(
-        "--roi-dir", type=Path, required=True,
+        "--config", type=Path, default=None,
+        help="Path to study config.yaml (derives --roi-dir and --output-dir)",
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, default=None,
         help="Directory containing roi_*_wide.csv files",
     )
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
+        "--output-dir", type=Path, default=None,
         help="Output directory for classification results",
     )
     parser.add_argument(
         "--metrics", nargs="+", default=["FA", "MD", "AD", "RD"],
-        help="DTI metrics to analyse (default: FA MD AD RD)",
+        help="Metrics to analyse (default: FA MD AD RD)",
     )
     parser.add_argument(
         "--feature-sets", nargs="+", default=["all"],
         choices=["bilateral", "territory", "all"],
-        help="Feature sets to analyse (default: all)",
+        help="Feature sets (default: all)",
     )
     parser.add_argument(
         "--exclusion-csv", type=Path, default=None,
-        help="CSV of sessions to exclude (must have subject, session columns)",
+        help="CSV of sessions to exclude",
     )
     parser.add_argument(
         "--atlas-labels", type=Path,
-        default=Path("/mnt/arborea/atlases/SIGMA/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"),
-        help="SIGMA atlas labels CSV for territory mapping in weight plots",
+        default=Path(
+            "/mnt/arborea/atlases/SIGMA/"
+            "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
+        ),
+        help="SIGMA atlas labels CSV for territory weight plots",
     )
     parser.add_argument(
         "--n-permutations", type=int, default=1000,
-        help="Number of permutations for classification test (default: 1000)",
+        help="Number of permutations (default: 1000)",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
-        help="Random seed for reproducibility",
+        help="Random seed",
     )
     parser.add_argument(
         "--target", type=str, default="dose",
-        help="Target variable for group labels: 'dose' (C/L/M/H) or any column name from the wide CSV",
+        help="Group variable: 'dose' or column name from wide CSV",
     )
     parser.add_argument(
         "--skip-manova", action="store_true",
@@ -386,102 +98,98 @@ def main():
     )
     parser.add_argument(
         "--skip-classification", action="store_true",
-        help="Skip LOOCV classification (only run PERMANOVA, PCA, LDA)",
+        help="Skip LOOCV classification",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Delete existing results before running",
     )
 
     args = parser.parse_args()
 
-    # Validate inputs
-    if not args.roi_dir.exists():
-        logger.error("ROI directory not found: %s", args.roi_dir)
-        sys.exit(1)
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save analysis configuration
-    config = {
-        "roi_dir": str(args.roi_dir),
-        "exclusion_csv": str(args.exclusion_csv) if args.exclusion_csv else None,
-        "output_dir": str(args.output_dir),
-        "metrics": args.metrics,
-        "feature_sets": args.feature_sets,
-        "target": args.target,
-        "atlas_labels": str(args.atlas_labels),
-        "n_permutations": args.n_permutations,
-        "seed": args.seed,
-        "skip_manova": args.skip_manova,
-        "skip_classification": args.skip_classification,
-        "timestamp": datetime.now().isoformat(),
-    }
-    with open(args.output_dir / "analysis_config.json", "w") as f:
-        json.dump(config, f, indent=2)
-
-    write_design_description(args, args.output_dir / "design_description.txt")
-
-    # Cohorts to analyse: each individually + pooled
-    cohorts = [None, "p30", "p60", "p90"]
+    if not args.config and not (args.roi_dir and args.output_dir):
+        parser.error("Provide --config or both --roi-dir and --output-dir")
 
     all_summaries = {}
     n_significant_permanova = 0
     best_accuracy = 0.0
     total_n_subjects = 0
 
-    total_tasks = len(args.metrics) * len(cohorts) * len(args.feature_sets)
-    progress = AnalysisProgress(args.output_dir, "run_classification_analysis.py", total_tasks)
+    total_tasks = len(args.metrics) * len(COHORTS) * len(args.feature_sets)
+    first_analysis = None
     completed = 0
-    failed = 0
 
     for metric in args.metrics:
-        wide_csv = args.roi_dir / f"roi_{metric}_wide.csv"
-        if not wide_csv.exists():
-            logger.warning("Wide CSV not found: %s, skipping %s", wide_csv, metric)
-            failed += len(cohorts) * len(args.feature_sets)
-            progress.update(task=metric, phase="skipped — CSV not found", completed=completed, failed=failed)
+        try:
+            analysis = ClassificationAnalysis.prepare(
+                config_path=args.config,
+                roi_dir=args.roi_dir,
+                output_dir=args.output_dir,
+                metric=metric,
+                exclusion_csv=args.exclusion_csv,
+                atlas_labels=args.atlas_labels,
+                target=args.target,
+                force=args.force,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning("Skipping %s: %s", metric, e)
             continue
 
+        if first_analysis is None:
+            first_analysis = analysis
+            analysis.write_design_description(
+                feature_sets=args.feature_sets,
+                n_permutations=args.n_permutations,
+                seed=args.seed,
+                skip_manova=args.skip_manova,
+                skip_classification=args.skip_classification,
+            )
+
+        progress = AnalysisProgress(
+            analysis.output_dir, SCRIPT_NAME, total_tasks
+        )
         metric_summaries = {}
 
-        for cohort in cohorts:
+        for cohort in COHORTS:
             for feature_set in args.feature_sets:
-                cohort_label = cohort if cohort else "pooled"
+                cohort_label = cohort or "pooled"
                 key = f"{cohort_label}_{feature_set}"
 
                 progress.update(
                     task=f"{metric} / {cohort_label} / {feature_set}",
                     phase="running",
                     completed=completed,
-                    failed=failed,
                 )
 
-                summary = run_single_analysis(
-                    wide_csv=wide_csv,
-                    metric=metric,
+                summary = analysis.run(
                     cohort=cohort,
                     feature_set=feature_set,
-                    exclusion_csv=args.exclusion_csv,
-                    output_dir=args.output_dir,
                     n_permutations=args.n_permutations,
                     seed=args.seed,
                     skip_manova=args.skip_manova,
                     skip_classification=args.skip_classification,
-                    atlas_labels=args.atlas_labels,
-                    target=args.target,
                 )
                 metric_summaries[key] = summary
                 completed += 1
 
-                # Track global stats
                 if summary.get("status") == "completed":
-                    total_n_subjects = max(total_n_subjects, summary.get("n_samples", 0))
+                    total_n_subjects = max(
+                        total_n_subjects, summary.get("n_samples", 0)
+                    )
                     perm_p = summary.get("permanova", {}).get("p_value", 1.0)
                     if perm_p < 0.05:
                         n_significant_permanova += 1
-                    acc = summary.get("classification_svm", {}).get("accuracy", 0.0)
+                    acc = summary.get("classification_svm", {}).get(
+                        "accuracy", 0.0
+                    )
                     best_accuracy = max(best_accuracy, acc)
 
         all_summaries[metric] = metric_summaries
 
-    # Save overall summary
+    if first_analysis is None:
+        logger.error("No metrics could be prepared")
+        sys.exit(1)
+
     overall = {
         "metrics": args.metrics,
         "feature_sets": args.feature_sets,
@@ -492,72 +200,24 @@ def main():
         "per_metric": all_summaries,
     }
 
-    summary_path = args.output_dir / "classification_summary.json"
+    summary_path = first_analysis.output_dir / "classification_summary.json"
     with open(summary_path, "w") as f:
         json.dump(overall, f, indent=2, default=str)
-    logger.info("Saved overall summary: %s", summary_path)
 
     progress.finish()
 
-    # Write provenance tracking
-    try:
-        from neurofaune.analysis.provenance import write_roi_provenance
-
-        write_roi_provenance(
-            output_dir=args.output_dir,
-            roi_dir=args.roi_dir,
-            metrics=args.metrics,
-            exclusion_csv=args.exclusion_csv,
-            n_subjects=total_n_subjects,
-            analysis_type="classification",
-            extra={"feature_sets": args.feature_sets},
-        )
-    except Exception as exc:
-        logger.warning("Failed to write provenance: %s", exc)
-
-    # Register with unified reporting system
-    try:
-        from neurofaune.reporting import register as report_register
-
-        analysis_root = args.output_dir.parents[1]
-
-        # Collect figure paths
-        figures = []
-        for fig in sorted(args.output_dir.rglob("*.png"))[:20]:
-            try:
-                figures.append(str(fig.relative_to(analysis_root)))
-            except ValueError:
-                pass
-
-        report_register(
-            analysis_root=analysis_root,
-            entry_id="classification",
-            analysis_type="classification",
-            display_name=f"Multivariate Classification ({', '.join(args.metrics)})",
-            output_dir=str(args.output_dir.relative_to(analysis_root)),
-            summary_stats={
-                "metrics": args.metrics,
-                "feature_sets": args.feature_sets,
-                "n_subjects": total_n_subjects,
-                "n_significant_permanova": n_significant_permanova,
-                "best_classification_accuracy": round(best_accuracy, 3),
-            },
-            figures=figures,
-            source_summary_json=str(summary_path.relative_to(analysis_root)),
-            config=config,
-        )
-    except Exception as exc:
-        logger.warning("Failed to register with reporting system: %s", exc)
-
-    # Generate findings summary
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        findings = summarize_analysis("classification", summary_path, output_dir=args.output_dir)
-        logger.info("Findings: %s", findings.summary_text)
+        summarize_analysis(
+            "classification", summary_path,
+            output_dir=first_analysis.output_dir,
+        )
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
-    logger.info("\nClassification analysis complete. Results in: %s", args.output_dir)
+    logger.info(
+        "\nClassification complete. Results in: %s", first_analysis.output_dir
+    )
 
 
 if __name__ == "__main__":
