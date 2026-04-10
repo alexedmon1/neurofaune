@@ -19,6 +19,9 @@ paths:
   transforms: "${paths.study_root}/transforms"
   qc: "${paths.study_root}/qc"
   work: "${paths.study_root}/work"
+  network:
+    roi: "${paths.study_root}/network/roi"
+    covnet: "${paths.study_root}/network/covnet"
 
 # Atlas configuration
 atlas:
