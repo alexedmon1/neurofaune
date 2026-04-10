@@ -7,25 +7,32 @@ territory (coarse anatomical grouping) level with FDR correction.
 Useful as a post-hoc tool to visualise which broad brain systems
 drive NBS or whole-network differences.
 
+Example scripts in scripts/ are reference CLI wrappers. Each study
+should create its own wrapper scripts that import from the library.
+
 Usage:
-    uv run python scripts/run_covnet_territory.py \
-        --roi-dir $STUDY_ROOT/network/roi \
-        --output-dir $STUDY_ROOT/network/covnet \
-        --modality dwi \
-        --metrics FA MD AD RD \
-        --exclusion-csv $STUDY_ROOT/dti_nonstandard_slices.csv
+    # Config-driven (recommended)
+    uv run python scripts/run_covnet_territory.py \\
+        --config /path/to/config.yaml \\
+        --modality dwi --metrics FA MD AD RD --force
+
+    # Explicit paths (backwards compatible)
+    uv run python scripts/run_covnet_territory.py \\
+        --roi-dir /path/to/network/roi \\
+        --output-dir /path/to/network/covnet \\
+        --modality dwi --metrics FA MD AD RD
 """
 
 import argparse
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neurofaune.network.covnet import CovNetAnalysis
+from neurofaune.network.covnet.pipeline import resolve_covnet_paths
 from neurofaune.analysis.progress import AnalysisProgress
 
 logging.basicConfig(
@@ -34,17 +41,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCRIPT_NAME = "run_covnet_territory.py"
+ANALYSIS_NAME = "system_connectivity"
+SUMMARY_PREFIX = "territory_summary"
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="CovNet territory-level edge comparison (post-hoc)"
     )
     parser.add_argument(
-        "--roi-dir", type=Path, required=True,
+        "--config", type=Path, default=None,
+        help="Path to study config.yaml (derives --roi-dir and --output-dir)",
+    )
+    parser.add_argument(
+        "--roi-dir", type=Path, default=None,
         help="Directory containing roi_*_wide.csv files",
     )
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
+        "--output-dir", type=Path, default=None,
         help="Root output directory for CovNet results",
     )
     parser.add_argument(
@@ -71,22 +86,34 @@ def main():
         "--sex", choices=["F", "M"], default=None,
         help="Run analysis for one sex only",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Delete existing results before running",
+    )
 
     args = parser.parse_args()
 
-    if not args.roi_dir.exists():
-        logger.error("ROI directory not found: %s", args.roi_dir)
-        sys.exit(1)
+    if not args.config and not (args.roi_dir and args.output_dir):
+        parser.error("Provide --config or both --roi-dir and --output-dir")
 
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    roi_dir, covnet_root = resolve_covnet_paths(
+        config_path=args.config, roi_dir=args.roi_dir, covnet_root=args.output_dir
+    )
+
+    if not roi_dir.exists():
+        logger.error("ROI directory not found: %s", roi_dir)
+        sys.exit(1)
 
     comp_types = ["dose"]
     if not args.skip_cross_timepoint:
         comp_types.extend(["cross-timepoint", "cross-dose-timepoint"])
 
+    variant = "pooled" if args.sex is None else f"sex_stratified/{args.sex}"
+    progress_dir = covnet_root / ANALYSIS_NAME / variant
+    progress_dir.mkdir(parents=True, exist_ok=True)
+
     progress = AnalysisProgress(
-        output_dir, "run_covnet_territory.py", len(args.metrics)
+        progress_dir, SCRIPT_NAME, len(args.metrics)
     )
     all_summaries = {}
     completed = 0
@@ -97,9 +124,15 @@ def main():
 
         try:
             analysis = CovNetAnalysis.prepare(
-                args.roi_dir, args.exclusion_csv, output_dir,
-                args.modality, metric, labels_csv=args.labels_csv,
+                config_path=args.config,
+                roi_dir=args.roi_dir,
+                covnet_root=args.output_dir,
+                modality=args.modality,
+                metric=metric,
+                labels_csv=args.labels_csv,
+                exclusion_csv=args.exclusion_csv,
                 sex=args.sex,
+                force=args.force,
             )
             analysis.save()
 
@@ -129,18 +162,18 @@ def main():
         pass
 
     sex_suffix = f"_{args.sex}" if args.sex else ""
-    summary_path = output_dir / f"territory_summary_{args.modality}{sex_suffix}.json"
+    summary_path = progress_dir / f"{SUMMARY_PREFIX}_{args.modality}{sex_suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(all_summaries, f, indent=2)
 
     try:
         from neurofaune.reporting.summarize import summarize_analysis
-        summarize_analysis("covnet_territory", summary_path, output_dir=output_dir)
+        summarize_analysis("covnet_territory", summary_path, output_dir=progress_dir)
     except Exception as exc:
         logger.warning("Failed to generate findings summary: %s", exc)
 
     progress.finish()
-    logger.info("\nTerritory analysis complete. Results in: %s", output_dir)
+    logger.info("\nTerritory analysis complete. Results in: %s", covnet_root)
 
 
 if __name__ == "__main__":
