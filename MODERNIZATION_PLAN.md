@@ -126,7 +126,7 @@ class MCCAAnalysis:
 5. Add force/config pattern
 6. Reduce script
 
-### MR-4: MVPAAnalysis class
+### MR-4: MVPAAnalysis class ✅
 **Files:**
 - `neurofaune/analysis/mvpa.py` (if exists) or new module
 - `scripts/run_mvpa_analysis.py` (667 lines → ~100)

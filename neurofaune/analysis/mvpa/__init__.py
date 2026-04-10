@@ -6,6 +6,7 @@ DTI metrics. Complements ROI-level classification with spatially-resolved
 pattern analysis.
 
 Public API:
+    MVPAAnalysis: Pipeline class for running MVPA analyses.
     discover_sigma_images: Find SIGMA-space NIfTIs in derivatives tree.
     load_mvpa_data: Stack images into 4D volume for analysis.
     load_design: Load NeuroAider design matrix.
@@ -20,10 +21,12 @@ from neurofaune.analysis.mvpa.data_loader import (
     load_design,
     load_mvpa_data,
 )
+from neurofaune.analysis.mvpa.pipeline import MVPAAnalysis
 from neurofaune.analysis.mvpa.searchlight import run_searchlight
 from neurofaune.analysis.mvpa.whole_brain import run_whole_brain_decoding
 
 __all__ = [
+    "MVPAAnalysis",
     "discover_sigma_images",
     "load_mvpa_data",
     "load_design",
