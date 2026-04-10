@@ -150,7 +150,7 @@ class MVPAAnalysis:
 4. Add force/config pattern
 5. Reduce script
 
-### MR-5: RandomiseAnalysis base class (VBM + Voxelwise fMRI)
+### MR-5: RandomiseAnalysis base class (VBM + Voxelwise fMRI) ✅
 **Files:**
 - `neurofaune/analysis/randomise_analysis.py` (NEW — shared base class)
 - `neurofaune/analysis/vbm.py` or `vbm_analysis.py` (may need creation)
