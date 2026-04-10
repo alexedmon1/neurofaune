@@ -28,7 +28,6 @@ import argparse
 import hashlib
 import json
 import logging
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -454,16 +453,10 @@ Output structure:
                         help='Random seed for reproducibility')
     parser.add_argument('--skip-existing', action='store_true',
                         help='Skip metrics that already have randomise output')
-    parser.add_argument('--force', action='store_true',
-                        help='Delete existing randomise output before running')
     parser.add_argument('--parcellation', type=Path,
                         help='Override SIGMA parcellation NIfTI')
 
     args = parser.parse_args()
-
-    if args.skip_existing and args.force:
-        print("ERROR: --skip-existing and --force are mutually exclusive", file=sys.stderr)
-        sys.exit(1)
 
     vbm_dir = args.vbm_dir
     if not vbm_dir.exists():
@@ -537,12 +530,6 @@ Output structure:
     failed = 0
 
     for analysis in args.analyses:
-        if args.force:
-            force_dir = vbm_dir / "randomise" / analysis
-            if force_dir.exists():
-                logger.warning(f"--force: deleting existing output {force_dir}")
-                shutil.rmtree(force_dir)
-
         progress.update(task=analysis, phase="running randomise", completed=completed, failed=failed)
 
         try:

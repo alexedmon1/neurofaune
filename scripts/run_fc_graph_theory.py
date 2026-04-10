@@ -24,7 +24,6 @@ Usage:
 import argparse
 import json
 import logging
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -63,16 +62,8 @@ def main():
         help="Directory with fc_matrices.npy, fc_subjects.csv, fc_roi_labels.csv",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=None,
+        "--output-dir", type=Path, required=True,
         help="Output directory for results",
-    )
-    parser.add_argument(
-        "--config", type=Path, default=None,
-        help="Path to study config.yaml",
-    )
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Delete existing results before running",
     )
     parser.add_argument(
         "--graph-metrics", nargs="+", default=None,
@@ -105,15 +96,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Derive output-dir from config if not provided
-    if args.config and not args.output_dir:
-        from neurofaune.config import load_config, get_config_value
-        _cfg = load_config(args.config)
-        args.output_dir = Path(get_config_value(_cfg, "paths.network.fc_graph_theory"))
-
-    if not args.output_dir:
-        parser.error("--output-dir is required when --config is not provided")
-
     if args.list_graph_metrics:
         print("Available graph metrics:")
         for name, (_func, desc) in METRIC_REGISTRY.items():
@@ -134,16 +116,6 @@ def main():
     cohorts = args.cohorts or [None, "p30", "p60", "p90"]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    # --force: delete existing contents (cohort subdirs and result files)
-    if args.force:
-        for item in args.output_dir.iterdir():
-            if item.is_dir():
-                logger.warning("--force: deleting existing output %s", item)
-                shutil.rmtree(item)
-            elif item.suffix in ('.csv', '.npz', '.json'):
-                logger.warning("--force: deleting existing file %s", item)
-                item.unlink()
 
     # Save config
     config = {
