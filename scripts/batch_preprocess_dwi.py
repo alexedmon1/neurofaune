@@ -45,6 +45,7 @@ import numpy as np
 # Add neurofaune to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from neurofaune.analysis.provenance import write_batch_run_manifest
 from neurofaune.config import load_config
 from neurofaune.preprocess.workflows.dwi_preprocess import run_dwi_preprocessing
 from neurofaune.utils.transforms import TransformRegistry
@@ -484,12 +485,6 @@ def main():
     print(f"Processing {len(valid_files)} files...")
     print("=" * 70)
 
-    # Create log directory
-    log_dir = Path('/tmp/dwi_batch_preprocessing')
-    log_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    results_file = log_dir / f'batch_results_{timestamp}.json'
-
     results = {'success': 0, 'skipped': 0, 'error': 0, 'details': []}
 
     for i, (subject, session, dwi_path, geom) in enumerate(valid_files):
@@ -523,9 +518,25 @@ def main():
         else:
             print(f"  ✗ Error: {result['reason']}")
 
-        # Save intermediate results
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=2, default=str)
+    # Write batch run manifest
+    # DWI result dicts use 'error' for failed status and 'reason' for the message;
+    # normalise so the manifest picks them up correctly.
+    session_results_normalised = []
+    for r in results['details']:
+        entry = dict(r)
+        if entry.get('status') == 'error':
+            entry['status'] = 'failed'
+            entry['error'] = entry.get('reason', '')
+        if 'key' not in entry:
+            entry['key'] = f"{entry.get('subject', '?')}_{entry.get('session', '?')}"
+        session_results_normalised.append(entry)
+
+    json_path, txt_path = write_batch_run_manifest(
+        output_dir=args.output_root / "logs" / "dwi_preprocess",
+        analysis_name="dwi_preprocess",
+        parameters=vars(args),
+        session_results=session_results_normalised,
+    )
 
     # Summary
     print("\n" + "=" * 70)
@@ -534,7 +545,8 @@ def main():
     print(f"  Success: {results['success']}")
     print(f"  Skipped: {results['skipped']}")
     print(f"  Errors:  {results['error']}")
-    print(f"\nResults saved to: {results_file}")
+    print(f"  Manifest (txt) : {txt_path}")
+    print(f"  Manifest (json): {json_path}")
 
     if results['error'] > 0:
         print("\nFailed subjects:")

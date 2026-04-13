@@ -85,7 +85,8 @@ def compute_reho_map(func_file: Path,
                      output_dir: Path,
                      subject: str,
                      session: str,
-                     neighborhood: int = 27) -> dict:
+                     neighborhood: int = 27,
+                     scrub_indices: Optional[np.ndarray] = None) -> dict:
     """
     Compute ReHo (Regional Homogeneity) map for whole brain.
 
@@ -103,6 +104,11 @@ def compute_reho_map(func_file: Path,
         Session ID (e.g., 'ses-p90').
     neighborhood : int
         Neighborhood size: 7 (faces), 19 (faces+edges), or 27 (full cube).
+    scrub_indices : np.ndarray, optional
+        Indices of volumes to remove before computing KCC. Unlike fALFF,
+        ReHo does not require uniform temporal sampling so volumes are simply
+        dropped rather than interpolated. Typically obtained from
+        get_scrub_indices() in motion_qc.
 
     Returns
     -------
@@ -131,6 +137,20 @@ def compute_reho_map(func_file: Path,
 
     nx, ny, nz, nt = func_data.shape
     print(f"  Dimensions: {nx} x {ny} x {nz} x {nt} timepoints")
+
+    # Volume scrubbing: drop bad volumes before KCC computation.
+    # ReHo uses rank-based concordance so dropping volumes is safe — no
+    # interpolation needed (unlike FFT-based fALFF).
+    n_scrubbed = 0
+    if scrub_indices is not None and len(scrub_indices) > 0:
+        valid_scrub = scrub_indices[(scrub_indices >= 0) & (scrub_indices < nt)]
+        n_scrubbed = len(valid_scrub)
+        if n_scrubbed > 0:
+            good_mask = np.ones(nt, dtype=bool)
+            good_mask[valid_scrub] = False
+            func_data = func_data[:, :, :, good_mask]
+            nt = func_data.shape[3]
+            print(f"  Scrubbed {n_scrubbed} bad volumes, {nt} remaining")
 
     mask_data = nib.load(mask_file).get_fdata().astype(bool)
     n_brain = int(np.sum(mask_data))
@@ -187,6 +207,7 @@ def compute_reho_map(func_file: Path,
             'neighborhood': neighborhood,
             'n_brain_voxels': n_brain,
             'n_timepoints': nt,
+            'n_scrubbed': n_scrubbed,
         },
     }
 

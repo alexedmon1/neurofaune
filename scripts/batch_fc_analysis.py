@@ -24,12 +24,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from neurofaune.analysis.provenance import write_batch_run_manifest
 from neurofaune.network.functional import (
     compute_fc_matrix,
     extract_roi_timeseries,
     save_fc_matrix,
 )
 from neurofaune.config import get_config_value, load_config
+from neurofaune.preprocess.qc.func.motion_qc import compute_fd_from_confounds, get_scrub_indices
 from neurofaune.preprocess.workflows.func_preprocess import register_bold_to_template
 from neurofaune.templates.registration import warp_bold_to_sigma
 
@@ -72,6 +74,7 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
             continue
 
         mask = func_dir / f"{subject}_{session}_desc-brain_mask.nii.gz"
+        confounds = func_dir / f"{subject}_{session}_desc-confounds_timeseries.tsv"
 
         if not mask.exists():
             print(f"  Warning: Skipping {subject}/{session} — missing mask")
@@ -111,6 +114,7 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
             "derivatives_dir": func_dir,
             "preproc_bold": preproc_bold,
             "mask": mask,
+            "confounds": confounds if confounds.exists() else None,
             "sigma_bold": sigma_bold,
             # Transform paths (raw, for building chain after registration)
             "study_root": study_root,
@@ -127,7 +131,9 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
 
 
 def process_session(session_info: dict, config: dict,
-                    force: bool = False) -> dict:
+                    force: bool = False,
+                    scrub_threshold: float = None,
+                    min_clean_volumes: int = 0) -> dict:
     """
     Run functional connectivity analysis for a single session.
 
@@ -142,6 +148,13 @@ def process_session(session_info: dict, config: dict,
         Loaded config.
     force : bool
         Recompute even if outputs exist.
+    scrub_threshold : float, optional
+        FD threshold (mm) for volume scrubbing. Volumes with FD above this
+        value are dropped before extracting ROI timeseries. If None, no
+        scrubbing is applied.
+    min_clean_volumes : int
+        Minimum clean volumes required after scrubbing. Sessions with fewer
+        are skipped.
 
     Returns
     -------
@@ -165,6 +178,22 @@ def process_session(session_info: dict, config: dict,
         print(f"\n{'=' * 60}")
         print(f"Session: {key}")
         print(f"{'=' * 60}")
+
+        # ---- Volume scrubbing ----
+        scrub_indices = None
+        if scrub_threshold is not None and session_info.get("confounds") is not None:
+            fd = compute_fd_from_confounds(session_info["confounds"])
+            scrub_indices = get_scrub_indices(fd, scrub_threshold)
+            n_total = len(fd) + 1
+            n_scrubbed = len(scrub_indices)
+            n_clean = n_total - n_scrubbed
+            print(f"  FD scrubbing: threshold={scrub_threshold}mm, "
+                  f"{n_scrubbed}/{n_total} volumes flagged ({100*n_scrubbed/n_total:.1f}%)")
+            if min_clean_volumes > 0 and n_clean < min_clean_volumes:
+                print(f"  SKIPPING: only {n_clean} clean volumes < minimum {min_clean_volumes}")
+                result["status"] = "skipped"
+                result["reason"] = f"insufficient_clean_volumes ({n_clean} < {min_clean_volumes})"
+                return result
 
         # ---- Ensure SIGMA-space BOLD exists ----
         sigma_bold = session_info["sigma_bold"]
@@ -272,6 +301,7 @@ def process_session(session_info: dict, config: dict,
                 bold_4d=sigma_bold,
                 atlas=atlas_path,
                 mask=sigma_brain_mask,
+                scrub_indices=scrub_indices,
             )
             fc_z = compute_fc_matrix(ts)
             npy_path, tsv_path = save_fc_matrix(fc_z, roi_labels, fc_base)
@@ -305,9 +335,9 @@ def process_session(session_info: dict, config: dict,
 
 def _process_session_wrapper(args):
     """Wrapper for ProcessPoolExecutor (must be top-level picklable)."""
-    session_info, config_path, force = args
+    session_info, config_path, force, scrub_threshold, min_clean_volumes = args
     config = load_config(config_path)
-    return process_session(session_info, config, force)
+    return process_session(session_info, config, force, scrub_threshold, min_clean_volumes)
 
 
 def main():
@@ -347,6 +377,21 @@ def main():
         nargs="+",
         default=None,
         help="Only process these subjects (e.g. sub-Rat49 sub-Rat50)",
+    )
+    parser.add_argument(
+        "--scrub-threshold",
+        type=float,
+        default=None,
+        help="FD threshold (mm) for volume scrubbing. Volumes with FD above "
+             "this value are dropped before ROI timeseries extraction. "
+             "Default: no scrubbing. Typical value for rodent data: 0.05.",
+    )
+    parser.add_argument(
+        "--min-clean-volumes",
+        type=int,
+        default=0,
+        help="Minimum clean (non-scrubbed) volumes required. Sessions with "
+             "fewer are skipped. Default: 0 (no check).",
     )
 
     args = parser.parse_args()
@@ -417,6 +462,11 @@ def main():
     print(f"  Workers: {args.n_workers}")
     print(f"  Force: {args.force}")
     print(f"  Atlas: {get_config_value(config, 'atlas.study_space.parcellation', 'N/A')}")
+    if args.scrub_threshold is not None:
+        print(f"  Scrub threshold: {args.scrub_threshold} mm FD")
+        print(f"  Min clean volumes: {args.min_clean_volumes}")
+    else:
+        print(f"  Scrubbing: disabled")
 
     # Process sessions
     results = []
@@ -425,7 +475,7 @@ def main():
 
     # Build args for workers
     work_args = [
-        (s, args.config, args.force)
+        (s, args.config, args.force, args.scrub_threshold, args.min_clean_volumes)
         for s in sessions
     ]
 
@@ -463,22 +513,25 @@ def main():
                     print(f"  EXCEPTION: {e}")
                     results.append({"status": "exception", "error": str(e)})
 
-    # Save batch results
-    log_dir = Path("/tmp/fc_batch_analysis")
-    log_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = log_dir / f"batch_results_{timestamp}.json"
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+    # Write batch run manifest
+    json_path, txt_path = write_batch_run_manifest(
+        output_dir=args.study_root / "logs" / "fc",
+        analysis_name="FC",
+        parameters=vars(args),
+        session_results=results,
+    )
 
     # Summary
+    skipped = sum(1 for r in results if r.get("status") == "skipped")
     print(f"\n{'=' * 60}")
     print("BATCH FC ANALYSIS COMPLETE")
     print(f"{'=' * 60}")
-    print(f"Total sessions: {len(sessions)}")
-    print(f"Successful: {completed}")
-    print(f"Failed: {failed}")
-    print(f"Results: {results_file}")
+    print(f"Total sessions : {len(sessions)}")
+    print(f"Successful     : {completed}")
+    print(f"Skipped        : {skipped}")
+    print(f"Failed         : {failed}")
+    print(f"Manifest (txt) : {txt_path}")
+    print(f"Manifest (json): {json_path}")
 
     if failed > 0:
         print(f"\nFailed sessions:")

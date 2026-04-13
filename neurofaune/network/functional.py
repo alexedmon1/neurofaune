@@ -17,6 +17,7 @@ def extract_roi_timeseries(
     atlas: Path,
     mask: Optional[Path] = None,
     min_voxels: int = 5,
+    scrub_indices: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract mean timeseries for each ROI in the atlas.
@@ -31,11 +32,15 @@ def extract_roi_timeseries(
         Brain mask to intersect with atlas ROIs.
     min_voxels : int
         Minimum voxels required for an ROI to be included.
+    scrub_indices : np.ndarray, optional
+        Volume indices to remove before computing connectivity. Typically
+        obtained from get_scrub_indices() in motion_qc. Volumes are dropped
+        from the timeseries before ROI averaging.
 
     Returns
     -------
     timeseries : ndarray, shape (n_timepoints, n_rois)
-        Mean timeseries per ROI.
+        Mean timeseries per ROI (after scrubbing if requested).
     roi_labels : ndarray, shape (n_rois,)
         Integer labels of included ROIs (sorted).
     """
@@ -46,6 +51,18 @@ def extract_roi_timeseries(
     if mask is not None:
         mask_data = nib.load(mask).get_fdata().astype(bool)
         atlas_data = atlas_data * mask_data
+
+    # Volume scrubbing: drop bad volumes before ROI extraction
+    n_scrubbed = 0
+    nt = bold_data.shape[3]
+    if scrub_indices is not None and len(scrub_indices) > 0:
+        valid_scrub = scrub_indices[(scrub_indices >= 0) & (scrub_indices < nt)]
+        n_scrubbed = len(valid_scrub)
+        if n_scrubbed > 0:
+            good_mask = np.ones(nt, dtype=bool)
+            good_mask[valid_scrub] = False
+            bold_data = bold_data[:, :, :, good_mask]
+            print(f"  Scrubbed {n_scrubbed} bad volumes, {bold_data.shape[3]} remaining")
 
     # Find all non-zero labels
     all_labels = np.unique(atlas_data)

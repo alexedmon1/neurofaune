@@ -62,6 +62,75 @@ def calculate_framewise_displacement(
     return fd
 
 
+def compute_fd_from_confounds(
+    confounds_path: Path,
+    radius: float = 50.0,
+    voxel_scale: float = 10.0,
+) -> np.ndarray:
+    """
+    Compute per-volume framewise displacement from a BIDS confounds TSV.
+
+    Reads the 6 motion parameter columns written by neurofaune preprocessing
+    and delegates to calculate_framewise_displacement() for the actual math.
+    Returns FD in real (unscaled) mm, length n_timepoints - 1, where FD[i]
+    is the displacement incurred going from volume i to volume i+1.
+
+    Parameters
+    ----------
+    confounds_path : Path
+        Path to confounds TSV file. Must contain columns:
+        rot_x, rot_y, rot_z (radians) and trans_x, trans_y, trans_z (mm,
+        in scaled voxel space).
+    radius : float
+        Head radius in mm used to convert rotational to linear displacement.
+        Default 50 mm (5 mm real × 10x scaling) for standard rodent data.
+    voxel_scale : float
+        Voxel scaling factor applied to the images during acquisition.
+        Default 10.0 for standard 10x-scaled rodent acquisitions.
+
+    Returns
+    -------
+    np.ndarray
+        FD in real mm, shape (n_timepoints - 1,).
+    """
+    import pandas as pd
+
+    df = pd.read_csv(confounds_path, sep='\t')
+    motion_cols = ['rot_x', 'rot_y', 'rot_z', 'trans_x', 'trans_y', 'trans_z']
+    missing = [c for c in motion_cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Confounds file {confounds_path} is missing columns: {missing}. "
+            f"Found: {list(df.columns)}"
+        )
+    motion_params = df[motion_cols].values
+    return calculate_framewise_displacement(motion_params, radius=radius,
+                                            voxel_scale=voxel_scale)
+
+
+def get_scrub_indices(fd: np.ndarray, threshold: float) -> np.ndarray:
+    """
+    Return the volume indices that should be scrubbed based on FD.
+
+    FD[i] is the displacement from volume i to volume i+1, so a bad FD[i]
+    flags volume i+1 as the corrupted frame. Volume 0 is never scrubbed
+    (it has no preceding displacement estimate).
+
+    Parameters
+    ----------
+    fd : np.ndarray
+        Framewise displacement array, length n_timepoints - 1.
+    threshold : float
+        FD threshold in mm. Volumes with incoming FD > threshold are flagged.
+
+    Returns
+    -------
+    np.ndarray
+        Sorted array of volume indices to scrub.
+    """
+    return np.where(fd > threshold)[0] + 1
+
+
 def calculate_dvars(bold_file: Path, mask_file: Path) -> np.ndarray:
     """
     Calculate DVARS (spatial root mean square of temporal derivative).

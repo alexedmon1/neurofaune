@@ -29,7 +29,9 @@ from neurofaune.analysis.func import (
     compute_reho_map,
     compute_reho_zscore,
 )
+from neurofaune.analysis.provenance import write_batch_run_manifest
 from neurofaune.config import get_config_value, load_config
+from neurofaune.preprocess.qc.func.motion_qc import compute_fd_from_confounds, get_scrub_indices
 from neurofaune.preprocess.workflows.func_preprocess import register_bold_to_template
 from neurofaune.templates.registration import warp_bold_to_sigma
 
@@ -79,6 +81,7 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
             print(f"  Warning: Skipping {subject}/{session} — missing mask")
             continue
 
+
         # Resolve transform paths for SIGMA warping (2-hop: BOLD -> Template -> SIGMA)
         subj_transforms = transforms_root / subject / session
 
@@ -110,6 +113,7 @@ def find_preprocessed_sessions(study_root: Path, subjects: list = None) -> list:
             "derivatives_dir": func_dir,
             "preproc_bold": preproc_bold,
             "mask": mask,
+            "confounds": confounds if confounds.exists() else None,
             "sidecar_json": sidecar if sidecar.exists() else None,
             # Transform paths (raw, for building chain after registration)
             "study_root": study_root,
@@ -139,7 +143,9 @@ def load_qc_exclusions(qc_csv: Path) -> set:
 
 
 def process_session(session_info: dict, config: dict,
-                    force: bool = False, skip_sigma: bool = False) -> dict:
+                    force: bool = False, skip_sigma: bool = False,
+                    scrub_threshold: float = None,
+                    min_clean_volumes: int = 0) -> dict:
     """
     Run ReHo analysis for a single session.
 
@@ -153,6 +159,12 @@ def process_session(session_info: dict, config: dict,
         Recompute even if outputs exist.
     skip_sigma : bool
         Skip SIGMA-space warping.
+    scrub_threshold : float, optional
+        FD threshold (mm) for volume scrubbing. Volumes with FD above this
+        value are dropped before computing KCC. If None, no scrubbing is applied.
+    min_clean_volumes : int
+        Minimum number of remaining volumes required after scrubbing. Sessions
+        that fall below this threshold are skipped with a warning.
 
     Returns
     -------
@@ -181,6 +193,23 @@ def process_session(session_info: dict, config: dict,
         print(f"Session: {key}")
         print(f"{'=' * 60}")
 
+        # ---- Volume scrubbing ----
+        scrub_indices = None
+        if scrub_threshold is not None and session_info.get("confounds") is not None:
+            confounds_path = session_info["confounds"]
+            fd = compute_fd_from_confounds(confounds_path)
+            scrub_indices = get_scrub_indices(fd, scrub_threshold)
+            n_total = len(fd) + 1
+            n_scrubbed = len(scrub_indices)
+            n_clean = n_total - n_scrubbed
+            print(f"  FD scrubbing: threshold={scrub_threshold}mm, "
+                  f"{n_scrubbed}/{n_total} volumes flagged ({100*n_scrubbed/n_total:.1f}%)")
+            if min_clean_volumes > 0 and n_clean < min_clean_volumes:
+                print(f"  SKIPPING: only {n_clean} clean volumes < minimum {min_clean_volumes}")
+                result["status"] = "skipped"
+                result["reason"] = f"insufficient_clean_volumes ({n_clean} < {min_clean_volumes})"
+                return result
+
         # ---- ReHo ----
         reho_output = deriv_dir / f"{subject}_{session}_desc-ReHo_bold.nii.gz"
 
@@ -195,6 +224,7 @@ def process_session(session_info: dict, config: dict,
                 subject=subject,
                 session=session,
                 neighborhood=neighborhood,
+                scrub_indices=scrub_indices,
             )
 
             zscore_result = compute_reho_zscore(
@@ -322,9 +352,10 @@ def process_session(session_info: dict, config: dict,
 
 def _process_session_wrapper(args):
     """Wrapper for ProcessPoolExecutor (must be top-level picklable)."""
-    session_info, config_path, force, skip_sigma = args
+    session_info, config_path, force, skip_sigma, scrub_threshold, min_clean_volumes = args
     config = load_config(config_path)
-    return process_session(session_info, config, force, skip_sigma)
+    return process_session(session_info, config, force, skip_sigma,
+                           scrub_threshold, min_clean_volumes)
 
 
 def main():
@@ -376,6 +407,21 @@ def main():
         default=None,
         help="QC summary CSV (from generate_func_registration_qc.py). "
              "Sessions with qc_pass=False skip SIGMA warping.",
+    )
+    parser.add_argument(
+        "--scrub-threshold",
+        type=float,
+        default=None,
+        help="FD threshold (mm) for volume scrubbing. Volumes with FD above "
+             "this value are dropped before computing KCC. "
+             "Default: no scrubbing. Typical value for rodent data: 0.05.",
+    )
+    parser.add_argument(
+        "--min-clean-volumes",
+        type=int,
+        default=0,
+        help="Minimum clean (non-scrubbed) volumes required after scrubbing. "
+             "Sessions with fewer are skipped. Default: 0 (no check).",
     )
 
     args = parser.parse_args()
@@ -447,6 +493,11 @@ def main():
     print(f"  Skip SIGMA: {args.skip_sigma}")
     print(f"  QC exclusions: {len(qc_exclusions)} sessions")
     print(f"  ReHo neighborhood: {get_config_value(config, 'functional.analysis.reho.neighborhood', 27)}")
+    if args.scrub_threshold is not None:
+        print(f"  Scrub threshold: {args.scrub_threshold} mm FD")
+        print(f"  Min clean volumes: {args.min_clean_volumes}")
+    else:
+        print(f"  Scrubbing: disabled")
 
     # Process sessions
     results = []
@@ -459,7 +510,8 @@ def main():
         session_skip_sigma = args.skip_sigma
         if (s["subject"], s["session"]) in qc_exclusions:
             session_skip_sigma = True
-        work_args.append((s, args.config, args.force, session_skip_sigma))
+        work_args.append((s, args.config, args.force, session_skip_sigma,
+                          args.scrub_threshold, args.min_clean_volumes))
 
     if args.n_workers == 1:
         # Sequential — easier debugging
@@ -495,22 +547,28 @@ def main():
                     print(f"  EXCEPTION: {e}")
                     results.append({"status": "exception", "error": str(e)})
 
-    # Save batch results
-    log_dir = Path("/tmp/reho_batch_analysis")
-    log_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = log_dir / f"batch_results_{timestamp}.json"
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+    # Write batch run manifest (JSON + human-readable txt)
+    log_dir = args.study_root / "logs" / "reho"
+    input_files = [f for f in [args.qc_csv] if f is not None]
+    json_path, txt_path = write_batch_run_manifest(
+        output_dir=log_dir,
+        analysis_name="ReHo",
+        parameters=vars(args),
+        session_results=results,
+        input_files=input_files,
+    )
 
     # Summary
+    skipped = sum(1 for r in results if r.get("status") == "skipped")
     print(f"\n{'=' * 60}")
     print("BATCH ReHo ANALYSIS COMPLETE")
     print(f"{'=' * 60}")
-    print(f"Total sessions: {len(sessions)}")
-    print(f"Successful: {completed}")
-    print(f"Failed: {failed}")
-    print(f"Results: {results_file}")
+    print(f"Total sessions : {len(sessions)}")
+    print(f"Successful     : {completed}")
+    print(f"Skipped        : {skipped}")
+    print(f"Failed         : {failed}")
+    print(f"Manifest (txt) : {txt_path}")
+    print(f"Manifest (json): {json_path}")
 
     if failed > 0:
         print(f"\nFailed sessions:")

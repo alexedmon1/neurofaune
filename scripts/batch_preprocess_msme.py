@@ -17,6 +17,7 @@ import traceback
 # Add neurofaune to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from neurofaune.analysis.provenance import write_batch_run_manifest
 from neurofaune.config import load_config
 from neurofaune.preprocess.workflows.msme_preprocess import run_msme_preprocessing
 from neurofaune.utils.transforms import create_transform_registry
@@ -305,20 +306,12 @@ def main():
 
         return 0
 
-    # Create log directory
-    log_dir = Path('/tmp/msme_batch_preprocessing')
-    log_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    results_file = log_dir / f'batch_results_{timestamp}.json'
-
     print(f"\nProcessing configuration:")
     print(f"  BIDS root: {args.bids_root}")
     print(f"  Output root: {args.output_root}")
     print(f"  Config: {args.config}")
     print(f"  Workers: {args.n_workers}")
     print(f"  Force reprocessing: {args.force}")
-    print(f"  Results file: {results_file}")
     print()
 
     # Process scans in parallel
@@ -357,10 +350,6 @@ def main():
                     skipped += 1
                     print(f"→ [{completed + failed + skipped}/{len(scans)}] {result['key']}: SKIPPED (already processed)")
 
-                # Write intermediate results
-                with open(results_file, 'w') as f:
-                    json.dump(results, f, indent=2)
-
             except Exception as e:
                 failed += 1
                 print(f"✗ [{completed + failed + skipped}/{len(scans)}] {scan['key']}: EXCEPTION - {e}")
@@ -370,6 +359,14 @@ def main():
                     'error': str(e)
                 })
 
+    # Write batch run manifest
+    json_path, txt_path = write_batch_run_manifest(
+        output_dir=args.output_root / "logs" / "msme_preprocess",
+        analysis_name="msme_preprocess",
+        parameters=vars(args),
+        session_results=results,
+    )
+
     # Final summary
     print("\n" + "="*80)
     print("BATCH MSME PREPROCESSING COMPLETE")
@@ -378,7 +375,8 @@ def main():
     print(f"Successful: {completed}")
     print(f"Failed: {failed}")
     print(f"Skipped: {skipped}")
-    print(f"\nResults saved to: {results_file}")
+    print(f"Manifest (txt) : {txt_path}")
+    print(f"Manifest (json): {json_path}")
 
     if failed > 0:
         print(f"\nFailed scans:")

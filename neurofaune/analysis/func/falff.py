@@ -28,7 +28,8 @@ def compute_falff_map(func_file: Path,
                       session: str,
                       tr: float,
                       low_freq: float = 0.01,
-                      high_freq: float = 0.08) -> dict:
+                      high_freq: float = 0.08,
+                      scrub_indices: Optional[np.ndarray] = None) -> dict:
     """
     Compute ALFF and fALFF maps for whole brain using vectorized FFT.
 
@@ -51,6 +52,11 @@ def compute_falff_map(func_file: Path,
         Lower bound of low-frequency range (Hz). Default: 0.01.
     high_freq : float
         Upper bound of low-frequency range (Hz). Default: 0.08.
+    scrub_indices : np.ndarray, optional
+        Indices of volumes to scrub before spectral analysis. Bad volumes are
+        replaced by linear interpolation from their nearest good neighbours
+        so the timeseries length (and thus frequency resolution) is preserved.
+        Typically obtained from get_scrub_indices() in motion_qc.
 
     Returns
     -------
@@ -102,6 +108,32 @@ def compute_falff_map(func_file: Path,
 
     # Remove mean from each voxel (detrend constant)
     timeseries = timeseries - timeseries.mean(axis=1, keepdims=True)
+
+    # Volume scrubbing: linearly interpolate over bad volumes before FFT.
+    # This preserves timeseries length (and thus frequency resolution) while
+    # preventing spectral artefacts from abrupt signal discontinuities.
+    n_scrubbed = 0
+    if scrub_indices is not None and len(scrub_indices) > 0:
+        valid_scrub = scrub_indices[(scrub_indices >= 0) & (scrub_indices < nt)]
+        n_scrubbed = len(valid_scrub)
+        if n_scrubbed > 0:
+            print(f"  Scrubbing {n_scrubbed}/{nt} volumes via linear interpolation")
+            good_mask = np.ones(nt, dtype=bool)
+            good_mask[valid_scrub] = False
+            good_t = np.where(good_mask)[0]
+            for bad_t in valid_scrub:
+                before = good_t[good_t < bad_t]
+                after = good_t[good_t > bad_t]
+                if len(before) == 0:
+                    timeseries[:, bad_t] = timeseries[:, after[0]]
+                elif len(after) == 0:
+                    timeseries[:, bad_t] = timeseries[:, before[-1]]
+                else:
+                    t0, t1 = int(before[-1]), int(after[0])
+                    alpha = (bad_t - t0) / (t1 - t0)
+                    timeseries[:, bad_t] = (
+                        (1 - alpha) * timeseries[:, t0] + alpha * timeseries[:, t1]
+                    )
 
     # Identify constant voxels
     voxel_std = np.std(timeseries, axis=1)
@@ -182,6 +214,8 @@ def compute_falff_map(func_file: Path,
             'high_freq': high_freq,
             'tr': tr,
             'n_timepoints': nt,
+            'n_scrubbed': n_scrubbed,
+            'n_clean': nt - n_scrubbed,
             'n_brain_voxels': n_voxels,
             'n_lf_bins': n_lf_bins,
             'freq_resolution': float(freq_resolution),
