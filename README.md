@@ -2,6 +2,10 @@
 
 Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles multi-modal rat brain imaging with age-cohort templates and standardized normalization to the SIGMA rat brain atlas.
 
+## AI-Assisted Workflow (IRL)
+
+This repo ships two [IRL](https://github.com/drpedapati/irl-template) plan templates for running neurofaune inside an Idempotent Research Loop: [`irl-template-preprocessing.md`](irl-template-preprocessing.md) (anatomical → template build → per-modality preproc) and [`irl-template-analysis.md`](irl-template-analysis.md) (voxelwise + ROI analyses). Initialize a study with `irl init -t neurofaune-preprocessing "<study>"` after dropping the templates into `~/research/_templates/`.
+
 ## Prerequisites
 
 - Python 3.10+
