@@ -52,6 +52,43 @@ def test_config():
     }
 
 
+@pytest.fixture(scope="session")
+def synthetic_atlas(tmp_path_factory):
+    """Minimal SIGMA-shaped atlas so AtlasManager can be constructed without the
+    561 MB real atlas. Provides the directory tree + labels CSV — enough to
+    exercise construction, ROI-definition loading, and slice-range logic on a
+    clean machine (CI). Image-loading tests (templates/tissue/parcellation)
+    need the real atlas and remain skip-guarded.
+    """
+    import pandas as pd
+
+    base = tmp_path_factory.mktemp("SIGMA")
+    for sub in (
+        "SIGMA_Rat_Anatomical_Imaging",
+        "SIGMA_Rat_Brain_Atlases",
+        "SIGMA_Rat_Functional_Imaging",
+    ):
+        (base / sub).mkdir()
+    pd.DataFrame(
+        {
+            "Labels": [1, 2, 3],
+            "Hemisphere": ["L", "R", "L"],
+            "Matter": ["GM", "GM", "WM"],
+            "Territories": ["Cortex", "Cortex", "White matter"],
+            "System": ["Sensory", "Sensory", "NA"],
+            "Region of interest": ["S1", "S1", "corpus callosum"],
+        }
+    ).to_csv(base / "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv", index=False)
+    return base
+
+
+@pytest.fixture
+def synthetic_config(synthetic_atlas, test_config):
+    """``test_config`` pointed at the synthetic atlas instead of /mnt/arborea."""
+    config = {"atlas": {**test_config["atlas"], "base_path": str(synthetic_atlas)}}
+    return config
+
+
 @pytest.fixture
 def mock_nifti_image():
     """Create a mock 3D NIfTI image for testing."""
@@ -68,11 +105,11 @@ def mock_nifti_image():
 class TestAtlasManager:
     """Tests for AtlasManager class."""
 
-    def test_initialization(self, test_config):
+    def test_initialization(self, synthetic_config):
         """Test AtlasManager initialization."""
-        atlas = AtlasManager(test_config)
+        atlas = AtlasManager(synthetic_config)
         assert atlas.atlas_type == 'invivo'
-        assert atlas.base_path == Path('/mnt/arborea/atlases/SIGMA')
+        assert atlas.base_path == Path(synthetic_config['atlas']['base_path'])
         assert len(atlas.roi_definitions) > 0  # Should load CSV
 
     def test_invalid_atlas_type(self, test_config):
@@ -212,9 +249,9 @@ class TestAtlasManager:
         assert len(unique_vals) == 2  # 0 and 1
         assert np.sum(mask_data) > 0  # At least some voxels
 
-    def test_get_slice_range(self, test_config):
+    def test_get_slice_range(self, synthetic_config):
         """Test getting configured slice range."""
-        atlas = AtlasManager(test_config)
+        atlas = AtlasManager(synthetic_config)
 
         # DTI should be 15-25
         start, end = atlas.get_slice_range('dwi')
@@ -226,25 +263,25 @@ class TestAtlasManager:
         assert start == 0
         assert end == -1
 
-    def test_get_slice_range_invalid_modality(self, test_config):
+    def test_get_slice_range_invalid_modality(self, synthetic_config):
         """Test error for invalid modality."""
-        atlas = AtlasManager(test_config)
+        atlas = AtlasManager(synthetic_config)
 
         with pytest.raises(ValueError, match="No slice definition"):
             atlas.get_slice_range('nonexistent')
 
-    def test_cache_clearing(self, test_config):
+    def test_cache_clearing(self, synthetic_config):
         """Test clearing image cache."""
-        atlas = AtlasManager(test_config)
+        atlas = AtlasManager(synthetic_config)
 
-        # Populate cache (if atlas available)
-        if Path('/mnt/arborea/atlases/SIGMA').exists():
-            _ = atlas.get_template()
-            assert len(atlas.templates) > 0
+        # Seed caches directly so the test is hermetic (no real atlas images needed).
+        atlas.templates['dummy'] = object()
+        atlas.labels['dummy'] = object()
+        assert len(atlas.templates) > 0
 
-            atlas.clear_cache()
-            assert len(atlas.templates) == 0
-            assert len(atlas.labels) == 0
+        atlas.clear_cache()
+        assert len(atlas.templates) == 0
+        assert len(atlas.labels) == 0
 
 
 class TestSliceExtraction:
