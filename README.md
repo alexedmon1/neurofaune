@@ -6,6 +6,18 @@ Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles mu
 
 This repo ships two [IRL](https://github.com/drpedapati/irl-template) plan templates for running neurofaune inside an Idempotent Research Loop: [`irl-template-preprocessing.md`](irl-template-preprocessing.md) (anatomical → template build → per-modality preproc) and [`irl-template-analysis.md`](irl-template-analysis.md) (voxelwise + ROI analyses). Initialize a study with `irl init -t neurofaune-preprocessing "<study>"` after dropping the templates into `~/research/_templates/`.
 
+## Developing the package (the test gate)
+
+Changes to neurofaune itself go through an **implementation-testing loop** so behavior is provably preserved before a change can be used in research:
+
+```bash
+make check        # THE GATE: unit + regression (behavior-preservation) tests — must be green
+make advisory     # ruff + mypy (informational, never blocks)
+make integration  # real-tool (ANTs/FSL) tier — run before tagging a release
+```
+
+A change reaches research only as a **git tag** that research projects pin (`neurofaune @ git+...@<tag>`) — never `main`. Competing implementations are compared in git worktrees against the same frozen regression goldens. Full operating spec: [`plans/main-plan.md`](plans/main-plan.md); Claude-facing summary: [`CLAUDE.md`](CLAUDE.md) → *Development Loop*.
+
 ## Prerequisites
 
 - Python 3.10+
