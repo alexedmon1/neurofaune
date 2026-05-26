@@ -13,7 +13,7 @@ PKG := neurofaune
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync test regression check lint typecheck advisory format clean
+.PHONY: help sync test regression check integration lint typecheck advisory format clean
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -26,13 +26,16 @@ sync:  ## Install package + dev deps from uv.lock (reproducible)
 # THE GATE (blocking)
 # ---------------------------------------------------------------------------
 test:  ## Run fast unit tests
-	$(UV) run --extra dev pytest -m "not slow and not regression" -q
+	$(UV) run --extra dev pytest -m "not slow and not regression and not integration" -q
 
-regression:  ## Run behavior-preservation tests vs frozen golden outputs
-	$(UV) run --extra dev pytest -m "regression" -q
+regression:  ## Run fast behavior-preservation tests vs frozen golden outputs
+	$(UV) run --extra dev pytest -m "regression and not slow and not integration" -q
 
-check: test regression  ## THE GATE — tests + regression must pass before promotion
+check: test regression  ## THE GATE — tests + regression must pass before promotion (hermetic, every PR)
 	@echo "✅ gate passed — candidate preserves behavior, safe to tag / pin in research"
+
+integration:  ## SLOW tier — real-tool (ANTs/FSL) end-to-end vs derived-metric golden; run before a release tag
+	$(UV) run --extra dev pytest -m "integration" -q
 
 # ---------------------------------------------------------------------------
 # ADVISORY (never blocks — leading '-' ignores non-zero exit)

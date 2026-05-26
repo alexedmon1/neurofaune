@@ -1,0 +1,7 @@
+nodes:
+  inputnode :: IdentityInterface
+  outputnode :: IdentityInterface
+  scale :: Function
+connections:
+  inputnode.x -> scale.in_val
+  scale.out_val -> outputnode.y

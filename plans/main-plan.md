@@ -134,6 +134,33 @@ Never do this just to make a red candidate pass.
 
 ---
 
+## 🧪 Test tiers & fixtures
+
+Different domains are reproducible in different ways, so the contract has two tiers.
+
+**Canonical fixtures** — `tests/regression/fixtures.py` is the single registry of
+seeded synthetic inputs (subjects×ROIs, connectome, t-map volume, …). Every
+regression test and every candidate draws from it, so candidates are comparable.
+Inputs regenerate from a generator+seed; only the *golden output* is committed.
+Reserve tiny downsampled-real fixtures only where real-data quirks matter; never
+put big real data behind the gate.
+
+**Gate tier** (`make check`, blocking, hermetic, every PR) — deterministic boundaries:
+- `connectivity/` — matrix/graph math (e.g. `spearman_matrix`, `fisher_z_transform`)
+- `voxelwise/` — effect-size / GLM math on small volumes (e.g. `compute_partial_etasq_from_tstat`)
+- `qc/` — FD/DVARS, confounds, Dice (add as needed)
+- `preprocess/` — **workflow assembly**: freeze the nipype graph / command-lines via
+  `_workflow.py` and assert a refactor still emits them — *without running ANTs/FSL*.
+  This is how a preprocessing refactor is gated cheaply.
+
+**Integration tier** (`make integration`, slow, local/HPC, **not** PR-blocking, run before a release tag) —
+end-to-end preprocessing/stats through ANTs/FSL, which aren't bit-reproducible. Compare
+**derived metrics** (Dice, map correlation, intensity summary via `_derived.py`) within
+loose tolerance — never raw voxels. Tests skip cleanly when tools are absent.
+
+Mint/refresh any golden deliberately: `NEUROFAUNE_UPDATE_GOLDEN=1 make regression`
+(or `make integration`), then commit the changed golden in its own reviewed commit.
+
 ## 📌 Conventions
 
 - **The gate is the only promotion signal.** Green `make check` on CI == safe to tag.
