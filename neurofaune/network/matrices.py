@@ -357,7 +357,7 @@ def spearman_matrix(data: np.ndarray) -> np.ndarray:
     """
     if not np.any(np.isnan(data)) and data.shape[0] >= 4:
         # Fast path: rank each column, then Pearson corrcoef
-        ranked = np.apply_along_axis(stats.rankdata, 0, data)
+        ranked = stats.rankdata(data, axis=0)
         corr = np.corrcoef(ranked, rowvar=False)
         # Replace NaN (from constant columns) with 0.0
         np.nan_to_num(corr, copy=False, nan=0.0)
