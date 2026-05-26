@@ -1,0 +1,23 @@
+# Opt-in incremental hygiene. Enable with:  uv run pre-commit install
+#
+# Hooks run ONLY on files you stage, so the legacy codebase is cleaned up
+# gradually as you touch files — no repo-wide reformat churn. Frozen
+# regression fixtures/golden outputs are excluded so they are never rewritten.
+exclude: '^tests/regression/(fixtures|golden)/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=512']   # keep frozen fixtures small & deliberate
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      - id: ruff               # lint + autofix, staged files only
+        args: ['--fix']

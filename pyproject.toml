@@ -55,6 +55,7 @@ dev = [
     "black>=23.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    "pre-commit>=3.0",
 ]
 
 fslmrs = [
@@ -79,10 +80,10 @@ all = [
 neurofaune = "neurofaune.preprocess.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/neurofaune"
+Homepage = "https://github.com/alexedmon1/neurofaune"
 Documentation = "https://neurofaune.readthedocs.io"
-Repository = "https://github.com/yourusername/neurofaune"
-Issues = "https://github.com/yourusername/neurofaune/issues"
+Repository = "https://github.com/alexedmon1/neurofaune"
+Issues = "https://github.com/alexedmon1/neurofaune/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -170,4 +171,5 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "regression: behavior-preservation tests comparing a candidate implementation against frozen golden outputs (part of the gate)",
 ]

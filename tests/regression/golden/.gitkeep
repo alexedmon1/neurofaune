@@ -1,0 +1,3 @@
+# Golden outputs live here. Regenerate deliberately with
+#   NEUROFAUNE_UPDATE_GOLDEN=1 uv run pytest -m regression
+# and commit changes in their own reviewable commit.

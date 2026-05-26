@@ -1,0 +1,2 @@
+# Frozen input fixtures live here (small, committed, never edited casually).
+# Resolve them with tests.regression._equivalence.fixture_path("name").

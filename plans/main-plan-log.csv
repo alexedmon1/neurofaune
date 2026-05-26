@@ -1,0 +1,2 @@
+timestamp,change,candidate,gate_result,advisory_notes,tag,pkg_hash
+2026-05-26T00:00:00Z,loop-scaffold,baseline-main,pass,"ruff/mypy advisory only",,
