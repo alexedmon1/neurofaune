@@ -25,6 +25,7 @@ dependencies = [
     "nipype>=1.10.0",
     "nibabel>=5.3.2",
     "pydicom>=3.0.1",
+    "brukerapi>=0.2.4",
     # Diffusion imaging
     "dipy>=1.11.0",
     # Functional imaging
