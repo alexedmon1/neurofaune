@@ -93,6 +93,20 @@ wheels = [
 ]
 
 [[package]]
+name = "brukerapi"
+version = "0.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/46/33a6f16b06fd1b44632d5dfa6ce42d5d92dfb589640d4c1c376782bf73a4/brukerapi-0.2.4.tar.gz", hash = "sha256:73be70cdd1acca6cfc4d444524d4cfe64ebbd03bf3339d9932301e6d6d968ba1", size = 39923, upload-time = "2026-04-17T11:36:22.395Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/54/a102d19d3ad6373b4f74287a3418d9ad5f25a4a73e8c7ec09e21e5430719/brukerapi-0.2.4-py3-none-any.whl", hash = "sha256:9c57d475037d43a832e19f298e379db65c699955ba38ca4cf07c4d7f7135d517", size = 40892, upload-time = "2026-04-17T11:36:21.281Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.11.12"
 source = { registry = "https://pypi.org/simple" }
@@ -1425,6 +1439,7 @@ version = "0.1.0a0"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },
+    { name = "brukerapi" },
     { name = "click" },
     { name = "dipy" },
     { name = "matplotlib" },
@@ -1477,6 +1492,7 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0" },
     { name = "bokeh", specifier = ">=3.3,<3.4" },
     { name = "bruker2nifti", marker = "extra == 'bruker'", specifier = ">=1.0" },
+    { name = "brukerapi", specifier = ">=0.2.4" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "dipy", specifier = ">=1.11.0" },
     { name = "dmri-amico", marker = "extra == 'multishell'", specifier = ">=2.0.3" },
