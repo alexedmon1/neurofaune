@@ -1,6 +1,6 @@
 [project]
 name = "neurofaune"
-version = "0.1.0-alpha"
+version = "0.2.0-alpha"
 description = "Rodent-specific MRI preprocessing, analysis, and connectivity package"
 readme = "README.md"
 requires-python = ">=3.10"
