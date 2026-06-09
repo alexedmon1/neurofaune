@@ -1,6 +1,6 @@
 [project]
 name = "neurofaune"
-version = "0.2.0-alpha"
+version = "0.2.1-alpha"
 description = "Rodent-specific MRI preprocessing, analysis, and connectivity package"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -92,8 +92,11 @@ Issues = "https://github.com/alexedmon1/neurofaune/issues"
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["neurofaune", "neurofaune.preprocess", "neurofaune.atlas", "neurofaune.utils", "neurofaune.network"]
+# Auto-discover every subpackage so the wheel actually ships the whole library
+# (the old hardcoded list silently dropped preprocess.workflows, registration,
+# templates, analysis.*, etc. — see tests/unit/test_packaging.py).
+[tool.setuptools.packages.find]
+include = ["neurofaune*"]
 
 [tool.setuptools.package-data]
 neurofaune = ["py.typed"]
