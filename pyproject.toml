@@ -40,6 +40,8 @@ dependencies = [
     # Configuration and CLI
     "pyyaml>=6.0",
     "click>=8.1.0",
+    # Bruker raw I/O (imported by utils/bruker_convert.py + utils/bidsify.py)
+    "brukerapi>=0.2.4",
     # Utilities
     "tqdm>=4.65.0",
     "natsort>=8.0.0",
@@ -65,7 +67,8 @@ fslmrs = [
 ]
 
 bruker = [
-    "bruker2nifti>=1.0",  # Bruker file conversion
+    # brukerapi is the actual converter dep and now lives in core dependencies.
+    # (kept for back-compat; legacy bruker2nifti path is unused)
 ]
 
 multishell = [
