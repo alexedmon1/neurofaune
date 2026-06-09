@@ -78,18 +78,17 @@ wheels = [
 ]
 
 [[package]]
-name = "bruker2nifti"
-version = "1.0.4"
+name = "brukerapi"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nibabel" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "setuptools" },
+    { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/04/a625897c698d3679d49452c743ae18247b195110da8349ef8b34803272a7/bruker2nifti-1.0.4.tar.gz", hash = "sha256:6189235192ea447885daf0f28bed04930e86a19354aa5f54fb37b0c43052ebce", size = 35143, upload-time = "2020-01-13T21:21:36.372Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/91/46/33a6f16b06fd1b44632d5dfa6ce42d5d92dfb589640d4c1c376782bf73a4/brukerapi-0.2.4.tar.gz", hash = "sha256:73be70cdd1acca6cfc4d444524d4cfe64ebbd03bf3339d9932301e6d6d968ba1", size = 39923, upload-time = "2026-04-17T11:36:22.395Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f4/35/0edeabacbd73a116e6c35bb14f0333d983fbf2cd3e6211c0186c6f827fa7/bruker2nifti-1.0.4-py3-none-any.whl", hash = "sha256:8d0fe32239f8809ddc8d418ca549a5da2d1d245ad595f06f312f6df197748ef0", size = 38228, upload-time = "2020-01-13T21:21:54.07Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/54/a102d19d3ad6373b4f74287a3418d9ad5f25a4a73e8c7ec09e21e5430719/brukerapi-0.2.4-py3-none-any.whl", hash = "sha256:9c57d475037d43a832e19f298e379db65c699955ba38ca4cf07c4d7f7135d517", size = 40892, upload-time = "2026-04-17T11:36:21.281Z" },
 ]
 
 [[package]]
@@ -1425,6 +1424,7 @@ version = "0.1.0a0"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },
+    { name = "brukerapi" },
     { name = "click" },
     { name = "dipy" },
     { name = "matplotlib" },
@@ -1449,16 +1449,12 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "black" },
-    { name = "bruker2nifti" },
     { name = "dmri-amico" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-]
-bruker = [
-    { name = "bruker2nifti" },
 ]
 dev = [
     { name = "black" },
@@ -1476,7 +1472,7 @@ multishell = [
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0" },
     { name = "bokeh", specifier = ">=3.3,<3.4" },
-    { name = "bruker2nifti", marker = "extra == 'bruker'", specifier = ">=1.0" },
+    { name = "brukerapi", specifier = ">=0.2.4" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "dipy", specifier = ">=1.11.0" },
     { name = "dmri-amico", marker = "extra == 'multishell'", specifier = ">=2.0.3" },
