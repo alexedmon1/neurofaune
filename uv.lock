@@ -1420,7 +1420,7 @@ wheels = [
 
 [[package]]
 name = "neurofaune"
-version = "0.2.1a0"
+version = "0.2.2a0"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },

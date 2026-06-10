@@ -12,6 +12,10 @@ subject-dependent (positioning, FOV). Two parameters do the work:
   non-brain. The optimum is subject-specific (≈1.4–1.6 for this protocol).
 - ``-c`` — the brain centre of gravity, derived data-drivenly from the shared
   foreground module so it adapts to each subject's positioning.
+- ``-f`` — bet's fractional intensity threshold. A *lower* ``-f`` grows the brain
+  outline, recovering the thin brain-edge rim that the smooth surface otherwise
+  sits inside; it is swept alongside zscale so each subject gets the threshold
+  that best fits its edge (the air gate stops it growing into background/eyes).
 
 Rather than hand-tune, this module sweeps the sizing parameters and selects the
 best mask with a **reference-free** score (no brain segmentation needed — on this
@@ -31,7 +35,8 @@ edges while guaranteeing the poles (cerebellum/olfactory) are not clipped.
 
 Validated across 7 subjects / 3 cohorts (incl. a hard rescued case and an
 off-centre brain): whole-brain capture with no clipped brain; selected zscale
-1.4–1.6. The auto-QC has lied before on this data — always view the overlay.
+1.2–1.4, f 0.4–0.5. The auto-QC has lied before on this data — always view the
+overlay; subjects flagged ``qc='review'`` (air > air_warn) especially so.
 """
 
 import os
@@ -50,7 +55,7 @@ from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foregro
 # Defaults tuned for Bruker rat T2w at 256x256x41 @ 1.25x1.25x8mm (10x-scaled).
 DEFAULT_ZSCALES: Tuple[float, ...] = (1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0)
 DEFAULT_RADII: Tuple[int, ...] = (125,)
-DEFAULT_F = 0.4
+DEFAULT_FS: Tuple[float, ...] = (0.3, 0.4, 0.5)  # bet -f; lower => larger brain outline
 DEFAULT_W = 1.0
 DEFAULT_AIR_MAX = 0.20
 DEFAULT_AIR_WARN = 0.18          # QC flag threshold (review if exceeded)
@@ -115,13 +120,17 @@ def score_mask(mask: np.ndarray, img_data: np.ndarray,
 
 def select_best(candidates: Sequence[Dict[str, Any]], air_max: float = DEFAULT_AIR_MAX,
                 cov_range: Tuple[float, float] = DEFAULT_COV_RANGE,
-                near_peak: float = 0.95) -> Optional[Dict[str, Any]]:
+                near_peak: float = 0.90) -> Optional[Dict[str, Any]]:
     """Pick the best candidate (pure function — unit-testable without FSL).
 
     Validity gate: air < air_max, single dominant component, coverage in range.
-    Among valid candidates within ``near_peak`` of the peak boundary-fit, choose
-    the largest z-extent (most brain, poles preserved), tie-broken by fit. Falls
-    back to all candidates if none pass the gate.
+    Boundary-fit alone leans tight (a tighter surface hugs the steep edge gradient
+    more precisely), which under-includes the brain-edge rim. So we use boundary-
+    fit only to define a band of edge-accurate candidates — those within
+    ``near_peak`` of the peak — and within that band choose the **most complete**
+    mask (largest coverage), tie-broken by fit. The air gate keeps "more complete"
+    from meaning "ballooned into background". Falls back to all candidates if none
+    pass the validity gate.
     """
     if not candidates:
         return None
@@ -131,7 +140,7 @@ def select_best(candidates: Sequence[Dict[str, Any]], air_max: float = DEFAULT_A
     pool = [c for c in candidates if c["valid"]] or list(candidates)
     peak = max(c["bgrad"] for c in pool)
     near = [c for c in pool if c["bgrad"] >= near_peak * peak]
-    return max(near, key=lambda c: (c["nsl"], c["bgrad"]))
+    return max(near, key=lambda c: (c["cov"], c["bgrad"]))
 
 
 def skull_strip_bet4animal(
@@ -142,7 +151,7 @@ def skull_strip_bet4animal(
     cog: Optional[Sequence[float]] = None,
     zscales: Sequence[float] = DEFAULT_ZSCALES,
     radii: Sequence[int] = DEFAULT_RADII,
-    f: float = DEFAULT_F,
+    fs: Sequence[float] = DEFAULT_FS,
     w: float = DEFAULT_W,
     air_max: float = DEFAULT_AIR_MAX,
     air_warn: float = DEFAULT_AIR_WARN,
@@ -179,15 +188,17 @@ def skull_strip_bet4animal(
     candidates = []
     for zs in zscales:
         for r in radii:
-            mp = _run_bet4animal(input_file, work_dir / f"b4a_z{zs}_r{r}", cog_arr, zs, r, f, w)
-            if mp is None:
-                continue
-            m = nib.load(mp).get_fdata() > 0
-            sc = score_mask(m, d, gmag_norm, fg_thr)
-            if sc is None:
-                continue
-            sc.update(zscale=float(zs), radius=int(r), mask=str(mp))
-            candidates.append(sc)
+            for fval in fs:
+                mp = _run_bet4animal(input_file, work_dir / f"b4a_z{zs}_r{r}_f{fval}",
+                                     cog_arr, zs, r, fval, w)
+                if mp is None:
+                    continue
+                m = nib.load(mp).get_fdata() > 0
+                sc = score_mask(m, d, gmag_norm, fg_thr)
+                if sc is None:
+                    continue
+                sc.update(zscale=float(zs), radius=int(r), f=float(fval), mask=str(mp))
+                candidates.append(sc)
 
     best = select_best(candidates, air_max=air_max, cov_range=cov_range)
     if best is None:
@@ -199,7 +210,7 @@ def skull_strip_bet4animal(
     nib.save(nib.Nifti1Image((d * sel).astype(np.float32), img.affine, img.header), output_file)
 
     qc_flag = "review" if best["air"] > air_warn else "ok"
-    print(f"  bet4animal sweep: selected zscale={best['zscale']} radius={best['radius']} "
+    print(f"  bet4animal sweep: selected zscale={best['zscale']} f={best['f']} radius={best['radius']} "
           f"(cov={best['cov']:.1f}% z{best['zlo']}-{best['zhi']} air={best['air']:.3f} "
           f"bgrad={best['bgrad']:.3f}) — QC: {qc_flag}")
     if qc_flag == "review":
@@ -214,13 +225,13 @@ def skull_strip_bet4animal(
         "cog": [round(float(c), 1) for c in cog_arr],
         "zscale": best["zscale"],
         "radius": best["radius"],
-        "bet_f": f,
+        "bet_f": best["f"],
         "bet_w": w,
         "z_extent": [best["zlo"], best["zhi"], best["nsl"]],
         "air_leakage": best["air"],
         "boundary_fit": best["bgrad"],
         "qc_flag": qc_flag,
-        "candidates": [{k: c[k] for k in ("zscale", "radius", "cov", "zlo", "zhi",
+        "candidates": [{k: c[k] for k in ("zscale", "radius", "f", "cov", "zlo", "zhi",
                                           "nsl", "air", "bgrad", "valid")} for c in candidates],
     }
     return output_file, mask_file, info
