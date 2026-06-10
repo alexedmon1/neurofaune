@@ -543,13 +543,13 @@ def create_brain_mask_atropos(
     img = nib.load(b0_file)
     data = img.get_fdata()
 
-    # Create initial mask using threshold (exclude obvious background)
-    nonzero = data[data > 0]
-    if len(nonzero) == 0:
+    # Create initial mask from the noise floor (robust to a non-zero background
+    # noise floor — the 5th-percentile seed kept ~95% of the image on such
+    # recons and produced whole-head masks; gh #12).
+    from neurofaune.preprocess.utils.foreground import foreground_mask
+    if not (data > 0).any():
         raise ValueError("b0 image has no non-zero voxels")
-
-    threshold = np.percentile(nonzero, 5)  # 5th percentile of non-zero
-    initial_mask = (data > threshold).astype(np.uint8)
+    initial_mask = foreground_mask(data, k=4.0)
 
     # Save initial mask
     initial_mask_file = work_dir / 'atropos_initial_mask.nii.gz'

@@ -19,6 +19,7 @@ from neurofaune.config import get_config_value
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
 from neurofaune.preprocess.utils.skull_strip import skull_strip
+from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foreground_mask
 
 
 def register_msme_to_template(
@@ -594,33 +595,20 @@ def run_msme_preprocessing(
 
     # Estimate noise sigma² from the air/noise region of the first echo.
     # The background outside the brain mask contains both noise (air) and
-    # bright tissue (skull, muscle, fat). We isolate the noise-only voxels
-    # by taking the lowest-intensity quartile of the background, which
-    # should be pure Rayleigh-distributed noise from air.
+    # bright tissue (skull, muscle, fat). The shared Rayleigh estimator isolates
+    # the noise-only voxels (lowest-intensity quartile of the background) and
+    # converts to a Gaussian-equivalent variance (σ² = mean²·2/π). This is the
+    # same computation this workflow has always used, now consolidated into the
+    # shared foreground module (gh #12); behaviour is bit-identical.
     first_echo_all = data[:, :, 0, :]
-    first_echo_bg = first_echo_all[~mask_3d]
-    first_echo_bg = first_echo_bg[first_echo_bg > 0]  # exclude exact zeros
-
-    if len(first_echo_bg) < 100:
-        # Mask covers nearly entire image — fall back to using the lowest 10%
-        # of ALL voxels (including brain) as a noise proxy.
-        print(f"  WARNING: Only {len(first_echo_bg)} background voxels — mask may cover "
-              f"entire image. Falling back to lowest 10% of all voxels for noise estimate.")
-        all_nonzero = first_echo_all[first_echo_all > 0]
-        q10 = np.percentile(all_nonzero, 10)
-        noise_voxels = all_nonzero[all_nonzero <= q10]
-    else:
-        # Keep only the lowest quartile — these are the air/noise voxels
-        q25 = np.percentile(first_echo_bg, 25)
-        noise_voxels = first_echo_bg[first_echo_bg <= q25]
-
-    # For Rayleigh-distributed magnitude noise:
-    #   mean = sigma * sqrt(pi/2)  →  sigma = mean / sqrt(pi/2)
-    #   sigma² = mean² * 2/pi
-    noise_mean = float(np.mean(noise_voxels))
-    noise_sigma2 = noise_mean ** 2 * (2.0 / np.pi)
+    floor = estimate_noise_floor(first_echo_all, mask=mask_3d)
+    noise_mean = floor.mean
+    noise_sigma2 = floor.sigma2
+    if floor.used_fallback:
+        print("  WARNING: background may cover entire image — fell back to lowest "
+              "10% of all voxels for noise estimate.")
     print(f"Background noise estimation (first echo):")
-    print(f"  Background voxels: {len(first_echo_bg)}, noise-floor voxels: {len(noise_voxels)}")
+    print(f"  noise-floor voxels: {floor.n_noise_voxels}")
     print(f"  Noise mean={noise_mean:.1f}, Gaussian sigma²={noise_sigma2:.1f} "
           f"(sigma={np.sqrt(noise_sigma2):.1f})")
 
@@ -990,10 +978,10 @@ def _skull_strip_msme_atropos(
     n_classes : int
         Number of Atropos classes (default: 5)
     """
-    # Create initial foreground mask (exclude obvious background)
-    nonzero = data[data > 0]
-    threshold = np.percentile(nonzero, 5)
-    initial_mask = (data > threshold).astype(np.uint8)
+    # Create initial foreground mask from the noise floor (robust to a non-zero
+    # background noise floor; the old 5th-percentile seed produced whole-head
+    # masks on such recons — gh #12).
+    initial_mask = foreground_mask(data, k=4.0)
     initial_mask_file = work_dir / 'atropos_initial_mask.nii.gz'
     nib.save(nib.Nifti1Image(initial_mask, affine), initial_mask_file)
 

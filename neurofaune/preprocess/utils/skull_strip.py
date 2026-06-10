@@ -40,6 +40,11 @@ def skull_strip(
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: Optional[list] = None,
     class_strategy: str = 'middle',
+    foreground_k: float = 4.0,
+    n_dark_exclude: int = 1,
+    lcc_3d: bool = True,
+    # bet4animal sweep parameters (method='bet4animal'); see bet4animal.py
+    bet4animal_params: Optional[Dict[str, Any]] = None,
     # Template-guided parameters
     template_file: Optional[Path] = None,
     template_brain_mask: Optional[Path] = None,
@@ -72,6 +77,9 @@ def skull_strip(
         - 'atropos_bet': force two-pass Atropos+BET (for ≥10 slices)
         - 'atropos': force Atropos-only (no BET refinement)
         - 'bet': force standard 3D BET only
+        - 'bet4animal': FSL bet4animal with an automatic per-subject parameter
+          sweep (data-driven COG; reference-free selection). Best for rodent T2w
+          whole-brain extraction incl. cerebellum/olfactory. See bet4animal.py.
         - 'template': Z-NCC projection of cohort template brain mask (for fMRI)
     cohort : str
         Age cohort for 3D methods ('p30', 'p60', 'p90')
@@ -139,7 +147,16 @@ def skull_strip(
             print(f"  Auto-selected two-pass Atropos+BET ({n_slices} slices >= {SLICE_THRESHOLD})")
 
     # Dispatch to appropriate method
-    if method == 'template':
+    if method == 'bet4animal':
+        from neurofaune.preprocess.utils.bet4animal import skull_strip_bet4animal
+        return skull_strip_bet4animal(
+            input_file=input_file,
+            output_file=output_file,
+            mask_file=mask_file,
+            work_dir=work_dir,
+            **(bet4animal_params or {}),
+        )
+    elif method == 'template':
         if template_file is None or template_brain_mask is None:
             raise ValueError(
                 "method='template' requires template_file and template_brain_mask"
@@ -179,6 +196,9 @@ def skull_strip(
             mrf_smoothing_factor=mrf_smoothing_factor,
             mrf_radius=mrf_radius if mrf_radius is not None else [1, 1, 1],
             class_strategy=class_strategy,
+            foreground_k=foreground_k,
+            n_dark_exclude=n_dark_exclude,
+            lcc_3d=lcc_3d,
         )
     elif method == 'atropos':
         return _skull_strip_atropos_only(
@@ -251,6 +271,9 @@ def _skull_strip_atropos_bet(
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: list = None,
     class_strategy: str = 'middle',
+    foreground_k: float = 4.0,
+    n_dark_exclude: int = 1,
+    lcc_3d: bool = True,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """
     Two-pass Atropos+BET skull stripping for full-coverage data.
@@ -295,14 +318,37 @@ def _skull_strip_atropos_bet(
         MRF neighborhood radius (default: [1, 1, 1])
     class_strategy : str
         Class selection strategy for n_classes>=5:
-        - 'middle': middle classes by volume (structural)
-        - 'non_background': all except largest class (fMRI)
+        - 'middle': brighter classes by mean intensity (structural). Excludes the
+          ``n_dark_exclude`` darkest classes (air + skull/muscle), keeps the rest
+          (WM/GM/CSF). Intensity-based, not volume-based — robust once the
+          foreground seed has removed most air. (gh #12)
+        - 'non_background': all except largest class by volume (fMRI).
+    foreground_k : float
+        Sigma multiplier for the noise-floor-based initial foreground mask
+        (default 4.0). Replaces the old 5th-percentile seed that assumed
+        background ≈ 0 and produced whole-head masks on non-zero-noise-floor
+        reconstructions. (gh #12)
+    n_dark_exclude : int
+        Number of darkest-by-intensity classes to exclude in the 'middle'
+        structural strategy (default 1). Because the noise-floor foreground seed
+        already removes most air, only the single darkest class (background
+        residue / dark rim) needs excluding; the rest are kept as brain
+        (WM/GM/CSF). Excluding 2 cuts WM on T2w (validated on sub-1Y, gh #12).
+        Tunable; validate visually per contrast.
+    lcc_3d : bool
+        If True (default), keep the largest 3D connected component, dropping
+        bright non-brain structures that are spatially disconnected from the
+        brain (eyes / Harderian glands, lateral muscle). Correct for
+        full-coverage data (anat T2w, full-brain DWI). Set False for thin-slab
+        acquisitions whose slices may not be 3D-connected, to fall back to
+        per-slice LCC. (gh #12)
     """
     if mrf_radius is None:
         mrf_radius = [1, 1, 1]
     import subprocess
     import numpy as np
     from scipy import ndimage
+    from neurofaune.preprocess.utils.foreground import foreground_mask, estimate_noise_floor
 
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -310,15 +356,25 @@ def _skull_strip_atropos_bet(
     img = nib.load(input_file)
     img_data = img.get_fdata()
 
-    # Step 1: Create initial foreground mask
-    nonzero = img_data[img_data > 0]
-    if len(nonzero) == 0:
+    # Step 1: Create initial foreground mask robust to a non-zero noise floor.
+    # The old 5th-percentile seed assumed background ≈ 0; on recons with a
+    # non-zero Rician floor it kept ~95% of the image and Atropos clustered the
+    # whole head (gh #12). foreground_mask() thresholds at mu + k*sigma from a
+    # Rayleigh air estimate instead.
+    if not (img_data > 0).any():
         raise ValueError("Input image has no non-zero voxels")
-    threshold = np.percentile(nonzero, 5)
-    initial_mask = (img_data > threshold).astype(np.uint8)
+    floor = estimate_noise_floor(img_data, mask=None)
+    initial_mask = foreground_mask(img_data, k=foreground_k, floor=floor)
+    if int(initial_mask.sum()) == 0:
+        raise ValueError(
+            f"Foreground seed is empty at k={foreground_k} "
+            f"(noise floor mean={floor.mean:.1f}, sigma={floor.sigma:.1f})"
+        )
     initial_mask_file = work_dir / f"{input_file.stem}_initial_mask.nii.gz"
     nib.save(nib.Nifti1Image(initial_mask, img.affine, img.header), initial_mask_file)
-    print(f"  Initial mask (5th percentile threshold): {int(initial_mask.sum()):,} voxels")
+    print(f"  Initial mask (noise-floor mu+{foreground_k}*sigma, "
+          f"floor mean={floor.mean:.1f} sigma={floor.sigma:.1f}): "
+          f"{int(initial_mask.sum()):,} voxels")
 
     # Step 2: Atropos K-means segmentation
     print(f"  Running Atropos {n_classes}-class segmentation...")
@@ -374,9 +430,23 @@ def _skull_strip_atropos_bet(
             print(f"  Excluding background class {background_idx} ({volumes[background_idx]:,} voxels)")
             print(f"  Selected head classes (non-background): {brain_indices.tolist()}")
         else:
-            # Structural strategy: middle classes by volume (exclude largest + smallest)
-            brain_indices = sorted_indices[1:-1]
-            print(f"  Selected brain classes (middle {len(brain_indices)} by volume): {brain_indices.tolist()}")
+            # Structural strategy: exclude the n_dark_exclude darkest classes by
+            # MEAN INTENSITY (air + skull/muscle), keep the brighter ones
+            # (WM/GM/CSF). Intensity-based rather than volume-based: with the
+            # noise-floor foreground seed, air no longer dominates by volume, so
+            # the old "largest volume = background" assumption is invalid. This
+            # matches the validated MSME class rule. (gh #12)
+            class_means = []
+            for p in posteriors:
+                p_mask = nib.load(p).get_fdata() > 0.5
+                class_means.append(float(img_data[p_mask].mean()) if p_mask.any() else -np.inf)
+            order_by_intensity = np.argsort(class_means)  # darkest first
+            n_excl = min(n_dark_exclude, len(class_means) - 1)  # keep ≥1 class
+            brain_indices = np.array(sorted(order_by_intensity[n_excl:].tolist()))
+            print(f"  Class mean intensities: {[round(m, 1) for m in class_means]}")
+            print(f"  Excluded {n_excl} darkest by intensity: "
+                  f"{order_by_intensity[:n_excl].tolist()}")
+            print(f"  Selected brain classes (by intensity): {brain_indices.tolist()}")
 
         atropos_mask = np.zeros(img_data.shape)
         for i in brain_indices:
@@ -438,26 +508,37 @@ def _skull_strip_atropos_bet(
     print(f"  Atropos ∩ BET: {n_intersect:,} voxels")
     print(f"  Reduction: {n_atropos:,} -> {n_intersect:,} ({100*(n_atropos - n_intersect)/max(n_atropos, 1):.1f}% removed)")
 
-    # Step 5b: Keep only the largest connected component per slice.
-    # The Atropos "brightest class" can include scattered non-brain tissue
-    # (e.g. muscle) that happens to be bright on b0. These fragments are
-    # spatially disconnected from the brain and inflate the mask.
-    # We apply LCC per-slice (2D) to avoid dropping entire edge slices in
-    # thin-slab acquisitions where slices may not be 3D-connected.
+    # Step 5b: Drop disconnected non-brain fragments via connected components.
+    # The Atropos brain classes can include bright structures that are NOT brain
+    # — the eyes / Harderian glands and lateral muscle, which match CSF intensity
+    # on T2w (gh #12). For full-coverage data these are spatially disconnected
+    # from the brain, so keeping the largest 3D component removes them cleanly.
+    # For thin-slab acquisitions whose slices may not be 3D-connected, fall back
+    # to per-slice (2D) LCC, which avoids dropping entire edge slices.
+    final_mask = final_mask.astype(np.uint8)
     n_before_lcc = int(final_mask.sum())
-    n_removed_total = 0
-    for z in range(final_mask.shape[2]):
-        slice_mask = final_mask[:, :, z]
-        labeled, n_components = ndimage.label(slice_mask)
+    if lcc_3d:
+        labeled, n_components = ndimage.label(final_mask)
         if n_components > 1:
-            sizes = ndimage.sum(slice_mask, labeled, range(1, n_components + 1))
+            sizes = ndimage.sum(final_mask, labeled, range(1, n_components + 1))
             largest = np.argmax(sizes) + 1
-            final_mask[:, :, z] = (labeled == largest).astype(np.uint8)
-            n_removed_total += int(slice_mask.sum()) - int(final_mask[:, :, z].sum())
-    if n_removed_total > 0:
-        n_after_lcc = int(final_mask.sum())
-        print(f"  Per-slice LCC: {n_after_lcc:,} voxels "
-              f"(removed {n_removed_total:,} from disconnected fragments)")
+            final_mask = (labeled == largest).astype(np.uint8)
+            print(f"  3D LCC: {int(final_mask.sum()):,} voxels (removed "
+                  f"{n_before_lcc - int(final_mask.sum()):,} from "
+                  f"{n_components - 1} disconnected fragment(s))")
+    else:
+        n_removed_total = 0
+        for z in range(final_mask.shape[2]):
+            slice_mask = final_mask[:, :, z]
+            labeled, n_components = ndimage.label(slice_mask)
+            if n_components > 1:
+                sizes = ndimage.sum(slice_mask, labeled, range(1, n_components + 1))
+                largest = np.argmax(sizes) + 1
+                final_mask[:, :, z] = (labeled == largest).astype(np.uint8)
+                n_removed_total += int(slice_mask.sum()) - int(final_mask[:, :, z].sum())
+        if n_removed_total > 0:
+            print(f"  Per-slice LCC: {int(final_mask.sum()):,} voxels "
+                  f"(removed {n_removed_total:,} from disconnected fragments)")
 
     # Step 6: Per-slice morphological closing + hole fill.
     # Done per-slice (2D) to avoid 3D closing eroding boundary slices where
@@ -490,6 +571,9 @@ def _skull_strip_atropos_bet(
         'bet_frac': bet_frac,
         'n_classes': n_classes,
         'class_strategy': class_strategy,
+        'foreground_k': foreground_k,
+        'n_dark_exclude': n_dark_exclude,
+        'lcc_3d': lcc_3d,
         'cog': cog.tolist(),
         'posteriors': [str(p) for p in posteriors],
     }
