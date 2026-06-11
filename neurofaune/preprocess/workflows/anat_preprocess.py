@@ -601,9 +601,59 @@ def segment_brain_tissue(
     gm_data = nib.load(atropos_posteriors[2]).get_fdata() * mask_data
     csf_data = nib.load(atropos_posteriors[3]).get_fdata() * mask_data
 
+    return _finalize_tissue_maps(
+        wm_data, gm_data, csf_data, mask_img, mask_data,
+        output_dir, subject, session, tissue_confidence_threshold,
+    )
+
+
+def _order_tissue_by_intensity(
+    posterior_arrays: List[np.ndarray],
+    img_data: np.ndarray,
+    mask_data: np.ndarray,
+) -> Tuple[List[np.ndarray], List[float], List[int]]:
+    """Order tissue posteriors by ascending mask-weighted mean image intensity.
+
+    On a T2w image the three tissue classes order WM (darkest) < GM < CSF
+    (brightest), so the returned arrays map to (WM, GM, CSF). This replaces any
+    reliance on Atropos' non-deterministic KMeans class ordering.
+
+    Returns
+    -------
+    (ordered_arrays, mean_intensities, order)
+        ordered_arrays : posteriors masked and sorted by ascending mean intensity
+        mean_intensities : per-input mean intensity (in original input order)
+        order : indices that sort the inputs by ascending mean intensity
+    """
+    mean_int: List[float] = []
+    for p_arr in posterior_arrays:
+        p = p_arr * mask_data
+        w = p.sum()
+        mean_int.append(float((img_data * p).sum() / w) if w > 0 else 0.0)
+    order = [int(i) for i in np.argsort(mean_int)]  # ascending intensity
+    ordered = [posterior_arrays[i] * mask_data for i in order]
+    return ordered, mean_int, order
+
+
+def _finalize_tissue_maps(
+    wm_data: np.ndarray,
+    gm_data: np.ndarray,
+    csf_data: np.ndarray,
+    mask_img: "nib.Nifti1Image",
+    mask_data: np.ndarray,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    tissue_confidence_threshold: float = 0.35,
+) -> Dict[str, Path]:
+    """Build a hard segmentation from tissue probabilities and write the
+    GM/WM/CSF probseg + dseg outputs. Shared by both the posterior-reuse path
+    (segment_brain_tissue) and the standalone path (segment_brain_tissue_atropos).
+
+    Label convention: 1 = WM, 2 = GM, 3 = CSF.
+    """
     # Create hard segmentation (argmax of tissue probabilities)
     # Only assign tissue label if max probability exceeds threshold (reduces speckling)
-    # Label 1 = WM, Label 2 = GM, Label 3 = CSF
     tissue_stack = np.stack([wm_data, gm_data, csf_data], axis=-1)
     max_prob = np.max(tissue_stack, axis=-1)
     segmentation_data = np.argmax(tissue_stack, axis=-1) + 1  # Add 1 so labels are 1,2,3
@@ -635,6 +685,89 @@ def segment_brain_tissue(
         'wm_prob': wm_prob,
         'csf_prob': csf_prob
     }
+
+
+def segment_brain_tissue_atropos(
+    brain_image: Path,
+    mask_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    n_classes: int = 3,
+    iterations: int = 5,
+    convergence: float = 0.0,
+    mrf_smoothing_factor: float = 0.1,
+    mrf_radius: Optional[List[int]] = None,
+    tissue_confidence_threshold: float = 0.35,
+) -> Dict[str, Path]:
+    """Standalone Atropos tissue segmentation, decoupled from skull stripping.
+
+    Runs a 3-class Atropos segmentation *inside the provided brain mask* to
+    produce GM/WM/CSF probability maps. Used when the skull-strip method
+    (e.g. bet4animal) does not yield reusable posteriors, so tissue segmentation
+    (needed for aCompCor nuisance regressors and WM-focused analyses) no longer
+    depends on how the brain was extracted.
+
+    Classes are labeled by MEAN T2w INTENSITY within each class (robust to the
+    non-deterministic ordering of Atropos+KMeans): on T2w, WM is darkest, GM
+    intermediate, CSF brightest. The brain mask (not the skull-strip method)
+    bounds the segmentation.
+    """
+    import os
+    from nipype.interfaces.ants import Atropos
+
+    if mrf_radius is None:
+        mrf_radius = [1, 1, 1]
+    if n_classes != 3:
+        raise ValueError(
+            "segment_brain_tissue_atropos labels GM/WM/CSF and requires "
+            f"n_classes=3, got {n_classes}"
+        )
+
+    print("\n" + "="*60)
+    print("TISSUE SEGMENTATION (GM, WM, CSF) — standalone Atropos")
+    print("="*60)
+    print(f"Running Atropos {n_classes}-class segmentation within brain mask "
+          "(decoupled from skull stripping)...")
+
+    mask_img = nib.load(str(mask_file))
+    mask_data = mask_img.get_fdata()
+    img_data = nib.load(str(brain_image)).get_fdata()
+
+    seg_work = Path(output_dir) / 'tissue_atropos'
+    seg_work.mkdir(parents=True, exist_ok=True)
+    cwd = os.getcwd()
+    try:
+        os.chdir(seg_work)
+        atropos = Atropos()
+        atropos.inputs.dimension = 3
+        atropos.inputs.intensity_images = [str(brain_image)]
+        atropos.inputs.mask_image = str(mask_file)
+        atropos.inputs.number_of_tissue_classes = n_classes
+        atropos.inputs.n_iterations = iterations
+        atropos.inputs.convergence_threshold = convergence
+        atropos.inputs.mrf_smoothing_factor = mrf_smoothing_factor
+        atropos.inputs.mrf_radius = mrf_radius
+        atropos.inputs.initialization = 'KMeans'
+        atropos.inputs.save_posteriors = True
+        result = atropos.run()
+    finally:
+        os.chdir(cwd)
+
+    posteriors = [Path(p) for p in result.outputs.posteriors]
+    post_arrays = [nib.load(str(p)).get_fdata() for p in posteriors]
+
+    # Label classes by mask-weighted mean image intensity (ascending):
+    # T2w WM (darkest) < GM < CSF (brightest).
+    ordered, mean_int, order = _order_tissue_by_intensity(post_arrays, img_data, mask_data)
+    wm_data, gm_data, csf_data = ordered[0], ordered[1], ordered[2]
+    print(f"  Class intensity order (asc): WM={mean_int[order[0]]:.1f} "
+          f"GM={mean_int[order[1]]:.1f} CSF={mean_int[order[2]]:.1f}")
+
+    return _finalize_tissue_maps(
+        wm_data, gm_data, csf_data, mask_img, mask_data,
+        output_dir, subject, session, tissue_confidence_threshold,
+    )
 
 
 def bias_field_correction(
@@ -1125,8 +1258,31 @@ def run_anatomical_preprocessing(
             session=session,
             tissue_confidence_threshold=tissue_conf_threshold,
         )
+    elif get_config_value(config, 'anatomical.tissue_segmentation.enabled', default=True):
+        # Skull-strip method (e.g. bet4animal) gave no reusable posteriors:
+        # run a standalone Atropos segmentation inside the brain mask so we still
+        # get GM/WM/CSF maps (for aCompCor + WM analyses), decoupled from extraction.
+        print("\n" + "="*60)
+        print("STEP 4: Tissue Segmentation (standalone)")
+        print("="*60)
+        tissue_conf_threshold = get_config_value(
+            config, 'anatomical.skull_strip.tissue_confidence_threshold', default=0.35
+        )
+        tissue_results = segment_brain_tissue_atropos(
+            brain_image=t2w_n4_file,
+            mask_file=mask_file,
+            output_dir=work_dir,
+            subject=subject,
+            session=session,
+            n_classes=get_config_value(config, 'anatomical.tissue_segmentation.n_classes', default=3),
+            iterations=get_config_value(config, 'anatomical.tissue_segmentation.iterations', default=5),
+            convergence=get_config_value(config, 'anatomical.tissue_segmentation.convergence', default=0.0),
+            mrf_smoothing_factor=get_config_value(config, 'anatomical.tissue_segmentation.mrf_smoothing_factor', default=0.1),
+            mrf_radius=get_config_value(config, 'anatomical.tissue_segmentation.mrf_radius', default=[1, 1, 1]),
+            tissue_confidence_threshold=tissue_conf_threshold,
+        )
     else:
-        print("\n  No Atropos posteriors available (adaptive skull strip) — skipping tissue segmentation")
+        print("\n  Tissue segmentation disabled (anatomical.tissue_segmentation.enabled=false)")
         tissue_results = {'segmentation': None, 'gm_prob': None, 'wm_prob': None, 'csf_prob': None}
 
     # Step 4b: 3D acquisition detection and resampling
