@@ -13,7 +13,7 @@ PKG := neurofaune
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync test regression check integration lint typecheck advisory format clean
+.PHONY: help sync test regression check integration lint typecheck advisory format clean capabilities
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -21,6 +21,10 @@ help:  ## Show available targets
 
 sync:  ## Install package + dev deps from uv.lock (reproducible)
 	$(UV) sync --extra dev
+
+capabilities:  ## Regenerate CAPABILITIES.md from the code (run after adding entry points)
+	$(UV) run --extra dev neurofaune capabilities --format md --output CAPABILITIES.md
+	@echo "✅ CAPABILITIES.md regenerated"
 
 # ---------------------------------------------------------------------------
 # THE GATE (blocking)

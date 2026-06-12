@@ -89,5 +89,21 @@ def bids(config, raw, bids, session_regex, relabel, maps, layout, subjects, scan
     click.echo(f"\nDone: {len(results)} session(s), {total} image(s) written to {cfg.bids_root}")
 
 
+@main.command()
+@click.option("--format", "fmt", type=click.Choice(["text", "md", "json"]), default="text",
+              help="output format (default: text)")
+@click.option("--output", type=click.Path(path_type=Path), help="write to file instead of stdout")
+def capabilities(fmt, output):
+    """List everything neurofaune can do (generated from the code)."""
+    from neurofaune import capabilities as cap
+    render = {"text": cap.render_text, "md": cap.render_markdown, "json": cap.render_json}[fmt]
+    text = render()
+    if output:
+        output.write_text(text)
+        click.echo(f"wrote {output}")
+    else:
+        click.echo(text, nl=False)
+
+
 if __name__ == "__main__":
     main()
