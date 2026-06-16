@@ -212,8 +212,15 @@ anatomical:
 
 # Diffusion preprocessing
 diffusion:
-  # Denoising
-  denoise_method: "dwidenoise"  # MP-PCA denoising
+  # Pre-eddy denoising + Gibbs-ringing removal (dipy; applied to raw 4-D in order
+  # MP-PCA denoise -> Gibbs removal, before intensity norm / masking / eddy).
+  denoise_method: "dwidenoise"  # label only; MP-PCA is done via dipy mppca
+  denoise:
+    enabled: true               # MP-PCA denoising (dipy.denoise.localpca.mppca)
+    patch_radius: 2
+  degibbs:
+    enabled: true               # Gibbs-ringing removal (dipy.denoise.gibbs)
+    num_processes: 1
 
   # Intensity normalization (RECOMMENDED - enabled by default)
   # Different Bruker ParaVision reconstruction settings can result in vastly

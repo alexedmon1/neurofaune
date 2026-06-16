@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 ENTRY_PREFIXES = (
     "run_", "build_", "register_", "propagate_", "fit_", "compute_",
     "extract_", "segment_", "select_", "preprocess_", "convert_",
+    "denoise_", "degibbs_", "warp_", "normalize_",
 )
 
 # Modules excluded from the scan (not capability surface).
