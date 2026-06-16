@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.3.0a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 119 across 9 stages.
+**Entry points:** 128 across 9 stages.
 
 
 ## analysis
@@ -28,9 +28,13 @@ _Generated from the code by `neurofaune capabilities` (v0.3.0a0)._ Do not edit b
 | `compute_partial_etasq_from_fstat` | `neurofaune.analysis.stats.effect_size` | Compute partial eta-squared map from F-statistic. | — |
 | `compute_partial_etasq_from_tstat` | `neurofaune.analysis.stats.effect_size` | Compute partial eta-squared map from t-statistic. | — |
 | `run_randomise` | `neurofaune.analysis.stats.randomise_wrapper` | Execute FSL randomise with specified parameters. | — |
+| `warp_metric_to_sigma` | `neurofaune.analysis.tbss.prepare_tbss` | Warp a DTI metric map to SIGMA study-space using the full transform chain. | `atlas.study_space`, `paths.study_root` |
 | `build_coverage_mask` | `neurofaune.analysis.tbss.prepare_template_tbss` | Intersect WM mask with per-voxel subject coverage. | — |
+| `warp_atlas_to_template` | `neurofaune.analysis.tbss.prepare_template_tbss` | Warp SIGMA atlas assets to per-cohort template space. | — |
+| `warp_metric_to_template` | `neurofaune.analysis.tbss.prepare_template_tbss` | Warp one DTI metric to template space via the FA_to_template affine. | — |
 | `run_tbss_statistical_analysis` | `neurofaune.analysis.tbss.run_tbss_stats` | Run statistical analysis on prepared TBSS data. | `paths.study_root` |
 | `compute_jacobian` | `neurofaune.analysis.vbm.prepare_vbm` | Compute Jacobian determinant from a displacement field. | — |
+| `warp_tissue_to_sigma` | `neurofaune.analysis.vbm.prepare_vbm` | Warp a native-space tissue probability map to SIGMA space. | — |
 
 ## atlas
 
@@ -81,8 +85,11 @@ _Generated from the code by `neurofaune capabilities` (v0.3.0a0)._ Do not edit b
 | function | module | summary | config keys |
 |---|---|---|---|
 | `select_best` | `neurofaune.preprocess.utils.bet4animal` | Pick the best candidate (pure function — unit-testable without FSL). | — |
+| `degibbs_dwi` | `neurofaune.preprocess.utils.dwi_denoise` | Remove Gibbs ringing from a 3-D/4-D image (slices along axis 2). Returns ``out_file``. | — |
+| `denoise_dwi_mppca` | `neurofaune.preprocess.utils.dwi_denoise` | MP-PCA denoise a 4-D DWI series. Returns ``out_file``. | — |
 | `convert_5d_to_4d` | `neurofaune.preprocess.utils.dwi_utils` | Convert 5D DWI data to 4D by averaging or selecting across 5th dimension. | — |
 | `extract_b0_volume` | `neurofaune.preprocess.utils.dwi_utils` | Extract first b0 volume from DWI data. | — |
+| `normalize_dwi_intensity` | `neurofaune.preprocess.utils.dwi_utils` | Normalize DWI intensity to a consistent range for robust brain extraction. | — |
 | `extract_acompcor_components` | `neurofaune.preprocess.utils.func.acompcor` | Extract aCompCor components from CSF and white matter regions. | — |
 | `run_melodic_ica` | `neurofaune.preprocess.utils.func.ica_denoising` | Run FSL MELODIC ICA decomposition. | — |
 | `compute_meica_kappa_rho` | `neurofaune.preprocess.utils.func.meica_classify` | Compute kappa (TE-dependence) and rho (TE-independence) for MELODIC components. | — |
@@ -103,6 +110,7 @@ _Generated from the code by `neurofaune capabilities` (v0.3.0a0)._ Do not edit b
 | `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA directly to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
 | `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
+| `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
 | `extract_brain_from_bold` | `neurofaune.preprocess.workflows.func_preprocess` | Extract brain from BOLD image using BET. | — |
 | `extract_confounds` | `neurofaune.preprocess.workflows.func_preprocess` | Extract confound regressors from motion parameters. | — |
 | `register_bold_to_t2w` | `neurofaune.preprocess.workflows.func_preprocess` | Register mean BOLD to T2w within the same subject. | — |
@@ -145,6 +153,7 @@ _Generated from the code by `neurofaune capabilities` (v0.3.0a0)._ Do not edit b
 | `propagate_labels_to_subject` | `neurofaune.templates.registration` | Propagate atlas labels to subject space. | — |
 | `register_subject_to_template` | `neurofaune.templates.registration` | Register subject image to study template. | — |
 | `register_within_subject` | `neurofaune.templates.registration` | Register two modalities within the same subject (e.g., T2w ↔ FA). | — |
+| `warp_bold_to_sigma` | `neurofaune.templates.registration` | Warp BOLD-space maps to SIGMA atlas space. | — |
 | `compute_correlation` | `neurofaune.templates.registration_qc` | Compute Pearson correlation between two images. | — |
 | `compute_dice_coefficient` | `neurofaune.templates.registration_qc` | Compute Dice coefficient between two binary masks. | — |
 | `compute_registration_metrics` | `neurofaune.templates.registration_qc` | Compute comprehensive registration QC metrics. | — |
