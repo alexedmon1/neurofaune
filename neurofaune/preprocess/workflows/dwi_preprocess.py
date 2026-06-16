@@ -515,6 +515,35 @@ def run_dwi_preprocessing(
         raise ValueError(f"Unexpected DWI shape: {img.shape}")
 
     # ==========================================================================
+    # Step 1.5: MP-PCA denoising + Gibbs-ringing removal (pre-eddy, on raw 4-D)
+    # ==========================================================================
+    denoise_cfg = config.get('diffusion', {}).get('denoise', {})
+    degibbs_cfg = config.get('diffusion', {}).get('degibbs', {})
+    do_denoise = denoise_cfg.get('enabled', True)
+    do_degibbs = degibbs_cfg.get('enabled', True)
+    if do_denoise or do_degibbs:
+        from neurofaune.preprocess.utils.dwi_denoise import denoise_dwi_mppca, degibbs_dwi
+        print("\n" + "="*80)
+        print("Step 1.5: Denoising (MP-PCA) + Gibbs Removal")
+        print("="*80)
+        if do_denoise:
+            den_file = work_dir / f'{subject}_{session}_dwi_4d_denoised.nii.gz'
+            print("\n  MP-PCA denoising (dipy mppca)...")
+            denoise_dwi_mppca(dwi_input, den_file,
+                              patch_radius=denoise_cfg.get('patch_radius', 2))
+            dwi_input = den_file
+            print(f"  Denoised DWI: {den_file.name}")
+        if do_degibbs:
+            dg_file = work_dir / f'{subject}_{session}_dwi_4d_degibbs.nii.gz'
+            print("\n  Gibbs-ringing removal (dipy gibbs_removal)...")
+            degibbs_dwi(dwi_input, dg_file,
+                        num_processes=degibbs_cfg.get('num_processes', 1))
+            dwi_input = dg_file
+            print(f"  De-Gibbs DWI: {dg_file.name}")
+    else:
+        print("\n  [INFO] DWI denoising + Gibbs removal disabled in config")
+
+    # ==========================================================================
     # Step 2: Gradient table validation
     # ==========================================================================
     print("\n" + "="*80)
