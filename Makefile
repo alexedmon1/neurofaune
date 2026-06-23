@@ -5,8 +5,6 @@
 #
 # ADVISORY (informational — never blocks, never rewrites files on its own):
 #     make advisory →  ruff + mypy, reported but allowed to fail
-#
-# See plans/main-plan.md for the IRL implementation-testing loop this gate serves.
 
 UV  ?= uv
 PKG := neurofaune

@@ -45,55 +45,6 @@ uv run python scripts/batch_preprocess_dwi.py --bids-root /path/to/bids --output
 uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/output
 ```
 
-## Development Loop — The Gate (READ BEFORE CHANGING PACKAGE CODE)
-
-This package uses an **IRL implementation-testing loop** to control the boundary
-of every change before it reaches research. Full spec: [`plans/main-plan.md`](plans/main-plan.md).
-
-**The gate is the only promotion signal.** A change may be merged/tagged only
-when `make check` is green — locally *and* on CI.
-
-```bash
-make check        # THE GATE (blocking): unit tests + regression goldens. Must pass.
-make advisory     # ruff + mypy — informational only, NEVER blocks (code is lint-dirty by choice)
-make integration  # SLOW tier: real-tool (ANTs/FSL) end-to-end; run before a release tag, not every change
-make sync         # uv sync --extra dev (reproducible env)
-```
-
-**Two test tiers** (markers in `pyproject.toml`; suite in `tests/regression/`):
-- **Gate tier** (hermetic, every change): deterministic boundaries — `connectivity/`,
-  `voxelwise/`, `qc/`, and preprocessing **workflow assembly** (`preprocess/`, frozen via
-  `tests/regression/_workflow.py` — gates pipeline refactors *without running ANTs/FSL*).
-- **Integration tier** (`@pytest.mark.integration`, local/HPC, NOT in the PR gate): end-to-end
-  ANTs/FSL output compared by **derived metrics** (`_derived.py`: Dice, correlation, summary)
-  within loose tolerance — never raw voxels (not bit-reproducible).
-
-**Regression goldens = the frozen contract.** Inputs come from the canonical registry
-`tests/regression/fixtures.py` (seeded synthetic; only the golden output is committed).
-- NEVER weaken or silently change a golden to make a candidate pass.
-- Changing a golden is a deliberate, separate, reviewed commit:
-  ```bash
-  NEUROFAUNE_UPDATE_GOLDEN=1 make regression   # regenerate, then commit golden/ alone with a reason
-  ```
-
-**Comparing competing implementations** (e.g. old vs refactor) — use git worktrees so
-the main checkout stays clean and candidates run against the *same* committed golden:
-```bash
-git worktree add ~/sandbox/.worktrees/neurofaune-<cand> -b loop/<cand>
-cd ~/sandbox/.worktrees/neurofaune-<cand> && make sync && make check   # green = behavior preserved
-# ... pick the green winner, then:
-git -C ~/sandbox/neurofaune merge --ff-only loop/<cand> && make check  # re-verify on main
-git -C ~/sandbox/neurofaune worktree remove ~/sandbox/.worktrees/neurofaune-<cand>
-```
-
-**Promotion boundary = a git tag.** Research projects pin `neurofaune @ git+...@<tag>`;
-they never pin `main`. Untagged work never reaches research. Record each iteration in
-`plans/main-plan-activity.md` + `plans/main-plan-log.csv`.
-
-**Refactoring a module that has no golden yet?** First mint one from the *current trusted*
-implementation (add a `@pytest.mark.regression` test calling it on a `fixtures.py` input,
-run `NEUROFAUNE_UPDATE_GOLDEN=1 make regression`, commit the golden), *then* start the refactor.
-
 ## Architecture Overview
 
 Neurofaune is a rodent-specific MRI preprocessing pipeline built on Nipype/ANTs.

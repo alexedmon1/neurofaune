@@ -37,10 +37,3 @@ tests/regression/
        assert_array_matches_golden(result, "fc_matrix")
    ```
 4. `make check` (or `make regression`) now fails if any candidate drifts.
-
-## The loop
-
-When two implementations compete (old vs refactor), check each out in its own
-worktree (`~/sandbox/.worktrees/...`), run `make check` in each, and compare
-against the *same* committed golden. Only a green candidate gets tagged and
-pinned in research. See `plans/main-plan.md`.

@@ -6,7 +6,7 @@ on:
   pull_request:
 
 # A green run here == the gate passed == the commit is safe to tag and pin
-# in a research project. See plans/main-plan.md.
+# in a research project.
 env:
   # Pre-opt into Node 24 ahead of GitHub's 2026-06-02 forced migration
   # (setup-uv@v6 still ships a Node 20 runtime as of this writing).

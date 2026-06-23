@@ -5,8 +5,7 @@ The *boundary* of an implementation is a frozen contract:
     reproduce a fixed output (``golden/``) within tolerance.
 
 Any number of candidate implementations can be compared against the same
-golden output, which is exactly how the IRL implementation-testing loop
-"controls the boundary" — see ``plans/main-plan.md``.
+golden output to verify behavior is preserved across changes.
 
 Updating golden outputs is deliberate and explicit:
     NEUROFAUNE_UPDATE_GOLDEN=1 uv run pytest -m regression

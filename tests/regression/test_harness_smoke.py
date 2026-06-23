@@ -5,8 +5,8 @@ mechanism works: matching arrays pass, drifted arrays fail, and the
 NEUROFAUNE_UPDATE_GOLDEN path writes a fresh golden.
 
 Real per-change regression tests (comparing a candidate implementation
-against a committed golden) are added during a loop iteration — see
-tests/regression/README.md and plans/main-plan.md.
+against a committed golden) are added as needed — see
+tests/regression/README.md.
 """
 
 from __future__ import annotations

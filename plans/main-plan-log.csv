@@ -1,4 +1,0 @@
-timestamp,change,candidate,gate_result,advisory_notes,tag,pkg_hash
-2026-05-26T00:00:00Z,loop-scaffold,baseline-main,pass,"ruff/mypy advisory only",,
-2026-05-26T16:20:00Z,spearman-rankdata-axis,B-axis0-faithful,pass,"promoted to main",,5df2bdb
-2026-05-26T16:20:00Z,spearman-rankdata-axis,C-axis1-wrongaxis,fail,"regression golden drift; discarded",,
