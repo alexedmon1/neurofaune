@@ -2,8 +2,8 @@
 """Config-driven Bruker (ParaVision) → BIDS/NIfTI conversion.
 
 This is the user-facing converter behind ``neurofaune bids``. It is driven
-entirely by a study config (no per-study Python) and fixes the limitations of
-the legacy ``bruker_convert.process_all_cohorts`` path:
+entirely by a study config (no per-study Python) and replaced the removed legacy
+``bruker_convert.process_all_cohorts`` driver, fixing its limitations:
 
 * **Config-driven discovery + naming** — session directories are matched by a
   configurable regex with named ``subject``/``session`` groups, in either a
@@ -17,9 +17,9 @@ the legacy ``bruker_convert.process_all_cohorts`` path:
 * **Per-session ``scans.tsv``** — every scan (written *and* skipped, with reason)
   plus parameters is listed in each ``ses-`` folder (gh #8).
 
-The legacy functions in :mod:`neurofaune.utils.bruker_convert` are left intact
-for back-compat; this module reuses their pure helpers where they are correct
-(``get_bruker_method``, ``extract_bids_metadata``, ``extract_bvec_bval``).
+This module reuses the per-scan reader helpers in
+:mod:`neurofaune.utils.bruker_convert` (``get_bruker_method``,
+``extract_bids_metadata``, ``extract_bvec_bval``, ``inventory_session``).
 """
 from __future__ import annotations
 

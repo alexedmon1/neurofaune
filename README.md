@@ -69,9 +69,9 @@ This creates the directory structure, generates `config.yaml` with all preproces
 ### 2. Convert Bruker Data
 
 ```bash
-uv run python scripts/convert_bruker_to_bids.py \
-    --bruker-root /path/to/bruker \
-    --output-root /path/to/study/raw/bids
+# Config-driven Bruker -> BIDS (raw/bids roots + session regex live in config.yaml;
+# --raw/--bids override). Add --dry-run to preview discovered sessions first.
+neurofaune bids --config config.yaml
 ```
 
 ---

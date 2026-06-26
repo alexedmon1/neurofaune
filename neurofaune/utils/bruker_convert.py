@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Bruker to BIDS conversion utilities.
+Per-scan Bruker readers used by the BIDS converter.
 
-Handles:
-- Discovery of Bruker sessions across different cohort structures
+This module provides the low-level helpers the live converter
+(:mod:`neurofaune.utils.bids` -- the ``neurofaune bids`` CLI) consumes:
 - Bruker method classification (T2w, DTI, fMRI, spectroscopy, MSME, MTR)
-- Conversion to NIfTI format
-- Organization into BIDS-like structure
+- per-scan BIDS metadata + echo-time extraction
+- conversion to NIfTI
+- per-session inventory and best-scan selection
+
+The old standalone study driver (``process_all_cohorts`` and the
+``scripts/convert_bruker_to_bids.py`` entry point) has been removed; use
+``neurofaune bids`` / :func:`neurofaune.utils.bids.convert_study` instead.
 """
 
 import csv
@@ -57,71 +62,6 @@ METHOD_SUFFIX_MAP = {
     'Bruker:FieldMap': 'fieldmap',
 }
 
-
-def parse_session_directory(session_dir: Path) -> Optional[Dict[str, str]]:
-    """
-    Parse Bruker session directory name to extract metadata.
-
-    Handles three formats:
-    1. Old format: YYYYMMDD_HHMMSS_IRC###_Rat###_1_1
-    2. Old format variant: YYYYMMDD_HHMMSS_IRC###_Cohort#_Rat###_1_1
-    3. New format: IRC####_Cohort#_Rat###_1__Rat###__p##_1_1_YYYYMMDD_HHMMSS
-
-    Parameters
-    ----------
-    session_dir : Path
-        Session directory path
-
-    Returns
-    -------
-    dict or None
-        Metadata dict with keys: subject, session, cohort, date
-        Returns None if parsing fails
-    """
-    dirname = session_dir.name
-
-    # Try new format first (IRC####_Cohort#_Rat###...)
-    match = re.match(
-        r'IRC\d+_Cohort(\d+)_Rat(\d+)_.*__(p\d+)_.*_(\d{8})_\d{6}',
-        dirname
-    )
-    if match:
-        cohort, rat_num, age, date = match.groups()
-        return {
-            'subject': f'Rat{rat_num}',
-            'session': age,
-            'cohort': f'Cohort{cohort}',
-            'date': date
-        }
-
-    # Try old format (YYYYMMDD_HHMMSS_IRC###_Rat###_1_1)
-    # Also handles: YYYYMMDD_HHMMSS_IRC###_Cohort#_Rat###_1_1
-    match = re.match(
-        r'(\d{8})_\d{6}_IRC\d+_(?:Cohort\d+_)?Rat(\d+)_',
-        dirname
-    )
-    if match:
-        date, rat_num = match.groups()
-        # Need to infer session from parent directory
-        parent = session_dir.parent
-        if parent.name.startswith('p'):
-            age = parent.name.split('_')[0]  # e.g., p30 from p30_202210
-        else:
-            age = 'unknown'
-
-        # Infer cohort from path
-        cohort_match = re.search(r'Cohort(\d+)', str(session_dir))
-        cohort = f'Cohort{cohort_match.group(1)}' if cohort_match else 'unknown'
-
-        return {
-            'subject': f'Rat{rat_num}',
-            'session': age,
-            'cohort': cohort,
-            'date': date
-        }
-
-    logger.warning(f"Could not parse session directory: {dirname}")
-    return None
 
 
 def get_bruker_method(scan_dir: Path) -> Optional[str]:
@@ -188,48 +128,6 @@ def classify_scan(scan_dir: Path) -> Optional[Dict[str, str]]:
         'scan_number': scan_dir.name
     }
 
-
-def find_bruker_sessions(cohort_dirs: List[Path]) -> List[Dict[str, any]]:
-    """
-    Discover all Bruker sessions across cohorts.
-
-    Parameters
-    ----------
-    cohort_dirs : list of Path
-        List of cohort directories to scan
-
-    Returns
-    -------
-    list of dict
-        List of session metadata dicts
-    """
-    sessions = []
-
-    for cohort_dir in cohort_dirs:
-        if not cohort_dir.exists():
-            logger.warning(f"Cohort directory not found: {cohort_dir}")
-            continue
-
-        # Find all potential session directories
-        # Look for directories containing Bruker scans (numbered directories with 'method' files)
-        for item in cohort_dir.rglob('*'):
-            if not item.is_dir():
-                continue
-
-            # Check if this looks like a Bruker session
-            # (contains numbered subdirectories with method files)
-            numbered_dirs = [d for d in item.iterdir() if d.is_dir() and d.name.isdigit()]
-            if numbered_dirs:
-                # Check if at least one has a method file
-                has_method = any((d / 'method').exists() for d in numbered_dirs[:3])
-                if has_method:
-                    metadata = parse_session_directory(item)
-                    if metadata:
-                        metadata['path'] = item
-                        metadata['scans'] = sorted([int(d.name) for d in numbered_dirs])
-                        sessions.append(metadata)
-
-    return sessions
 
 
 def _resolve_echo_time(method: Dict[str, any],
@@ -524,108 +422,6 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
         return False
 
 
-def organize_to_bids(
-    session_info: Dict[str, any],
-    scan_classifications: List[Dict[str, str]],
-    output_root: Path,
-    convert: bool = True
-) -> Dict[str, List[Path]]:
-    """
-    Organize Bruker session into BIDS-like structure.
-
-    Parameters
-    ----------
-    session_info : dict
-        Session metadata from parse_session_directory
-    scan_classifications : list of dict
-        List of scan classifications
-    output_root : Path
-        Output root directory (will create raw/bids/ structure)
-    convert : bool
-        Whether to convert files (or just organize existing NIfTI)
-
-    Returns
-    -------
-    dict
-        Mapping of modality → list of output files
-    """
-    subject = session_info['subject']
-    session = session_info['session']
-    session_path = session_info['path']
-
-    # Create BIDS structure
-    bids_root = output_root / 'raw' / 'bids'
-    subject_dir = bids_root / f'sub-{subject}' / f'ses-{session}'
-
-    output_files = {}
-
-    for scan_class in scan_classifications:
-        modality = scan_class['modality']
-        suffix = scan_class['suffix']
-        scan_num = scan_class['scan_number']
-
-        # Skip spectroscopy for now - will handle in Phase 6 with fsl-mrs
-        if modality == 'spec':
-            logger.debug(f"Skipping spectroscopy scan {scan_num} (will process in Phase 6)")
-            continue
-
-        # Create modality directory
-        modality_dir = subject_dir / modality
-        modality_dir.mkdir(parents=True, exist_ok=True)
-
-        # Output filename
-        output_filename = f'sub-{subject}_ses-{session}_run-{scan_num}_{suffix}.nii.gz'
-        output_file = modality_dir / output_filename
-
-        # Convert if requested
-        if convert:
-            scan_dir = session_path / scan_num
-            success = convert_bruker_to_nifti(scan_dir, output_file)
-            if success:
-                output_files.setdefault(modality, []).append(output_file)
-
-                # Extract and save BIDS metadata as JSON sidecar
-                json_file = output_file.with_suffix('').with_suffix('.json')
-                metadata = extract_bids_metadata(scan_dir, modality)
-                if metadata:
-                    with open(json_file, 'w') as f:
-                        json.dump(metadata, f, indent=2)
-                    logger.info(f"  Saved metadata: {json_file.name}")
-
-        # For DTI, also extract bvecs/bvals
-        if modality == 'dwi' and convert and success:
-            bvec_file = output_file.with_suffix('').with_suffix('.bvec')
-            bval_file = output_file.with_suffix('').with_suffix('.bval')
-
-            # Extract gradient info
-            gradient_info = extract_bvec_bval(scan_dir)
-            if gradient_info is not None:
-                bval, bvec = gradient_info
-
-                # Transpose bvec for FSL format (3 x N)
-                bvec_t = bvec.T if bvec.ndim > 1 else bvec.reshape(-1, 1).T
-
-                # Save in FSL format
-                np.savetxt(bvec_file, bvec_t, fmt='%.6f', delimiter=' ')
-                np.savetxt(bval_file, bval.reshape(1, -1), fmt='%.1f', delimiter=' ')
-
-                logger.info(f"  Saved gradients: {bvec_file.name}, {bval_file.name}")
-            else:
-                logger.warning(f"  Could not extract gradients for DTI scan {scan_num}")
-
-    # Create dataset_description.json
-    dataset_desc = {
-        'Name': 'Rodent 7T MRI Study',
-        'BIDSVersion': '1.6.0',
-        'DatasetType': 'raw'
-    }
-    desc_file = bids_root / 'dataset_description.json'
-    if not desc_file.exists():
-        with open(desc_file, 'w') as f:
-            json.dump(dataset_desc, f, indent=2)
-
-    return output_files
-
 
 def inventory_session(
     session_dir: Path,
@@ -851,67 +647,3 @@ def select_best_msme_from_inventory(
 
     return max(msme_scans, key=_score)
 
-
-def process_all_cohorts(
-    cohort_root: Path,
-    output_root: Path,
-    cohorts: Optional[List[str]] = None
-) -> Dict[str, any]:
-    """
-    Process all Bruker cohorts and convert to BIDS.
-
-    Parameters
-    ----------
-    cohort_root : Path
-        Root directory containing Cohort# directories
-    output_root : Path
-        Output root directory
-    cohorts : list of str, optional
-        Specific cohorts to process (e.g., ['Cohort1', 'Cohort2'])
-        If None, processes all found cohorts
-
-    Returns
-    -------
-    dict
-        Summary statistics
-    """
-    # Find cohort directories
-    if cohorts:
-        cohort_dirs = [cohort_root / c for c in cohorts]
-    else:
-        cohort_dirs = sorted(cohort_root.glob('Cohort*'))
-
-    logger.info(f"Found {len(cohort_dirs)} cohort directories")
-
-    # Discover sessions
-    sessions = find_bruker_sessions(cohort_dirs)
-    logger.info(f"Found {len(sessions)} Bruker sessions")
-
-    # Process each session
-    stats = {
-        'sessions_processed': 0,
-        'scans_converted': 0,
-        'failures': []
-    }
-
-    for session in sessions:
-        logger.info(f"Processing {session['subject']} {session['session']} from {session['cohort']}")
-
-        # Classify all scans
-        classifications = []
-        for scan_num in session['scans']:
-            scan_dir = session['path'] / str(scan_num)
-            scan_class = classify_scan(scan_dir)
-            if scan_class:
-                classifications.append(scan_class)
-
-        # Organize to BIDS
-        try:
-            output_files = organize_to_bids(session, classifications, output_root)
-            stats['sessions_processed'] += 1
-            stats['scans_converted'] += sum(len(files) for files in output_files.values())
-        except Exception as e:
-            logger.error(f"Failed to process session {session['path']}: {e}")
-            stats['failures'].append(str(session['path']))
-
-    return stats
