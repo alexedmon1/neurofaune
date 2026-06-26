@@ -97,12 +97,16 @@ def generate_eddy_qc_report(
     )
     figure_paths.append(signal_fig)
 
-    # Generate volume-wise QC
+    # Generate volume-wise QC (pass the real brain mask for a stable SNR estimate)
+    brain_mask_arr = None
+    if mask_file is not None and Path(mask_file).exists():
+        brain_mask_arr = nib.load(str(mask_file)).get_fdata() > 0
     volume_metrics, volume_fig = _plot_volume_metrics(
         data,
         subject,
         session,
-        figures_dir
+        figures_dir,
+        brain_mask=brain_mask_arr,
     )
     qc_metrics.update(volume_metrics)
     figure_paths.append(volume_fig)
@@ -292,31 +296,66 @@ def _plot_volume_metrics(
     data: np.ndarray,
     subject: str,
     session: str,
-    output_dir: Path
+    output_dir: Path,
+    brain_mask: Optional[np.ndarray] = None,
 ) -> tuple:
-    """Calculate and plot volume-wise quality metrics."""
-    n_volumes = data.shape[3]
+    """Calculate and plot volume-wise SNR.
 
-    # Calculate SNR estimate per volume (mean / std within brain)
-    # Use simple thresholding for brain mask
-    brain_mask = np.mean(data, axis=3) > (0.1 * np.max(data))
+    Per-volume SNR = mean signal inside the brain / std of the background (air),
+    the standard magnitude-MRI estimate. This is robust where the previous
+    ``mean(brain) / std(brain)`` was not: that ratio is the inverse coefficient
+    of variation *within* the brain — it measures anatomical/diffusion contrast,
+    not noise — and it depended on a brain mask thresholded at ``0.1 * max(data)``,
+    which a single hot voxel pushes above the real tissue intensity. That made the
+    mask empty (SNR -> 0) or a tiny near-uniform patch (SNR -> ~1e5), the 0-vs-huge
+    split seen across sessions.
+
+    Parameters
+    ----------
+    brain_mask : np.ndarray, optional
+        Boolean brain mask in the DWI grid. Strongly preferred; when absent a
+        robust percentile fallback (60th percentile of the positive temporal mean,
+        which ignores hot-voxel outliers) is used instead.
+    """
+    from scipy.ndimage import binary_dilation
+
+    n_volumes = data.shape[3]
+    tmean = np.mean(data, axis=3)
+
+    if brain_mask is not None:
+        brain = np.asarray(brain_mask).astype(bool)
+    else:
+        # Fallback: 0.1 x a high percentile of the temporal mean. This is the old
+        # 0.1*max(data) heuristic with max -> p99, so a single hot voxel no longer
+        # pushes the threshold past real tissue (the empty-mask -> SNR 0 failure).
+        pos = tmean[tmean > 0]
+        ref = float(np.percentile(pos, 99)) if pos.size else 0.0
+        brain = tmean > 0.1 * ref
+
+    # Background (noise) = well outside the brain; dilate to exclude partial-volume
+    # rim, and keep only non-zero voxels so eddy zero-padding doesn't deflate sigma.
+    background = ~binary_dilation(brain, iterations=4)
+    have_regions = bool(brain.sum()) and bool(background.sum())
 
     snr_volumes = []
     for i in range(n_volumes):
         vol = data[..., i]
-        brain_signal = vol[brain_mask]
-        if len(brain_signal) > 0:
-            snr = np.mean(brain_signal) / (np.std(brain_signal) + 1e-10)
-            snr_volumes.append(snr)
+        if have_regions:
+            noise_vals = vol[background]
+            noise_vals = noise_vals[noise_vals != 0]
+            noise = float(np.std(noise_vals)) if noise_vals.size else 0.0
+            sig = float(np.mean(vol[brain]))
+            snr_volumes.append(sig / noise if noise > 0 else np.nan)
         else:
-            snr_volumes.append(0)
+            snr_volumes.append(np.nan)
 
-    snr_volumes = np.array(snr_volumes)
+    snr_volumes = np.asarray(snr_volumes, dtype=float)
+    valid = snr_volumes[np.isfinite(snr_volumes)]
 
     metrics = {
-        'mean_snr': float(np.mean(snr_volumes)),
-        'min_snr': float(np.min(snr_volumes)),
-        'snr_std': float(np.std(snr_volumes))
+        'mean_snr': float(np.mean(valid)) if valid.size else float('nan'),
+        'min_snr': float(np.min(valid)) if valid.size else float('nan'),
+        'snr_std': float(np.std(valid)) if valid.size else float('nan'),
     }
 
     # Plot SNR per volume
