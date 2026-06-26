@@ -232,7 +232,53 @@ def find_bruker_sessions(cohort_dirs: List[Path]) -> List[Dict[str, any]]:
     return sessions
 
 
-def extract_bids_metadata(scan_dir: Path, modality: str) -> Dict[str, any]:
+def _resolve_echo_time(method: Dict[str, any],
+                       echo_index: Optional[int] = None) -> Dict[str, any]:
+    """Resolve BIDS ``EchoTime`` (seconds), and ``EchoNumber`` for multi-echo,
+    from a parsed Bruker ``method`` dict (brukerapi ``{key: {'value': ...}}``).
+
+    Multi-echo sequences (e.g. T2S_EPI) store the per-echo TEs in the
+    ``EffectiveEchoTime`` array; there ``PVM_EchoTime`` is the echo SPACING
+    (~0.29 ms) and must NOT be used as a TE. Prefer the per-echo array and index
+    it by ``echo_index`` (0-based) when known; otherwise use the first echo.
+    Falls back to scalar ``PVM_EchoTime`` for single-echo. Returns {} if no TE.
+    """
+    def _val(key):
+        entry = method.get(key)
+        return entry.get('value') if isinstance(entry, dict) else None
+
+    n_echoes = 1
+    ne = _val('PVM_NEchoImages')
+    if ne is not None:
+        try:
+            n_echoes = int(ne)
+        except (TypeError, ValueError):
+            n_echoes = 1
+
+    te_array = None
+    for key in ('EffectiveEchoTime', 'GradientEchoTime'):
+        val = _val(key)
+        if isinstance(val, (list, tuple)) and len(val) >= 1:
+            te_array = [float(x) for x in val]
+            break
+
+    out: Dict[str, any] = {}
+    if te_array is not None:
+        if n_echoes > 1 and echo_index is not None and 0 <= echo_index < len(te_array):
+            out['EchoTime'] = te_array[echo_index] / 1000.0   # ms -> s
+            out['EchoNumber'] = int(echo_index) + 1
+        else:
+            out['EchoTime'] = te_array[0] / 1000.0
+    else:
+        scalar = _val('PVM_EchoTime')
+        if scalar is not None:
+            te = scalar[0] if isinstance(scalar, (list, tuple)) else scalar
+            out['EchoTime'] = float(te) / 1000.0
+    return out
+
+
+def extract_bids_metadata(scan_dir: Path, modality: str,
+                          echo_index: Optional[int] = None) -> Dict[str, any]:
     """
     Extract BIDS-relevant metadata from Bruker scan.
 
@@ -242,6 +288,11 @@ def extract_bids_metadata(scan_dir: Path, modality: str) -> Dict[str, any]:
         Bruker scan directory
     modality : str
         BIDS modality (anat, dwi, func, spec)
+    echo_index : int, optional
+        0-based echo index of the image this sidecar describes. For multi-echo
+        sequences the per-echo TE is taken from the ``EffectiveEchoTime`` array at
+        this index; pass it when writing one sidecar per echo so each gets its own
+        EchoTime (and EchoNumber). When None, the first echo's TE is used.
 
     Returns
     -------
@@ -294,12 +345,8 @@ def extract_bids_metadata(scan_dir: Path, modality: str) -> Dict[str, any]:
         if 'PVM_RepetitionTime' in method:
             metadata['RepetitionTime'] = float(method['PVM_RepetitionTime']['value']) / 1000.0  # Convert ms to s
 
-        if 'PVM_EchoTime' in method:
-            echo_time = method['PVM_EchoTime']['value']
-            if isinstance(echo_time, list):
-                metadata['EchoTime'] = float(echo_time[0]) / 1000.0  # First echo, ms to s
-            else:
-                metadata['EchoTime'] = float(echo_time) / 1000.0
+        # Echo time, incl. per-echo TEs for multi-echo (see _resolve_echo_time).
+        metadata.update(_resolve_echo_time(method, echo_index))
 
         # Flip angle
         if 'PVM_ExcPulseAngle' in method:

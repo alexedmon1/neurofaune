@@ -395,7 +395,11 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
                 files = convert_scan(sd, modality, suffix, base_stem, out_dir, cfg.voxel_scale)
                 status = "written" if files else "failed"
                 for f in files:
-                    md = extract_bids_metadata(sd, modality)
+                    # Per-echo sidecar: pass the echo index so multi-echo files
+                    # each get their own EchoTime (not a single shared value).
+                    m_echo = re.search(r"_echo-(\d+)", f.name)
+                    ei = int(m_echo.group(1)) - 1 if m_echo else None
+                    md = extract_bids_metadata(sd, modality, echo_index=ei)
                     if md:
                         f.with_suffix("").with_suffix(".json").write_text(json.dumps(md, indent=2))
                 if modality == "dwi" and files:
