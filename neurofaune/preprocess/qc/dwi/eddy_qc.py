@@ -27,6 +27,8 @@ def generate_eddy_qc_report(
     brain_file: Optional[Path] = None,
     mask_file: Optional[Path] = None,
     skull_strip_info: Optional[Dict] = None,
+    radius: float = 50.0,
+    voxel_scale: float = 10.0,
 ) -> Dict[str, Any]:
     """
     Generate comprehensive QC report for eddy correction.
@@ -79,7 +81,9 @@ def generate_eddy_qc_report(
             eddy_params,
             subject,
             session,
-            figures_dir
+            figures_dir,
+            radius=radius,
+            voxel_scale=voxel_scale,
         )
         qc_metrics.update(motion_metrics)
         figure_paths.append(motion_fig)
@@ -169,48 +173,74 @@ def _plot_motion_parameters(
     params_file: Path,
     subject: str,
     session: str,
-    output_dir: Path
+    output_dir: Path,
+    radius: float = 50.0,
+    voxel_scale: float = 10.0,
 ) -> tuple:
-    """Plot motion parameters from eddy correction."""
-    # Load eddy parameters (rotations and translations)
+    """Plot motion parameters from eddy correction.
+
+    FSL eddy's ``.eddy_parameters`` stores the 6 rigid-body movement parameters
+    in its leading columns as **translations (mm) in columns 0-2 and rotations
+    (radians) in columns 3-5**. Framewise displacement is computed with the
+    shared :func:`calculate_framewise_displacement` helper, which converts the
+    rotations to mm on a sphere of the given head ``radius`` and divides by
+    ``voxel_scale`` so the result is in real (unscaled) mm.
+
+    ``voxel_scale`` is required because rodent images are acquired with a header
+    whose voxel sizes are inflated by that factor (the standard 10x scaling that
+    keeps voxel dimensions inside neuroimaging-tool limits); eddy estimates
+    motion in that scaled space, so translations and rotational arc lengths are
+    inflated by ``voxel_scale`` and must be divided back out. Defaults
+    (radius=50, voxel_scale=10) match the fMRI motion-QC path.
+    """
+    from ..func.motion_qc import calculate_framewise_displacement
+
     params = np.loadtxt(params_file)
 
-    # Extract translations (columns 3-5) and rotations (columns 0-2)
-    translations = params[:, 3:6]  # in mm
-    rotations = params[:, 0:3] * 180 / np.pi  # convert to degrees
+    # FSL eddy column order: translations (mm, header-scaled) then rotations (rad).
+    translations = params[:, 0:3]
+    rotations = params[:, 3:6]
 
-    # Calculate framewise displacement (FD)
+    # FD in real mm. calculate_framewise_displacement expects [rot, trans] order
+    # and handles the radius conversion + voxel_scale division.
     fd = np.zeros(len(params))
-    fd[1:] = np.sum(np.abs(np.diff(translations, axis=0)), axis=1) + \
-             np.sum(np.abs(np.diff(rotations, axis=0)), axis=1) * 50 / 180  # assume 50mm head radius
+    fd[1:] = calculate_framewise_displacement(
+        np.column_stack([rotations, translations]),
+        radius=radius,
+        voxel_scale=voxel_scale,
+    )
+
+    # Report translations in real (unscaled) mm and rotations in degrees.
+    translations_mm = translations / voxel_scale
+    rotations_deg = rotations * 180 / np.pi
 
     # Calculate summary metrics
     metrics = {
         'mean_fd': float(np.mean(fd)),
         'max_fd': float(np.max(fd)),
-        'mean_translation': float(np.mean(np.abs(translations))),
-        'max_translation': float(np.max(np.abs(translations))),
-        'mean_rotation': float(np.mean(np.abs(rotations))),
-        'max_rotation': float(np.max(np.abs(rotations))),
-        'n_high_motion_volumes': int(np.sum(fd > 0.5))  # FD > 0.5mm threshold
+        'mean_translation': float(np.mean(np.abs(translations_mm))),
+        'max_translation': float(np.max(np.abs(translations_mm))),
+        'mean_rotation': float(np.mean(np.abs(rotations_deg))),
+        'max_rotation': float(np.max(np.abs(rotations_deg))),
+        'n_high_motion_volumes': int(np.sum(fd > 0.5))  # FD > 0.5mm (real) threshold
     }
 
     # Create figure
     fig, axes = plt.subplots(3, 1, figsize=(12, 10))
 
     # Plot translations
-    axes[0].plot(translations[:, 0], label='X (mm)', alpha=0.7)
-    axes[0].plot(translations[:, 1], label='Y (mm)', alpha=0.7)
-    axes[0].plot(translations[:, 2], label='Z (mm)', alpha=0.7)
+    axes[0].plot(translations_mm[:, 0], label='X (mm)', alpha=0.7)
+    axes[0].plot(translations_mm[:, 1], label='Y (mm)', alpha=0.7)
+    axes[0].plot(translations_mm[:, 2], label='Z (mm)', alpha=0.7)
     axes[0].set_ylabel('Translation (mm)')
     axes[0].set_title(f'Motion Parameters: {subject} {session}')
     axes[0].legend(loc='upper right')
     axes[0].grid(True, alpha=0.3)
 
     # Plot rotations
-    axes[1].plot(rotations[:, 0], label='Pitch (deg)', alpha=0.7)
-    axes[1].plot(rotations[:, 1], label='Roll (deg)', alpha=0.7)
-    axes[1].plot(rotations[:, 2], label='Yaw (deg)', alpha=0.7)
+    axes[1].plot(rotations_deg[:, 0], label='Pitch (deg)', alpha=0.7)
+    axes[1].plot(rotations_deg[:, 1], label='Roll (deg)', alpha=0.7)
+    axes[1].plot(rotations_deg[:, 2], label='Yaw (deg)', alpha=0.7)
     axes[1].set_ylabel('Rotation (degrees)')
     axes[1].legend(loc='upper right')
     axes[1].grid(True, alpha=0.3)
