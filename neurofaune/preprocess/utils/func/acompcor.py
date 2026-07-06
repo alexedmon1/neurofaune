@@ -14,6 +14,7 @@ import numpy as np
 import nibabel as nib
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+from scipy.ndimage import binary_erosion
 from sklearn.decomposition import PCA
 import matplotlib
 matplotlib.use('Agg')
@@ -27,6 +28,7 @@ def extract_acompcor_components(
     wm_mask: Path,
     n_components: int = 5,
     variance_threshold: float = 0.5,
+    erode_voxels: int = 1,
     output_file: Optional[Path] = None
 ) -> Dict[str, Any]:
     """
@@ -44,6 +46,15 @@ def extract_acompcor_components(
         Number of principal components to extract (default: 5)
     variance_threshold : float
         Minimum probability/intensity threshold for tissue masks (default: 0.5)
+    erode_voxels : int
+        Number of binary-erosion iterations applied to each thresholded tissue
+        mask before extracting timeseries (default: 1). Erosion pulls the CSF/WM
+        masks away from the tissue boundary so partial-volume/edge voxels
+        carrying GM/BOLD signal are excluded — without it, over-inclusive brain
+        masks (e.g. animal skull-strip rims) make aCompCor regress out real
+        signal. Set to 0 to disable. If erosion would leave fewer voxels than
+        ``n_components``, the un-eroded mask is used for that tissue and a
+        warning is printed.
     output_file : Path, optional
         Output TSV file for aCompCor regressors
 
@@ -102,6 +113,24 @@ def extract_acompcor_components(
     # Threshold masks
     csf_binary = csf_data > variance_threshold
     wm_binary = wm_data > variance_threshold
+
+    # Erode away boundary/partial-volume voxels so aCompCor samples tissue
+    # interiors only (see erode_voxels docstring). Fall back per-tissue if
+    # erosion would decimate a small mask below the component count.
+    if erode_voxels > 0:
+        for label, binary in [('CSF', csf_binary), ('WM', wm_binary)]:
+            eroded = binary_erosion(binary, iterations=erode_voxels)
+            n_eroded = int(np.sum(eroded))
+            n_orig = int(np.sum(binary))
+            if n_eroded < n_components:
+                print(f"  WARNING: {label} erosion ({erode_voxels} iter) left "
+                      f"{n_eroded} < {n_components} voxels — using un-eroded mask")
+                continue
+            print(f"  {label} erosion ({erode_voxels} iter): {n_orig} -> {n_eroded} voxels")
+            if label == 'CSF':
+                csf_binary = eroded
+            else:
+                wm_binary = eroded
 
     n_voxels_csf = np.sum(csf_binary)
     n_voxels_wm = np.sum(wm_binary)
@@ -187,7 +216,8 @@ def extract_acompcor_components(
         'n_voxels_csf': int(n_voxels_csf),
         'n_voxels_wm': int(n_voxels_wm),
         'n_components_csf': int(n_components_csf),
-        'n_components_wm': int(n_components_wm)
+        'n_components_wm': int(n_components_wm),
+        'erode_voxels': int(erode_voxels)
     }
 
     print(f"  ✓ Extracted {all_components.shape[1]} aCompCor components")
@@ -418,6 +448,11 @@ def generate_acompcor_qc(
             <div class="metric">
                 <span class="metric-label">Total Components:</span>
                 <span class="metric-value">{acompcor_results['n_components_csf'] + acompcor_results['n_components_wm']}</span>
+            </div>
+
+            <div class="metric">
+                <span class="metric-label">Mask Erosion (iter):</span>
+                <span class="metric-value">{acompcor_results.get('erode_voxels', 0)}</span>
             </div>
         </div>
 
