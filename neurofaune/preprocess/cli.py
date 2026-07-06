@@ -2,8 +2,8 @@
 """neurofaune command-line interface.
 
 Wired as the ``neurofaune`` console entrypoint (``[project.scripts]``). Today it
-exposes the config-driven Bruker→BIDS converter; more subcommands (preprocess
-phases) can be added to the same group.
+exposes the config-driven Bruker→BIDS converter and a capabilities report; more
+subcommands (preprocess phases) can be added to the same group.
 """
 from __future__ import annotations
 

@@ -1,12 +1,29 @@
-# neurofaune cleanup — pending dead-code sweep (judgment needed)
+# neurofaune cleanup — dead-code sweep (SECOND PASS DONE)
 
 Follow-up to the legacy-Bruker→BIDS removal + first dead-code sweep (commit
-`8593dfd`, ships in v0.5.0-alpha). The items below were flagged by an audit but
-NOT removed: each needs a quick verification (grep importers, check
-README/CLI/docs refs) and a human call — some may be hand-run tools.
+`8593dfd`). The second pass (verified refs, then deleted) ships in v0.5.0-alpha:
+removed the root-level stray scripts + ad-hoc tests, the phase-numbered CovNet
+cluster (`covnet_common/prepare/nbs/territory/whole_network`), the one-off
+utilities, `scripts/dev_registration/`, both deprecation-shim packages
+(`analysis/covnet`, `analysis/reporting`), and the stale docs
+(`docs/archive/`, two `docs/plans/*`, six root `*_SUMMARY/STATUS/ROADMAP/...`).
+Fixed dangling refs (README AUC-lookup block, CLAUDE.md dev-scripts + STATUS
+sections, TBSS_GUIDE link, `cli.py` docstring).
+
+**DEFERRED (kept this pass — live coupling / uncertain):**
+- `scripts/migrate_qc_structure.py` — the current QC migrator (KEEP).
+- TBSS wrappers `run_tbss_prepare.py`, `run_tbss_stats.py`,
+  `run_template_tbss_prepare.py`, `run_template_tbss_pipeline.sh` — the two
+  `run_template_tbss_*` form a live orchestration pair (the `.sh` calls the
+  `.py`); the other two are thin wrappers that MAY be superseded by
+  `run_tbss_analysis.py` but were left pending confirmation of the active TBSS
+  entrypoint. Revisit when the TBSS pipeline is next touched.
 
 **Before deleting any item:** confirm zero importers, no README/CLI/CI reference,
 and it isn't a tool you still run by hand. Run `make check` after deletions.
+
+---
+## ORIGINAL FLAGGED LIST (for reference)
 
 ## Likely-stray scripts
 

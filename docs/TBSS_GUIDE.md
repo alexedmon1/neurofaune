@@ -450,4 +450,3 @@ done
 - [README](../README.md) — Full pipeline overview (Steps 1-5)
 - [Architecture](ARCHITECTURE.md) — Codebase structure and design decisions
 - [Atlas Guide](ATLAS_GUIDE.md) — SIGMA atlas setup and management
-- [TBSS Implementation Plan](plans/TBSS_IMPLEMENTATION_PLAN.md) — Original design document

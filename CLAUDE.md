@@ -255,26 +255,11 @@ When making changes:
 3. Update study-specific wrappers as needed
 4. Never add logic that only exists in scripts — if it's useful, it belongs in the module
 
-## Development Scripts
-
-Development scripts in `scripts/dev_registration/` follow numbered naming for workflow order:
-- `001_explore_geometry.py` - Investigate image geometries
-- `003_register_dwi_to_t2w.py` - FA→T2w registration (deprecated, see register_fa_to_template)
-- `007_register_subject_to_template.py` - Subject→template registration
-- `008_register_template_to_sigma.py` - Template→SIGMA registration
-
-Run with: `uv run python scripts/dev_registration/003_register_dwi_to_t2w.py`
-
 ## Current Status
 
-**Completed**: Phases 1-8 (Foundation, Atlas, Anatomical, DTI, Templates, MSME, fMRI, Template-Based Registration)
-
-See **README.md** for comprehensive workflow documentation including:
+See **README.md** and **CAPABILITIES.md** for current workflow documentation and
+the authoritative catalog of what the package exposes:
 - Two-phase workflow (Initialize → Preprocessing)
 - Study-space atlas setup
 - Batch processing commands
 - Output directory structure
-
-See **STATUS.md** for detailed current state and **ROADMAP.md** for full project plan.
-
-**Important**: Update STATUS.md after completing significant milestones or before ending a session.

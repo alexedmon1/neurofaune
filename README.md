@@ -169,16 +169,6 @@ uv run python scripts/batch_skull_strip_qc.py --config config.yaml
 
 ROI-based analyses that operate in SIGMA atlas space. Outputs are organized under `{study_root}/network/` with subdirectories per analysis type and modality.
 
-### AUC Lookup Preparation
-
-Generate a session-matched AUC (area under the plasma concentration curve) lookup CSV from the ROI wide CSVs. This is used as a continuous pharmacokinetic exposure target across all applicable analyses (regression, MCCA, TBSS, VBM, MVPA, CovNet):
-
-```bash
-uv run python scripts/prepare_auc_lookup.py \
-    --roi-csv /path/to/network/roi/roi_FA_wide.csv \
-    --output /path/to/study/auc_lookup.csv
-```
-
 ### ROI Extraction
 
 Extract mean metric values (FA, MD, T2, etc.) per SIGMA atlas region across all subjects:
