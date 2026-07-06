@@ -2045,6 +2045,7 @@ def run_functional_preprocessing(
             n_components=acompcor_config.get('num_components', 5),
             variance_threshold=acompcor_config.get('variance_threshold', 0.5),
             erode_voxels=acompcor_config.get('erode_voxels', 1),
+            brain_mask=brain_mask,
             output_file=acompcor_file
         )
 

@@ -29,6 +29,7 @@ def extract_acompcor_components(
     n_components: int = 5,
     variance_threshold: float = 0.5,
     erode_voxels: int = 1,
+    brain_mask: Optional[Path] = None,
     output_file: Optional[Path] = None
 ) -> Dict[str, Any]:
     """
@@ -47,14 +48,23 @@ def extract_acompcor_components(
     variance_threshold : float
         Minimum probability/intensity threshold for tissue masks (default: 0.5)
     erode_voxels : int
-        Number of binary-erosion iterations applied to each thresholded tissue
-        mask before extracting timeseries (default: 1). Erosion pulls the CSF/WM
-        masks away from the tissue boundary so partial-volume/edge voxels
-        carrying GM/BOLD signal are excluded — without it, over-inclusive brain
-        masks (e.g. animal skull-strip rims) make aCompCor regress out real
-        signal. Set to 0 to disable. If erosion would leave fewer voxels than
-        ``n_components``, the un-eroded mask is used for that tissue and a
-        warning is printed.
+        Number of binary-erosion iterations used to strip partial-volume/edge
+        voxels carrying GM/BOLD signal from the tissue masks (default: 1). Set
+        to 0 to disable.
+
+        When ``brain_mask`` is supplied (the intended path), the BRAIN mask is
+        eroded by ``erode_voxels`` and each tissue mask is intersected with it,
+        removing only the over-inclusive outer rim (e.g. animal skull-strip
+        rims) while preserving thin interior WM/CSF structure. Eroding the thin
+        tissue masks directly instead — the fallback when no brain mask is given
+        — decimates them at rodent resolution (a 1-2 voxel shell nearly
+        vanishes under one erosion), so a brain mask should almost always be
+        passed. If erosion leaves fewer voxels than ``n_components`` for a
+        tissue, that tissue keeps its un-eroded mask and a warning is printed.
+    brain_mask : Path, optional
+        Binary brain mask in the same space as the tissue masks. When given and
+        ``erode_voxels > 0``, drives the erode-brain-then-intersect rim removal
+        described above.
     output_file : Path, optional
         Output TSV file for aCompCor regressors
 
@@ -114,23 +124,36 @@ def extract_acompcor_components(
     csf_binary = csf_data > variance_threshold
     wm_binary = wm_data > variance_threshold
 
-    # Erode away boundary/partial-volume voxels so aCompCor samples tissue
-    # interiors only (see erode_voxels docstring). Fall back per-tissue if
-    # erosion would decimate a small mask below the component count.
+    # Strip partial-volume/edge voxels so aCompCor samples tissue interiors
+    # only (see erode_voxels docstring). Preferred path: erode the BRAIN mask
+    # and intersect (rim removal, keeps thin interior WM/CSF). Fallback with no
+    # brain mask: erode each tissue mask directly (decimates thin rodent masks).
+    # Either way, keep a tissue's un-eroded mask if erosion drops it below the
+    # component count.
     if erode_voxels > 0:
+        eroded_brain = None
+        if brain_mask is not None:
+            brain_data = nib.load(brain_mask).get_fdata() > 0
+            eroded_brain = binary_erosion(brain_data, iterations=erode_voxels)
+            print(f"  Brain-mask erosion ({erode_voxels} iter): "
+                  f"{int(np.sum(brain_data))} -> {int(np.sum(eroded_brain))} voxels")
+
         for label, binary in [('CSF', csf_binary), ('WM', wm_binary)]:
-            eroded = binary_erosion(binary, iterations=erode_voxels)
-            n_eroded = int(np.sum(eroded))
             n_orig = int(np.sum(binary))
-            if n_eroded < n_components:
-                print(f"  WARNING: {label} erosion ({erode_voxels} iter) left "
-                      f"{n_eroded} < {n_components} voxels — using un-eroded mask")
-                continue
-            print(f"  {label} erosion ({erode_voxels} iter): {n_orig} -> {n_eroded} voxels")
-            if label == 'CSF':
-                csf_binary = eroded
+            if eroded_brain is not None:
+                candidate = binary & eroded_brain
             else:
-                wm_binary = eroded
+                candidate = binary_erosion(binary, iterations=erode_voxels)
+            n_new = int(np.sum(candidate))
+            if n_new < n_components:
+                print(f"  WARNING: {label} erosion ({erode_voxels} iter) left "
+                      f"{n_new} < {n_components} voxels — using un-eroded mask")
+                continue
+            print(f"  {label} erosion ({erode_voxels} iter): {n_orig} -> {n_new} voxels")
+            if label == 'CSF':
+                csf_binary = candidate
+            else:
+                wm_binary = candidate
 
     n_voxels_csf = np.sum(csf_binary)
     n_voxels_wm = np.sum(wm_binary)

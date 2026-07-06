@@ -85,3 +85,47 @@ def test_default_erodes(tmp_path):
     res = extract_acompcor_components(bold, csf, wm, n_components=5)
     assert res["erode_voxels"] == 1
     assert res["n_voxels_csf"] == 8 ** 3
+
+
+def test_brain_intersect_preserves_interior_tissue(tmp_path):
+    # The intended path: erode the BRAIN mask and intersect. Interior tissue
+    # (well inside the brain) must survive fully — unlike per-tissue erosion,
+    # which shrinks it. This is the fix for thin rodent masks vanishing.
+    bold = _bold(tmp_path)
+    brain = _block_mask(tmp_path, "brain", 2, 18)   # 16^3 brain
+    wm = _block_mask(tmp_path, "wm", 5, 15)          # 10^3, fully interior
+    csf = _block_mask(tmp_path, "csf", 5, 15)
+
+    res = extract_acompcor_components(
+        bold, csf, wm, n_components=5, erode_voxels=1, brain_mask=brain
+    )
+    # eroded brain = [3:17]^3 still fully contains the [5:15]^3 tissue blocks
+    assert res["n_voxels_wm"] == 10 ** 3
+    assert res["n_voxels_csf"] == 10 ** 3
+    # ...whereas per-tissue erosion of the same block would shrink it to 8^3
+    per_tissue = extract_acompcor_components(
+        bold, csf, wm, n_components=5, erode_voxels=1, brain_mask=None
+    )
+    assert per_tissue["n_voxels_wm"] == 8 ** 3
+    assert res["n_voxels_wm"] > per_tissue["n_voxels_wm"]
+
+
+def test_brain_intersect_strips_rim(tmp_path):
+    # Tissue voxels sitting on the brain surface (the over-inclusive rim) must
+    # be removed by the eroded-brain intersection; interior voxels kept.
+    bold = _bold(tmp_path)
+    brain_data = np.zeros(SHAPE)
+    brain_data[2:18, 2:18, 2:18] = 1.0
+    brain = _write_nifti(tmp_path / "brain.nii.gz", brain_data)
+
+    wm_data = np.zeros(SHAPE)
+    wm_data[5:15, 5:15, 5:15] = 1.0   # 1000 interior voxels
+    wm_data[2, 5:15, 5:15] = 1.0      # 100 voxels on the brain face (rim)
+    wm = _write_nifti(tmp_path / "wm.nii.gz", wm_data)
+    csf = _block_mask(tmp_path, "csf", 5, 15)
+
+    res = extract_acompcor_components(
+        bold, csf, wm, n_components=5, erode_voxels=1, brain_mask=brain
+    )
+    # rim voxels at x=2 fall outside eroded brain ([3:17]) -> dropped; interior kept
+    assert res["n_voxels_wm"] == 1000
