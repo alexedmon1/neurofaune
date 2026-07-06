@@ -46,10 +46,8 @@ from neurofaune.utils.transforms import create_transform_registry
 from neurofaune.preprocess.workflows.anat_preprocess import run_anatomical_preprocessing
 from neurofaune.templates.manifest import TemplateManifest, find_template_manifest
 from neurofaune.templates.builder import (
-    select_subjects_for_template,
     build_template,
     register_template_to_sigma,
-    save_template_metadata
 )
 from neurofaune.templates.anat_registration import (
     register_anat_to_template,
@@ -59,6 +57,16 @@ from neurofaune.templates.anat_registration import (
 )
 from neurofaune.templates.registration_qc import generate_template_qc_report
 from neurofaune.utils.select_anatomical import is_3d_only_subject
+
+
+def sigma_template_path(atlas_mgr, masked: bool = False) -> Path:
+    """Resolve the on-disk SIGMA template path.
+
+    ``AtlasManager.get_template`` returns a loaded ``Nifti1Image`` (it replaced
+    the old ``get_template_path``); since it is produced by ``nib.load(path)``,
+    the image's filename is the path we need for ANTs registration.
+    """
+    return Path(atlas_mgr.get_template(masked=masked).get_filename())
 
 
 def discover_subjects(bids_dir: Path, cohort: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -393,8 +401,9 @@ def run_phase1_template_building(
     templates_dir = output_dir / 'templates' / 'anat' / cohort
     templates_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check for existing template
-    template_path = templates_dir / f'tpl-{cohort}_T2w.nii.gz'
+    # Check for existing template (build_template appends 'template0' to the prefix)
+    template_prefix = templates_dir / f'tpl-{cohort}_T2w_'
+    template_path = templates_dir / f'tpl-{cohort}_T2w_template0.nii.gz'
     manifest_path = templates_dir / 'template_manifest.json'
 
     if template_path.exists() and manifest_path.exists() and not force:
@@ -457,12 +466,11 @@ def run_phase1_template_building(
     print("Step 1.2: Building template")
     print("-"*60)
 
-    input_files = [str(s['preprocessed_t2w']) for s in preprocessed_subjects]
+    input_files = [Path(s['preprocessed_t2w']) for s in preprocessed_subjects]
 
     template_result = build_template(
         input_files=input_files,
-        output_dir=templates_dir,
-        template_name=f'tpl-{cohort}_T2w',
+        output_prefix=template_prefix,
         n_iterations=4
     )
 
@@ -478,19 +486,19 @@ def run_phase1_template_building(
     atlas_mgr = AtlasManager(config)
 
     # Get SIGMA template path
-    sigma_t2w = atlas_mgr.get_template_path('T2', masked=False)
+    sigma_t2w = sigma_template_path(atlas_mgr, masked=False)
 
     sigma_result = register_template_to_sigma(
         template_file=template_path,
         sigma_template=sigma_t2w,
-        output_dir=templates_dir / 'transforms'
+        output_prefix=templates_dir / 'transforms' / f'tpl-{cohort}_to-SIGMA_'
     )
 
     # Update manifest with SIGMA registration
-    manifest.sigma_affine = Path(sigma_result['affine'])
-    manifest.sigma_warp = Path(sigma_result['warp']) if sigma_result.get('warp') else None
+    manifest.sigma_affine = Path(sigma_result['affine_transform'])
+    manifest.sigma_warp = Path(sigma_result['warp_transform']) if sigma_result.get('warp_transform') else None
     manifest.sigma_inverse_warp = Path(sigma_result['inverse_warp']) if sigma_result.get('inverse_warp') else None
-    manifest.sigma_warped_template = Path(sigma_result['warped_template'])
+    manifest.sigma_warped_template = Path(sigma_result['warped'])
 
     # Generate template QC
     print("\n" + "-"*60)
@@ -502,9 +510,10 @@ def run_phase1_template_building(
 
     generate_template_qc_report(
         template_file=template_path,
-        sigma_template=sigma_t2w,
-        warped_template=sigma_result['warped_template'],
-        output_dir=qc_dir
+        sigma_file=sigma_t2w,
+        warped_template_file=sigma_result['warped'],
+        output_dir=qc_dir,
+        cohort=cohort
     )
 
     # Save manifest
@@ -631,7 +640,7 @@ def run_phase2_full_processing(
             try:
                 if direct_mode:
                     # Direct to SIGMA (not recommended)
-                    sigma_t2w = atlas_mgr.get_template_path('T2', masked=False)
+                    sigma_t2w = sigma_template_path(atlas_mgr, masked=False)
                     reg_result = register_anat_to_sigma_direct(
                         t2w_file=subj['preprocessed_t2w'],
                         sigma_template=sigma_t2w,
