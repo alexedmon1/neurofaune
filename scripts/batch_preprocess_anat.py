@@ -485,8 +485,10 @@ def run_phase1_template_building(
     from neurofaune.atlas import AtlasManager
     atlas_mgr = AtlasManager(config)
 
-    # Get SIGMA template path
-    sigma_t2w = sigma_template_path(atlas_mgr, masked=False)
+    # Get SIGMA template path. Use the brain-only (masked) template: the study
+    # template is skull-stripped, so registering to a masked SIGMA aligns brain-to-
+    # brain (tighter fit, no non-brain fringe) instead of brain-to-whole-head.
+    sigma_t2w = sigma_template_path(atlas_mgr, masked=True)
 
     sigma_result = register_template_to_sigma(
         template_file=template_path,

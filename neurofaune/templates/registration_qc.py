@@ -67,9 +67,17 @@ def compute_correlation(
     Returns
     -------
     float
-        Pearson correlation coefficient (-1 to 1)
+        Pearson correlation coefficient (-1 to 1), or NaN when the images are
+        not on the same voxel grid (e.g. moving vs fixed *before* registration,
+        which have different shapes — a voxelwise correlation is undefined there).
     """
+    # Voxelwise correlation requires both images on the same grid.
+    if img1.shape != img2.shape:
+        return float("nan")
+
     if mask is not None:
+        if mask.shape != img1.shape:
+            return float("nan")
         mask = mask > 0
         v1 = img1[mask].flatten()
         v2 = img2[mask].flatten()
