@@ -13,6 +13,12 @@ from scipy import ndimage
 from typing import Tuple, Optional, List
 import tempfile
 
+# Per-slice FSL bet timeout. bet on a single 2D slice is a sub-second operation,
+# but it intermittently hangs on degenerate slices; without a bound, the
+# no-timeout subprocess.run blocks forever (observed: 15h stalls that wedged a
+# whole batch run). Generous vs. real runtime so a loaded box can't false-trip.
+BET_SLICE_TIMEOUT_S = 120.0
+
 
 def calculate_slice_cog(slice_data: np.ndarray) -> Tuple[float, float]:
     """Calculate center of gravity for a 2D slice."""
@@ -38,7 +44,8 @@ def test_bet_frac_on_slice(
     cog: Tuple[float, float],
     invert_intensity: bool = False,
     use_R_flag: bool = False,
-    voxel_sizes: Optional[Tuple[float, float, float]] = None
+    voxel_sizes: Optional[Tuple[float, float, float]] = None,
+    bet_timeout: float = BET_SLICE_TIMEOUT_S,
 ) -> Tuple[Optional[np.ndarray], int]:
     """
     Test a specific BET frac value on a slice.
@@ -106,7 +113,21 @@ def test_bet_frac_on_slice(
 
     cmd.append('-F')
 
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd, check=False, capture_output=True, text=True,
+            timeout=bet_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        # bet hung on this slice; subprocess.run has already killed it. Treat as
+        # a failed frac so find_optimal_frac_for_slice skips it and tries the
+        # next value — never block the whole run on one wedged bet.
+        print(f"      Slice {slice_idx}: bet TIMED OUT after {bet_timeout:.0f}s "
+              f"(frac={frac}) — skipping this frac")
+        input_file.unlink(missing_ok=True)
+        Path(output_base + '_mask.nii.gz').unlink(missing_ok=True)
+        Path(output_base + '.nii.gz').unlink(missing_ok=True)
+        return None, 0
 
     # Check for mask
     mask_file = Path(output_base + '_mask.nii.gz')
