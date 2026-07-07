@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.2a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 128 across 9 stages.
+**Entry points:** 130 across 9 stages.
 
 
 ## analysis
@@ -145,6 +145,8 @@ _Generated from the code by `neurofaune capabilities` (v0.5.2a0)._ Do not edit b
 | `extract_mean_bold` | `neurofaune.templates.builder` | Extract mean or median timepoint from 4D BOLD data. | — |
 | `register_template_to_sigma` | `neurofaune.templates.builder` | Register study template to SIGMA atlas (T2w only). | — |
 | `select_subjects_for_template` | `neurofaune.templates.builder` | Select best subjects for template building based on QC metrics. | — |
+| `run_consistency_qc` | `neurofaune.templates.consistency_qc` | Warp every registered subject brain into atlas space and compute the two measures. | — |
+| `warp_brain_to_atlas` | `neurofaune.templates.consistency_qc` | Warp a subject brain mask into atlas (SIGMA) space via subject→template→SIGMA. | — |
 | `propagate_atlas_to_bold` | `neurofaune.templates.registration` | Propagate SIGMA atlas to BOLD/fMRI space through the transform chain. | — |
 | `propagate_atlas_to_bold_direct` | `neurofaune.templates.registration` | Propagate SIGMA atlas to BOLD/fMRI space via direct BOLD→Template registration. | — |
 | `propagate_atlas_to_dwi` | `neurofaune.templates.registration` | Propagate SIGMA atlas to DTI/FA space through the transform chain. | — |
