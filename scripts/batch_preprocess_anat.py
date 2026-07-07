@@ -493,7 +493,9 @@ def run_phase1_template_building(
     sigma_result = register_template_to_sigma(
         template_file=template_path,
         sigma_template=sigma_t2w,
-        output_prefix=templates_dir / 'transforms' / f'tpl-{cohort}_to-SIGMA_'
+        # filename convention must match propagate_atlas_to_anat / prepare_tbss
+        # (both look for 'tpl-to-SIGMA_*'); cohort is already in the dir path.
+        output_prefix=templates_dir / 'transforms' / 'tpl-to-SIGMA_'
     )
 
     # Update manifest with SIGMA registration
