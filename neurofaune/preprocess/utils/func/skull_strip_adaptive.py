@@ -6,6 +6,8 @@ Automatically determines optimal BET frac per slice based on extraction ratio.
 """
 
 from pathlib import Path
+import os
+import signal
 import subprocess
 import nibabel as nib
 import numpy as np
@@ -113,17 +115,25 @@ def test_bet_frac_on_slice(
 
     cmd.append('-F')
 
+    # Run bet in its own process group (start_new_session) so a timeout can kill
+    # the WHOLE tree. 'bet' is a shell wrapper that spawns 'bet2'; killing only
+    # the wrapper (what subprocess.run's timeout does) orphans bet2, which then
+    # spins at ~100% CPU forever (observed: 11 leaked bet2 pinning ~10 cores).
+    # killpg reaps the wrapper and bet2 together.
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            cmd, check=False, capture_output=True, text=True,
-            timeout=bet_timeout,
-        )
+        proc.communicate(timeout=bet_timeout)
     except subprocess.TimeoutExpired:
-        # bet hung on this slice; subprocess.run has already killed it. Treat as
-        # a failed frac so find_optimal_frac_for_slice skips it and tries the
-        # next value — never block the whole run on one wedged bet.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait()
         print(f"      Slice {slice_idx}: bet TIMED OUT after {bet_timeout:.0f}s "
-              f"(frac={frac}) — skipping this frac")
+              f"(frac={frac}) — killed process group, skipping this frac")
         input_file.unlink(missing_ok=True)
         Path(output_base + '_mask.nii.gz').unlink(missing_ok=True)
         Path(output_base + '.nii.gz').unlink(missing_ok=True)
