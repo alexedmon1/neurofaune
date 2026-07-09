@@ -589,6 +589,25 @@ def run_msme_preprocessing(
     mask_img = nib.load(brain_mask_file)
     mask_3d = mask_img.get_fdata() > 0  # Shape: (X, Y, slices)
 
+    # Optional in-plane erosion of the brain mask. The slice-wise skull strip can
+    # leave a boundary rim of partial-volume / non-brain tissue (muscle, skull)
+    # whose short-T2 signal is fit as myelin water, inflating MWF at the edge.
+    # Erode IN-PLANE ONLY — slices are thick and anisotropic, so through-plane
+    # erosion would delete whole slices. The trimmed mask is persisted so the
+    # fit, noise estimate, QC and registration all use the same voxels.
+    erode_voxels = get_config_value(config, 'msme.skull_strip.erode_voxels', default=0)
+    if erode_voxels and erode_voxels > 0:
+        from scipy.ndimage import binary_erosion
+        in_plane = np.ones((3, 3, 1), dtype=bool)  # 3x3 within-slice, no z coupling
+        n_before = int(mask_3d.sum())
+        mask_3d = binary_erosion(mask_3d, structure=in_plane, iterations=int(erode_voxels))
+        print(f"  Brain-mask in-plane erosion ({int(erode_voxels)} iter): "
+              f"{n_before} -> {int(mask_3d.sum())} voxels")
+        nib.save(
+            nib.Nifti1Image(mask_3d.astype(np.uint8), mask_img.affine, mask_img.header),
+            brain_mask_file,
+        )
+
     # Expand mask with a trailing echo axis so it broadcasts across all echoes:
     # (X, Y, slices, 1) * (X, Y, slices, echoes) → (X, Y, slices, echoes)
     mask_4d = mask_3d[:, :, :, np.newaxis]  # Add echo axis (last)
