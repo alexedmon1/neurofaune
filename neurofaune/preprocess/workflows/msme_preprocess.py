@@ -465,7 +465,7 @@ def run_msme_preprocessing(
     session : str
         Session identifier
     msme_file : Path
-        Input MSME 4D NIfTI file (shape: X, Y, echoes, slices)
+        Input MSME 4D NIfTI file, standard BIDS layout (shape: X, Y, slices, echoes)
     output_dir : Path
         Study root directory
     transform_registry : TransformRegistry
@@ -542,14 +542,15 @@ def run_msme_preprocessing(
     if len(data.shape) != 4:
         raise ValueError(f"Expected 4D MSME data, got shape: {data.shape}")
 
-    # Use first echo for skull stripping
-    # MSME shape: (X, Y, echoes, slices) — echoes in dim 2, slices in dim 3
-    # Extract first echo (highest SNR) across all spatial slices
-    first_echo = data[:, :, 0, :]  # First echo, all slices
+    # Use first echo for skull stripping.
+    # MSME shape: (X, Y, slices, echoes) — the standard BIDS layout bidsify emits
+    # (spatial x,y,z first, then echo). Extract the first echo (highest SNR)
+    # across all slices.
+    first_echo = data[:, :, :, 0]  # All slices, first echo
 
-    # Create 3D NIfTI with correct spatial header
-    # Original 4D has echoes in dim2 and slices in dim3 — not a standard spatial layout.
-    # Build a proper spatial affine: in-plane from header, Z = slice_thickness * scale
+    # Create 3D NIfTI with correct spatial header.
+    # first_echo is now a 3D (X, Y, slices) volume. Build a proper spatial affine:
+    # in-plane from header, Z = slice_thickness * scale
     in_plane = img.header.get_zooms()[:2]
     echo1_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
 
@@ -583,15 +584,14 @@ def run_msme_preprocessing(
     )
 
     # Apply mask to all echoes
-    # Mask shape: (X, Y, slices) = (160, 160, 5)
-    # Data shape: (X, Y, echoes, slices) = (160, 160, 32, 5)
+    # Mask shape: (X, Y, slices)
+    # Data shape: (X, Y, slices, echoes) — standard BIDS layout
     mask_img = nib.load(brain_mask_file)
-    mask_3d = mask_img.get_fdata() > 0  # Shape: (160, 160, 5)
+    mask_3d = mask_img.get_fdata() > 0  # Shape: (X, Y, slices)
 
-    # Expand mask to match data dimensions: add echo dimension
-    # mask_3d[:, :, np.newaxis, :] → (160, 160, 1, 5)
-    # Broadcasting with data → (160, 160, 32, 5)
-    mask_4d = mask_3d[:, :, np.newaxis, :]  # Add axis for echoes
+    # Expand mask with a trailing echo axis so it broadcasts across all echoes:
+    # (X, Y, slices, 1) * (X, Y, slices, echoes) → (X, Y, slices, echoes)
+    mask_4d = mask_3d[:, :, :, np.newaxis]  # Add echo axis (last)
 
     # Estimate noise sigma² from the air/noise region of the first echo.
     # The background outside the brain mask contains both noise (air) and
@@ -600,7 +600,7 @@ def run_msme_preprocessing(
     # converts to a Gaussian-equivalent variance (σ² = mean²·2/π). This is the
     # same computation this workflow has always used, now consolidated into the
     # shared foreground module (gh #12); behaviour is bit-identical.
-    first_echo_all = data[:, :, 0, :]
+    first_echo_all = data[:, :, :, 0]
     floor = estimate_noise_floor(first_echo_all, mask=mask_3d)
     noise_mean = floor.mean
     noise_sigma2 = floor.sigma2
@@ -640,10 +640,11 @@ def run_msme_preprocessing(
         noise_sigma2_normalized = noise_sigma2
         print(f"  WARNING: noise_sigma=0, skipping normalization")
 
-    # Reorder data from (x, y, echoes, slices) to (x, y, slices, echoes)
-    # calculate_mwf_nnls expects (x, y, z, echoes) format
-    data_reordered = np.transpose(data_normalized, (0, 1, 3, 2))
-    print(f"  Data reordered: {data_normalized.shape} → {data_reordered.shape}")
+    # Data is already (x, y, slices, echoes) — the standard BIDS layout bidsify
+    # emits — which is exactly what calculate_mwf_nnls expects (echoes last), so
+    # no transpose is needed. (Older code transposed on the assumption the input
+    # was the raw pre-bidsify (x, y, echoes, slices); bidsify normalises that away.)
+    data_reordered = data_normalized
 
     t2_n_components = get_config_value(config, 'msme.t2_fitting.n_components', default=120)
     t2_range = get_config_value(config, 'msme.t2_fitting.t2_range', default=[10, 2000])
@@ -731,7 +732,7 @@ def run_msme_preprocessing(
                 if not msme_ref.exists():
                     print("  Extracting first echo as registration reference...")
                     msme_data = img.get_fdata()
-                    first_echo = msme_data[:, :, 0, :]  # First echo, all slices
+                    first_echo = msme_data[:, :, :, 0]  # All slices, first echo (BIDS x,y,slice,echo)
 
                     in_plane = img.header.get_zooms()[:2]
                     ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
