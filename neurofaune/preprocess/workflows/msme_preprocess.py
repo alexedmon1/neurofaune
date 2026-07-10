@@ -440,6 +440,44 @@ def register_msme_to_t2w(
     }
 
 
+def _msme_strip_source(data, te_values, config):
+    """Build the 3D image the MSME skull-strip + registration reference run on.
+
+    **MSME/MWF-SPECIFIC — this is a custom accommodation for multi-slice
+    multi-echo spin-echo (MSME) T2-mapping / myelin-water-fraction scans, and
+    lives only in the MSME workflow (no other modality is affected).**
+
+    By default returns the first echo (highest SNR) — unchanged legacy behaviour.
+    But the first echo is short-TE (e.g. 10 ms), where extracranial muscle
+    (short T2 ~30 ms) is still bright and BET cannot separate it from brain, so
+    the strip leaks a ventral muscle rim (which then fits as spurious high MWF
+    and loosens MSME->template registration). Setting
+    ``msme.skull_strip.te_window: [lo, hi]`` (ms) instead uses the MEAN of the
+    echoes whose TE falls in that window: at mid-TE (~50-90 ms) the short-T2
+    muscle has decayed to near-noise while brain (T2 ~55 ms) and CSF stay bright,
+    so the strip isolates brain cleanly and the cleaner, better-contrast image
+    also tightens the (preferred, direct) MSME->template registration. Averaging
+    the band recovers the SNR lost at longer TE.
+
+    Because the window is specified in TE (ms), not echo index, it adapts across
+    MSME protocols with different echo spacing / counts. Anything that is not a
+    multi-echo spin-echo does not reach this workflow. Returns (image_3d, desc).
+    """
+    te_window = get_config_value(config, 'msme.skull_strip.te_window', default=None)
+    if te_window and len(te_window) == 2:
+        lo, hi = float(te_window[0]), float(te_window[1])
+        sel = np.where((np.asarray(te_values) >= lo) & (np.asarray(te_values) <= hi))[0]
+        if sel.size > 0:
+            src = data[:, :, :, sel].mean(axis=3)
+            desc = (f"mean of {sel.size} echoes with TE in [{lo:.0f}, {hi:.0f}] ms "
+                    f"(echoes {sel[0]}-{sel[-1]}, TE {te_values[sel[0]]:.0f}-{te_values[sel[-1]]:.0f} ms) "
+                    f"— MSME/MWF muscle-suppressed strip source")
+            return src, desc
+        print(f"  WARNING: no echoes with TE in [{lo:.0f}, {hi:.0f}] ms "
+              f"(available {te_values[0]:.0f}-{te_values[-1]:.0f}); falling back to first echo")
+    return data[:, :, :, 0], "first echo (TE=%.0f ms)" % float(te_values[0])
+
+
 def run_msme_preprocessing(
     config: Dict[str, Any],
     subject: str,
@@ -542,21 +580,22 @@ def run_msme_preprocessing(
     if len(data.shape) != 4:
         raise ValueError(f"Expected 4D MSME data, got shape: {data.shape}")
 
-    # Use first echo for skull stripping.
-    # MSME shape: (X, Y, slices, echoes) — the standard BIDS layout bidsify emits
-    # (spatial x,y,z first, then echo). Extract the first echo (highest SNR)
-    # across all slices.
-    first_echo = data[:, :, :, 0]  # All slices, first echo
+    # Build the skull-strip source image (MSME/MWF-specific; see _msme_strip_source).
+    # MSME shape: (X, Y, slices, echoes) — the standard BIDS layout bidsify emits.
+    # Default = first echo; msme.skull_strip.te_window averages a mid-TE band so
+    # short-T2 muscle drops out and the strip isolates brain.
+    first_echo, strip_desc = _msme_strip_source(data, te_values, config)
 
     # Create 3D NIfTI with correct spatial header.
-    # first_echo is now a 3D (X, Y, slices) volume. Build a proper spatial affine:
+    # first_echo is a 3D (X, Y, slices) volume. Build a proper spatial affine:
     # in-plane from header, Z = slice_thickness * scale
     in_plane = img.header.get_zooms()[:2]
     echo1_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
 
     first_echo_file = work_dir / f'{subject}_{session}_echo1.nii.gz'
     nib.save(nib.Nifti1Image(first_echo.astype(np.float32), echo1_affine), first_echo_file)
-    print(f"First echo extracted: shape={first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
+    print(f"Skull-strip source: {strip_desc}; shape={first_echo.shape}, "
+          f"voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
 
     # Skull stripping with configurable method and parameters
     brain_extracted_file = work_dir / f'{subject}_{session}_echo1_brain.nii.gz'
@@ -749,9 +788,13 @@ def run_msme_preprocessing(
                 msme_ref = reg_work_dir / f'{subject}_{session}_msme_echo1.nii.gz'
 
                 if not msme_ref.exists():
-                    print("  Extracting first echo as registration reference...")
+                    print("  Building registration reference (MSME/MWF strip source)...")
                     msme_data = img.get_fdata()
-                    first_echo = msme_data[:, :, :, 0]  # All slices, first echo (BIDS x,y,slice,echo)
+                    # Same source as the skull-strip: a mid-TE band (muscle dark)
+                    # is a better-contrast moving image for MSME->template than the
+                    # short-TE first echo, so the (preferred, direct) registration
+                    # is not pulled off by extracranial muscle.
+                    first_echo, ref_desc = _msme_strip_source(msme_data, te_values, config)
 
                     in_plane = img.header.get_zooms()[:2]
                     ref_affine = np.diag([float(in_plane[0]), float(in_plane[1]), slice_vox_z, 1.0])
@@ -762,7 +805,8 @@ def run_msme_preprocessing(
                         msme_ref_raw
                     )
 
-                    print(f"  First echo ref: {first_echo.shape}, voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
+                    print(f"  Registration ref: {ref_desc}, {first_echo.shape}, "
+                          f"voxels=({in_plane[0]}, {in_plane[1]}, {slice_vox_z})mm")
 
                     # Skull stripping with configurable method
                     msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
