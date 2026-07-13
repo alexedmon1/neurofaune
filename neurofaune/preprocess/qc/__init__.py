@@ -34,6 +34,7 @@ from neurofaune.preprocess.qc.skull_strip_qc import (
     plot_mask_edge_triplanar,
     skull_strip_html_section,
 )
+from neurofaune.preprocess.qc.qc_index import generate_qc_index
 
 __all__ = [
     'get_subject_qc_dir',
@@ -52,4 +53,5 @@ __all__ = [
     'plot_slicesdir_mosaic',
     'plot_mask_edge_triplanar',
     'skull_strip_html_section',
+    'generate_qc_index',
 ]
