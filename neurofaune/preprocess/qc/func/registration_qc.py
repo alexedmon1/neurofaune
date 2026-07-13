@@ -134,6 +134,23 @@ def generate_registration_qc(
     return report_file
 
 
+def _brain_cut_coords(img, direction: str, n_cuts: int = 3):
+    """Content-based cut positions (world mm) for montage panels.
+
+    In scaled rodent template space the brain sits far from the world origin
+    (e.g. z ~100-250 mm), so fixed cuts near 0 slice empty space and render
+    blank. find_cut_slices picks slices through actual image content.
+    """
+    try:
+        from nilearn.plotting import find_cut_slices
+        cuts = find_cut_slices(img, direction=direction, n_cuts=n_cuts)
+        if cuts is not None and len(cuts):
+            return list(cuts)
+    except Exception:
+        pass
+    return [-2, 0, 2]
+
+
 def create_overlay_plot(
     underlay: Path,
     overlay: Path,
@@ -150,25 +167,25 @@ def create_overlay_plot(
     underlay_img = nib.load(underlay)
     overlay_img = nib.load(overlay)
 
-    # Axial views
-    for i, cut_coord in enumerate([-2, 0, 2]):
+    # Axial views (content-based cuts — brain is far from world origin here)
+    for i, cut_coord in enumerate(_brain_cut_coords(underlay_img, 'z')):
         display = plotting.plot_anat(
             underlay_img,
             cut_coords=[cut_coord],
             display_mode='z',
             axes=axes[0, i],
-            title=f'Axial (z={cut_coord}mm)'
+            title=f'Axial (z={cut_coord:.0f}mm)'
         )
         display.add_overlay(overlay_img, alpha=alpha, cmap=cmap)
 
     # Sagittal views
-    for i, cut_coord in enumerate([-2, 0, 2]):
+    for i, cut_coord in enumerate(_brain_cut_coords(underlay_img, 'x')):
         display = plotting.plot_anat(
             underlay_img,
             cut_coords=[cut_coord],
             display_mode='x',
             axes=axes[1, i],
-            title=f'Sagittal (x={cut_coord}mm)'
+            title=f'Sagittal (x={cut_coord:.0f}mm)'
         )
         display.add_overlay(overlay_img, alpha=alpha, cmap=cmap)
 
@@ -188,24 +205,24 @@ def create_simple_plot(
 
     img = nib.load(image_file)
 
-    # Axial views
-    for i, cut_coord in enumerate([-2, 0, 2]):
+    # Axial views (content-based cuts — brain is far from world origin here)
+    for i, cut_coord in enumerate(_brain_cut_coords(img, 'z')):
         plotting.plot_anat(
             img,
             cut_coords=[cut_coord],
             display_mode='z',
             axes=axes[0, i],
-            title=f'Axial (z={cut_coord}mm)'
+            title=f'Axial (z={cut_coord:.0f}mm)'
         )
 
     # Sagittal views
-    for i, cut_coord in enumerate([-2, 0, 2]):
+    for i, cut_coord in enumerate(_brain_cut_coords(img, 'x')):
         plotting.plot_anat(
             img,
             cut_coords=[cut_coord],
             display_mode='x',
             axes=axes[1, i],
-            title=f'Sagittal (x={cut_coord}mm)'
+            title=f'Sagittal (x={cut_coord:.0f}mm)'
         )
 
     plt.tight_layout()
