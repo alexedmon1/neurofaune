@@ -44,6 +44,14 @@ def parse_bruker_method(method_file: Path) -> Dict[str, any]:
     if match:
         params['slice_thickness'] = float(match.group(1))
 
+    # Extract PVM_SPackArrSliceDistance — the CENTER-TO-CENTER slice distance
+    # (thickness + inter-slice gap). This, not the thickness, is the correct
+    # NIfTI z voxel spacing: for gapped (non_contiguous) acquisitions using the
+    # thickness alone z-compresses the volume and breaks spatial registration.
+    match = re.search(r'##\$PVM_SPackArrSliceDistance=\( \d+ \)\n([\d\.]+)', content)
+    if match:
+        params['slice_distance'] = float(match.group(1))
+
     # Extract PVM_Matrix (acquisition matrix)
     match = re.search(r'##\$PVM_Matrix=\( \d+ \)\n([\d\s]+)', content)
     if match:
@@ -100,13 +108,16 @@ def parse_bruker_method(method_file: Path) -> Dict[str, any]:
         params['echo_times'] = te_values
         params['n_echoes'] = len(te_values)
 
-    # Combine into voxel size (x, y, z)
-    if 'in_plane_resolution' in params and 'slice_thickness' in params:
+    # Combine into voxel size (x, y, z). The z spacing is the slice DISTANCE
+    # (center-to-center, includes any inter-slice gap); fall back to the slice
+    # thickness only when the distance isn't reported (contiguous acquisition).
+    z_spacing = params.get('slice_distance', params.get('slice_thickness'))
+    if 'in_plane_resolution' in params and z_spacing is not None:
         if len(params['in_plane_resolution']) == 2:
             params['voxel_size'] = (
                 params['in_plane_resolution'][0],
                 params['in_plane_resolution'][1],
-                params['slice_thickness']
+                z_spacing,
             )
         elif len(params['in_plane_resolution']) == 3:
             # 3D acquisition
