@@ -533,6 +533,16 @@ class BatchQCConfig:
         'segmentation_wm_volume_fraction': (0.05, 0.85),  # WM can vary significantly
     })
 
+    # MSME / MWF thresholds. T2 in ms; fractions unitless; brain_to_total_ratio =
+    # brain voxels / FOV (depends on skull-strip method). General defaults —
+    # tighten per study/species. Metric keys match the flattened msme_qc_metrics
+    # (nested skull_stripping.* flattens to skull_stripping_*).
+    msme_thresholds: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+        't2_median': (30.0, 120.0),                            # brain T2 (ms)
+        'skull_stripping_brain_to_total_ratio': (0.05, 0.30),  # brain fraction of FOV
+        'skull_stripping_snr_estimate': (0.8, None),           # strip-source SNR
+    })
+
     # Thumbnail settings
     thumbnail_size: Tuple[int, int] = (200, 200)
     thumbnail_quality: int = 85
