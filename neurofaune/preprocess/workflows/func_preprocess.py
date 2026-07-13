@@ -154,13 +154,42 @@ def register_bold_to_template(
     # ANTs GenericAffine.mat stores: AffineTransform_double_3_3 (12×1 col-major:
     #   [R_col1, R_col2, R_col3, translation]) + fixed (3×1, usually zeros).
     import scipy.io as _sio
+    from scipy import ndimage as _ndi
     # Parse Z-translation from the ITK text file
     _z_mm = z_offset_info['z_offset_mm']
-    # Identity rotation + Z translation (ITK LPS convention: z = -z_offset_mm)
+
+    # In-plane (X,Y) centre-of-mass alignment. The shared-origin assumption
+    # (Tx=Ty=0) fails whenever the EPI and structural FOVs are not co-centred
+    # in-plane — the BOLD brain then sits at a different world position than the
+    # template brain, and that offset passes through uncorrected. Align the brain
+    # centroids in X/Y (a pure translation; NCC still handles Z, which is right
+    # for the partial slab). Same sign convention as Tz (ITK LPS: negate).
+    def _brain_com_world(_img):
+        _d = _img.get_fdata()
+        _d = _d if _d.ndim == 3 else _d.mean(-1)
+        _m = _d > 0.1 * _d.max()
+        if not _m.any():
+            return None
+        _c = _ndi.center_of_mass(_m)
+        return (_img.affine @ np.array([_c[0], _c[1], _c[2], 1.0]))[:3]
+
+    _bc, _tc = _brain_com_world(bold_img), _brain_com_world(template_img)
+    if _bc is not None and _tc is not None:
+        _dx, _dy = float(_tc[0] - _bc[0]), float(_tc[1] - _bc[1])
+    else:
+        _dx = _dy = 0.0
+    # ITK LPS negates X/Y (but not Z): the .mat X/Y translation carries the same
+    # sign as the world COM offset, opposite to Tz. Verified empirically on
+    # sub-2Z ses-1 (Tx=-dx doubled the offset to 122 mm; Tx=+dx zeroes it).
+    _tx, _ty = _dx, _dy
+    print(f"  In-plane COM correction: Tx={_tx:.1f} mm, Ty={_ty:.1f} mm "
+          f"(BOLD brain offset x={_dx:.1f}, y={_dy:.1f})")
+
+    # Identity rotation + full translation (in-plane COM + NCC Z)
     _params = np.array([[1.0], [0.0], [0.0],   # rotation col 1
                         [0.0], [1.0], [0.0],    # rotation col 2
                         [0.0], [0.0], [1.0],    # rotation col 3
-                        [0.0], [0.0], [-_z_mm]]) # translation (Tx=0, Ty=0, Tz=-z_mm)
+                        [_tx], [_ty], [-_z_mm]]) # translation
     _sio.savemat(str(affine_transform),
                  {'AffineTransform_double_3_3': _params, 'fixed': np.zeros((3, 1))},
                  format='4')
