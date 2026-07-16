@@ -18,6 +18,7 @@ from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.config import get_config_value
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
+from neurofaune.preprocess.utils.registration_utils import register_via_anat_composition
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foreground_mask
 
@@ -86,6 +87,42 @@ def register_msme_to_template(
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'MSME_to_template_'
+
+    # Preferred path: register VIA the same-session anat (MSME first echo -> T2w,
+    # composed with the anat -> template SyN). Far more robust than a direct
+    # partial-slab -> group-template registration, whose z-placement search
+    # is ambiguous and cross-contrast. Falls back to the NCC/anchor Z scan
+    # below when the anat preproc / transform is unavailable.
+    _anat_t2w = (output_dir / 'derivatives' / subject / session / 'anat'
+                 / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+    _at_aff = transforms_dir / f'{subject}_{session}_T2w_to_template_0GenericAffine.mat'
+    _at_warp = transforms_dir / f'{subject}_{session}_T2w_to_template_1Warp.nii.gz'
+    if _anat_t2w.exists() and _at_aff.exists():
+        print("\n  MSME -> template via same-session anat composition")
+        comp = register_via_anat_composition(
+            moving_ref=msme_ref_file, anat_t2w=_anat_t2w,
+            anat_to_tpl_affine=_at_aff,
+            anat_to_tpl_warp=_at_warp if _at_warp.exists() else None,
+            template_file=template_file, output_prefix=output_prefix,
+            work_dir=work_dir, n_cores=n_cores,
+        )
+        warped_msme = comp['warped']
+        if warped_msme is not None and Path(warped_msme).exists():
+            warped_data = nib.load(str(warped_msme)).get_fdata()
+            threshold = warped_data.max() * 0.05
+            sig = [z for z in range(warped_data.shape[2])
+                   if warped_data[:, :, z].max() > threshold]
+            if sig:
+                print(f"  MSME covers template slices {sig[0]}-{sig[-1]} ({len(sig)} slices)")
+        return {
+            'affine_transform': comp['composite_warp'],
+            'moving_to_anat_affine': comp['moving_to_anat_affine'],
+            'warped_msme': warped_msme,
+            'template_file': template_file,
+            'msme_shape': msme_img.shape,
+            'template_shape': template_img.shape,
+            'method': 'anat_composition',
+        }
 
     # Step 1: Z initialization
     # Resolve z_anchor: explicit arg > config > None (fall back to NCC scan)

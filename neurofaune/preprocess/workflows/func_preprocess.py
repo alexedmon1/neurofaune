@@ -122,6 +122,32 @@ def register_bold_to_template(
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'BOLD_to_template_'
 
+    # Preferred path: register VIA the same-session anat (moving->anat rigid o
+    # anat->template SyN). A within-subject BOLD->anat registration avoids the
+    # cross-subject/cross-contrast/partial-slab-z-search failure modes of a
+    # direct BOLD->template (which left a systematic caudal z-offset). Requires
+    # the anat preproc T2w + its anat->template transform; else fall back to NCC.
+    _anat_t2w = (output_dir / 'derivatives' / subject / session / 'anat'
+                 / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+    _at_aff = transforms_dir / f'{subject}_{session}_T2w_to_template_0GenericAffine.mat'
+    _at_warp = transforms_dir / f'{subject}_{session}_T2w_to_template_1Warp.nii.gz'
+    if _anat_t2w.exists() and _at_aff.exists():
+        from neurofaune.preprocess.utils.registration_utils import register_via_anat_composition
+        print("\n  BOLD -> template via same-session anat composition")
+        comp = register_via_anat_composition(
+            moving_ref=bold_ref_file, anat_t2w=_anat_t2w,
+            anat_to_tpl_affine=_at_aff,
+            anat_to_tpl_warp=_at_warp if _at_warp.exists() else None,
+            template_file=template_file, output_prefix=output_prefix,
+            work_dir=work_dir, n_cores=n_cores)
+        return {
+            'affine_transform': comp['composite_warp'],   # displacement field; analysis applies this
+            'moving_to_anat_affine': comp['moving_to_anat_affine'],
+            'warped_bold': comp['warped'],
+            'method': 'anat_composition',
+        }
+
+    # Fallback: direct NCC/COM.
     # Step 1: Find optimal Z offset via NCC scan
     print("\n  Finding optimal Z offset via NCC scan...")
     initial_transform, z_offset_info = _find_z_offset_ncc(

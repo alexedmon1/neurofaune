@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 130 across 9 stages.
+**Entry points:** 131 across 9 stages.
 
 
 ## analysis
@@ -95,6 +95,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 | `compute_meica_kappa_rho` | `neurofaune.preprocess.utils.func.meica_classify` | Compute kappa (TE-dependence) and rho (TE-independence) for MELODIC components. | — |
 | `extract_slice_order_from_json` | `neurofaune.preprocess.utils.func.slice_timing` | Extract slice timing information from BIDS JSON sidecar. | — |
 | `run_slice_timing_correction` | `neurofaune.preprocess.utils.func.slice_timing` | Perform slice timing correction using FSL slicetimer. | — |
+| `register_via_anat_composition` | `neurofaune.preprocess.utils.registration_utils` | Register a partial-slab moving reference to template VIA the same-session anat. | — |
 
 ## preprocess (workflows)
 

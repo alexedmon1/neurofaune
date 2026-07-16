@@ -5,11 +5,74 @@ These functions are used across fMRI, MSME, and DTI preprocessing workflows
 when aligning partial-slab acquisitions to full-brain templates.
 """
 
+import subprocess
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import nibabel as nib
 import numpy as np
+
+
+def register_via_anat_composition(
+    moving_ref: Path,
+    anat_t2w: Path,
+    anat_to_tpl_affine: Path,
+    anat_to_tpl_warp: Optional[Path],
+    template_file: Path,
+    output_prefix: Path,
+    work_dir: Path,
+    n_cores: int = 4,
+) -> Dict[str, Any]:
+    """Register a partial-slab moving reference to template VIA the same-session anat.
+
+    moving -> anat (ANTs rigid, centre-of-mass initialised, MI) composed with the
+    already-computed anat -> template transform. A within-subject moving->anat
+    registration is far more tractable than a direct partial-slab -> group-template
+    one (which is cross-subject, cross-contrast EPI/T2w, and has an ambiguous
+    z-placement search), and it inherits the high-quality anat->template SyN.
+
+    Writes ``<output_prefix>Warped.nii.gz`` (composed, for QC) and
+    ``<output_prefix>CompositeWarp.nii.gz`` (a single displacement field the
+    downstream stage applies as one transform).
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    f2a_prefix = work_dir / 'moving_to_anat_'
+    f2a_affine = Path(str(f2a_prefix) + '0GenericAffine.mat')
+
+    # 1) moving -> anat: rigid, COM-initialised, mutual information (within-subject).
+    subprocess.run([
+        'antsRegistration', '-d', '3',
+        '--output', f'[{f2a_prefix},{work_dir}/moving_in_anat.nii.gz]',
+        '--initial-moving-transform', f'[{anat_t2w},{moving_ref},1]',
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{anat_t2w},{moving_ref},1,32,Regular,0.25]',
+        '--convergence', '[500x250x100,1e-6,10]',
+        '--shrink-factors', '4x2x1', '--smoothing-sigmas', '2x1x0vox',
+        '--interpolation', 'Linear', '-v', '0',
+    ], check=True, capture_output=True, text=True)
+
+    # transform chain moving->template = (anat->tpl warp) o (anat->tpl affine) o (moving->anat)
+    chain = []
+    if anat_to_tpl_warp is not None and Path(anat_to_tpl_warp).exists():
+        chain += ['-t', str(anat_to_tpl_warp)]
+    chain += ['-t', str(anat_to_tpl_affine), '-t', str(f2a_affine)]
+
+    warped = Path(str(output_prefix) + 'Warped.nii.gz')
+    subprocess.run(['antsApplyTransforms', '-d', '3', '-i', str(moving_ref),
+                    '-r', str(template_file), *chain, '-o', str(warped),
+                    '--interpolation', 'Linear'], check=True, capture_output=True, text=True)
+    # single composite displacement field for the downstream stage
+    comp = Path(str(output_prefix) + 'CompositeWarp.nii.gz')
+    subprocess.run(['antsApplyTransforms', '-d', '3', '-i', str(moving_ref),
+                    '-r', str(template_file), *chain, '-o', f'[{comp},1]'],
+                   check=True, capture_output=True, text=True)
+    return {
+        'moving_to_anat_affine': f2a_affine,
+        'composite_warp': comp if comp.exists() else None,
+        'warped': warped if warped.exists() else None,
+        'method': 'anat_composition',
+    }
 
 
 def find_z_offset_ncc(
