@@ -75,6 +75,67 @@ def register_via_anat_composition(
     }
 
 
+def propagate_anat_mask(
+    moving_ref: Path,
+    anat_t2w: Path,
+    anat_mask: Path,
+    out_mask: Path,
+    work_dir: Path,
+    out_brain: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Derive a partial-slab brain mask by warping the same-session anat mask in.
+
+    A within-subject rigid registration of the moving reference to the preproc
+    T2w (centre-of-mass initialised, mutual information) followed by inverse-
+    warping the anatomical brain mask (nearest-neighbour) into the moving image's
+    native space. Unlike an intensity-threshold strip (e.g. slice-wise BET, which
+    on low-contrast MSME degenerates to a fixed-area oval that clips cortex and
+    swallows muscle), this inherits the true anatomical boundary from the T2w
+    skull-strip, so the mask edge follows the brain.
+
+    Writes ``out_mask`` (uint8, in moving space); if ``out_brain`` is given, also
+    writes the masked moving reference. Returns the moving->anat affine so a
+    caller can reuse it.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    m2a_prefix = work_dir / 'mask_moving_to_anat_'
+    m2a_affine = Path(str(m2a_prefix) + '0GenericAffine.mat')
+
+    # moving -> anat: rigid, COM-initialised, mutual information (within-subject).
+    subprocess.run([
+        'antsRegistration', '-d', '3',
+        '--output', f'[{m2a_prefix},{work_dir}/mask_moving_in_anat.nii.gz]',
+        '--initial-moving-transform', f'[{anat_t2w},{moving_ref},1]',
+        '--transform', 'Rigid[0.1]',
+        '--metric', f'MI[{anat_t2w},{moving_ref},1,32,Regular,0.25]',
+        '--convergence', '[500x250x100,1e-6,10]',
+        '--shrink-factors', '4x2x1', '--smoothing-sigmas', '2x1x0vox',
+        '--interpolation', 'Linear', '-v', '0',
+    ], check=True, capture_output=True, text=True)
+
+    # anat mask -> moving space = inverse of (moving->anat), nearest-neighbour.
+    subprocess.run([
+        'antsApplyTransforms', '-d', '3', '-i', str(anat_mask),
+        '-r', str(moving_ref), '-t', f'[{m2a_affine},1]',
+        '-o', str(out_mask), '--interpolation', 'NearestNeighbor',
+    ], check=True, capture_output=True, text=True)
+
+    if out_brain is not None:
+        m = nib.load(str(out_mask))
+        ref = nib.load(str(moving_ref))
+        brain = ref.get_fdata() * (m.get_fdata() > 0)
+        nib.save(nib.Nifti1Image(brain.astype(np.float32), ref.affine, ref.header),
+                 str(out_brain))
+
+    return {
+        'moving_to_anat_affine': m2a_affine,
+        'mask': out_mask if Path(out_mask).exists() else None,
+        'brain': out_brain if (out_brain and Path(out_brain).exists()) else None,
+        'method': 'anat_mask',
+    }
+
+
 def find_z_offset_ncc(
     moving_img: nib.Nifti1Image,
     fixed_img: nib.Nifti1Image,

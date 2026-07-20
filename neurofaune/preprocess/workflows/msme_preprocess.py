@@ -18,7 +18,10 @@ from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.config import get_config_value
 from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.preprocess.workflows.func_preprocess import _find_z_offset_ncc
-from neurofaune.preprocess.utils.registration_utils import register_via_anat_composition
+from neurofaune.preprocess.utils.registration_utils import (
+    register_via_anat_composition,
+    propagate_anat_mask,
+)
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foreground_mask
 
@@ -645,19 +648,46 @@ def run_msme_preprocessing(
     msme_ss_cog_x = get_config_value(config, 'msme.skull_strip.cog_offset_x', default=0)
     msme_ss_cog_y = get_config_value(config, 'msme.skull_strip.cog_offset_y', default=-40)
 
-    brain_file, mask_file_out, skull_strip_result = skull_strip(
-        input_file=first_echo_file,
-        output_file=brain_extracted_file,
-        mask_file=brain_mask_file,
-        work_dir=work_dir / 'skull_strip',
-        method=msme_ss_method,
-        n_classes=msme_ss_n_classes,
-        target_ratio=msme_ss_target_ratio,
-        frac_range=(msme_ss_frac_min, msme_ss_frac_max),
-        frac_step=msme_ss_frac_step,
-        cog_offset_x=msme_ss_cog_x,
-        cog_offset_y=msme_ss_cog_y,
-    )
+    if msme_ss_method == 'anat_mask':
+        # Derive the brain mask from the same-session anat rather than an
+        # intensity strip. On low-contrast MSME the slice-wise BET degenerates
+        # to a fixed-area oval (clips cortex, keeps muscle); warping the T2w
+        # brain mask in via a rigid MSME->anat gives the true boundary.
+        anat_t2w = (output_dir / 'derivatives' / subject / session / 'anat'
+                    / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+        anat_mask = (output_dir / 'derivatives' / subject / session / 'anat'
+                     / f'{subject}_{session}_desc-brain_mask.nii.gz')
+        if not (anat_t2w.exists() and anat_mask.exists()):
+            raise FileNotFoundError(
+                f"msme.skull_strip.method=anat_mask needs the preproc T2w + brain "
+                f"mask for {subject} {session}; missing {anat_t2w} / {anat_mask}")
+        print(f"Skull strip: anat-mask propagation (T2w brain mask -> MSME via rigid)")
+        prop = propagate_anat_mask(
+            moving_ref=first_echo_file, anat_t2w=anat_t2w, anat_mask=anat_mask,
+            out_mask=brain_mask_file, out_brain=brain_extracted_file,
+            work_dir=work_dir / 'skull_strip',
+        )
+        brain_file, mask_file_out = brain_extracted_file, brain_mask_file
+        _m = nib.load(str(brain_mask_file)).get_fdata() > 0
+        skull_strip_result = {
+            'method': 'anat_mask',
+            'extraction_ratio': float(_m.sum() / _m.size),
+            'moving_to_anat_affine': str(prop['moving_to_anat_affine']),
+        }
+    else:
+        brain_file, mask_file_out, skull_strip_result = skull_strip(
+            input_file=first_echo_file,
+            output_file=brain_extracted_file,
+            mask_file=brain_mask_file,
+            work_dir=work_dir / 'skull_strip',
+            method=msme_ss_method,
+            n_classes=msme_ss_n_classes,
+            target_ratio=msme_ss_target_ratio,
+            frac_range=(msme_ss_frac_min, msme_ss_frac_max),
+            frac_step=msme_ss_frac_step,
+            cog_offset_x=msme_ss_cog_x,
+            cog_offset_y=msme_ss_cog_y,
+        )
 
     # Apply mask to all echoes
     # Mask shape: (X, Y, slices)
@@ -847,14 +877,25 @@ def run_msme_preprocessing(
 
                     # Skull stripping with configurable method
                     msme_mask = reg_work_dir / f'{subject}_{session}_msme_echo1_mask.nii.gz'
-                    _, _, skull_strip_result = skull_strip(
-                        input_file=msme_ref_raw,
-                        output_file=msme_ref,
-                        mask_file=msme_mask,
-                        work_dir=reg_work_dir / 'skull_strip',
-                        method=msme_ss_method,
-                        n_classes=msme_ss_n_classes,
-                    )
+                    if msme_ss_method == 'anat_mask':
+                        anat_t2w = (output_dir / 'derivatives' / subject / session / 'anat'
+                                    / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+                        anat_mask = (output_dir / 'derivatives' / subject / session / 'anat'
+                                     / f'{subject}_{session}_desc-brain_mask.nii.gz')
+                        propagate_anat_mask(
+                            moving_ref=msme_ref_raw, anat_t2w=anat_t2w, anat_mask=anat_mask,
+                            out_mask=msme_mask, out_brain=msme_ref,
+                            work_dir=reg_work_dir / 'skull_strip',
+                        )
+                    else:
+                        _, _, skull_strip_result = skull_strip(
+                            input_file=msme_ref_raw,
+                            output_file=msme_ref,
+                            mask_file=msme_mask,
+                            work_dir=reg_work_dir / 'skull_strip',
+                            method=msme_ss_method,
+                            n_classes=msme_ss_n_classes,
+                        )
 
                 if use_template:
                     registration_results = register_msme_to_template(
