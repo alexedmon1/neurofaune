@@ -863,7 +863,7 @@ def generate_thumbnail_gallery(
         'dwi': ['*FA_montage.png', '*motion_params.png'],
         'anat': ['*mask_overlay*.png', '*segmentation*.png'],
         'func': ['*bold_to_t2w_overlay.png', '*motion_params.png', '*fd_dvars.png'],
-        'msme': ['*t2_montage.png', '*mwf_montage.png'],
+        'msme': ['*T2_montage.png', '*MWF_montage.png'],
     }
 
     patterns = image_patterns.get(modality, ['*.png'])
