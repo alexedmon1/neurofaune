@@ -777,17 +777,39 @@ def run_msme_preprocessing(
     t2_mw_cutoff = get_config_value(config, 'msme.t2_fitting.myelin_water_cutoff', default=25.0)
     t2_ie_cutoff = get_config_value(config, 'msme.t2_fitting.intra_extra_cutoff', default=200.0)
 
-    mwf_map, iwf_map, csf_map, t2_map, sample_data = calculate_mwf_nnls(
-        data_reordered,
-        mask_3d,
-        te_values,
-        lambda_reg=t2_lambda_reg,
-        noise_sigma2=noise_sigma2_normalized,
-        n_components=t2_n_components,
-        t2_range=t2_range,
-        myelin_water_cutoff=t2_mw_cutoff,
-        intra_extra_cutoff=t2_ie_cutoff,
-    )
+    # EPG stimulated-echo correction (Prasloski 2012). Off by default preserves
+    # the legacy plain-NNLS behaviour; ON models the real refocusing flip angle
+    # (per-voxel), which is required whenever B1 is inhomogeneous (e.g. 7T, where
+    # the ideal-180-deg NNLS gives a bimodal, unstable MWF). Validated vs DECAES.
+    use_epg = get_config_value(config, 'msme.t2_fitting.stimulated_echo_correction', default=False)
+    if use_epg:
+        from neurofaune.preprocess.utils.epg_mwf import calculate_mwf_epg
+        epg_n = get_config_value(config, 'msme.t2_fitting.epg_n_components', default=40)
+        epg_t1 = get_config_value(config, 'msme.t2_fitting.T1_ms', default=1000.0)
+        mwf_map, iwf_map, csf_map, t2_map, alpha_map = calculate_mwf_epg(
+            data_reordered, mask_3d, te_values,
+            n_components=epg_n, t2_range=t2_range,
+            myelin_water_cutoff=t2_mw_cutoff, intra_extra_cutoff=t2_ie_cutoff,
+            T1=epg_t1,
+        )
+        sample_data = None
+        # persist the estimated refocusing flip-angle map for QC (should be a
+        # smooth ~130-170 deg field; sharp deviations flag a bad fit)
+        alpha_file = derivatives_dir / f'{subject}_{session}_desc-flipangle_MSME.nii.gz'
+        nib.save(nib.Nifti1Image(alpha_map, echo1_affine), alpha_file)
+        print(f"  EPG flip-angle map: {alpha_file}")
+    else:
+        mwf_map, iwf_map, csf_map, t2_map, sample_data = calculate_mwf_nnls(
+            data_reordered,
+            mask_3d,
+            te_values,
+            lambda_reg=t2_lambda_reg,
+            noise_sigma2=noise_sigma2_normalized,
+            n_components=t2_n_components,
+            t2_range=t2_range,
+            myelin_water_cutoff=t2_mw_cutoff,
+            intra_extra_cutoff=t2_ie_cutoff,
+        )
 
     # Save output maps with correct spatial affine
     # Output maps have shape (x, y, slices) — use echo1_affine from config geometry
