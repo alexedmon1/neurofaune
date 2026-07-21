@@ -32,6 +32,16 @@ uv run black .                        # Format code
 uv run mypy neurofaune/
 ```
 
+**⚠️ Before every commit/push — regenerate the capabilities catalog.** A gate test
+(`tests/unit/test_capabilities.py`) fails if `CAPABILITIES.md` is stale, and it goes
+stale whenever you add/rename an entry point **or a config key** (e.g. a new
+`get_config_value(...)` read). Always run this before committing so the push doesn't
+fail the gate:
+```bash
+make capabilities   # regenerate CAPABILITIES.md, then commit it alongside the change
+make check          # THE GATE — tests + regression; must pass before push/tag/pin
+```
+
 **Batch processing scripts** (in `scripts/`):
 ```bash
 # Phase 1: Initialize (one-time per study)
