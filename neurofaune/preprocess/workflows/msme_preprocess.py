@@ -786,11 +786,12 @@ def run_msme_preprocessing(
         from neurofaune.preprocess.utils.epg_mwf import calculate_mwf_epg
         epg_n = get_config_value(config, 'msme.t2_fitting.epg_n_components', default=40)
         epg_t1 = get_config_value(config, 'msme.t2_fitting.T1_ms', default=1000.0)
+        epg_workers = get_config_value(config, 'msme.t2_fitting.epg_n_workers', default=None)
         mwf_map, iwf_map, csf_map, t2_map, alpha_map = calculate_mwf_epg(
             data_reordered, mask_3d, te_values,
             n_components=epg_n, t2_range=t2_range,
             myelin_water_cutoff=t2_mw_cutoff, intra_extra_cutoff=t2_ie_cutoff,
-            T1=epg_t1,
+            T1=epg_t1, n_workers=epg_workers,
         )
         sample_data = None
         # persist the estimated refocusing flip-angle map for QC (should be a
