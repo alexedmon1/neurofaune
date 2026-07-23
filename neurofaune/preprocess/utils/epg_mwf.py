@@ -112,7 +112,7 @@ def _monoexp_t2(signal, te_ms):
         return 0.0
 
 
-def _fit_voxel(signal, bases, angles, H, mw_cutoff, iw_cutoff, chi2_factor, te_ms):
+def _fit_voxel(signal, bases, coarse_bases, angles, H, mw_cutoff, iw_cutoff, chi2_factor, te_ms):
     """Return (mwf, iwf, csf, alpha) for one decay curve.
 
     1) pick the flip angle minimising the unregularised NNLS residual, then
@@ -127,28 +127,36 @@ def _fit_voxel(signal, bases, angles, H, mw_cutoff, iw_cutoff, chi2_factor, te_m
     """
     ETL = signal.shape[0]
     n = bases.shape[2]
-    # 1) flip-angle search by unregularised residual
+    # 1) flip-angle search on the COARSE basis. The refocusing angle is a smooth
+    #    B1 parameter and does not need the fine T2 grid to estimate, so searching
+    #    on a low-resolution basis is far cheaper while giving the same angle.
+    cn = coarse_bases.shape[2]
     resid = np.empty(len(angles))
     for k in range(len(angles)):
-        x, _ = nnls(bases[k], signal)
-        resid[k] = np.sum((bases[k] @ x - signal) ** 2)
+        x, _ = nnls(coarse_bases[k], signal)
+        resid[k] = np.sum((coarse_bases[k] @ x - signal) ** 2)
     k = int(np.argmin(resid))
-    A, alpha = bases[k], angles[k]
-    # local parabolic refine (interpolate the bracketing bases, no fresh EPG)
+    step = 0.0
+    alpha = angles[k]
+    # local parabolic refine on the coarse residual curve (sub-grid angle)
     if 0 < k < len(angles) - 1:
         y0, y1, y2 = resid[k - 1], resid[k], resid[k + 1]
         denom = (y0 - 2 * y1 + y2)
         if denom > 0:
-            step = 0.5 * (y0 - y2) / denom  # grid units in (-1, 1)
-            if step >= 0:
-                A_ref = (1 - step) * bases[k] + step * bases[k + 1]
-            else:
-                t = -step
-                A_ref = (1 - t) * bases[k] + t * bases[k - 1]
-            xr, _ = nnls(A_ref, signal)
-            if np.sum((A_ref @ xr - signal) ** 2) < resid[k]:
-                A = A_ref
-                alpha = angles[k] + step * (angles[1] - angles[0])
+            s = 0.5 * (y0 - y2) / denom
+            cA = ((1 - s) * coarse_bases[k] + s * coarse_bases[k + 1]) if s >= 0 \
+                else ((1 + s) * coarse_bases[k] - s * coarse_bases[k - 1])
+            xr, _ = nnls(cA, signal)
+            if np.sum((cA @ xr - signal) ** 2) < resid[k]:
+                step = s
+                alpha = angles[k] + s * (angles[1] - angles[0])
+    # build the FULL-resolution basis at the chosen angle (interpolate neighbours)
+    if step >= 0 and k < len(angles) - 1:
+        A = (1 - step) * bases[k] + step * bases[k + 1]
+    elif step < 0:
+        A = (1 + step) * bases[k] - step * bases[k - 1]
+    else:
+        A = bases[k]
 
     # 2) regularised NNLS at alpha*: bisection on lambda to hit chi2 target
     x0, _ = nnls(A, signal)
@@ -161,7 +169,7 @@ def _fit_voxel(signal, bases, angles, H, mw_cutoff, iw_cutoff, chi2_factor, te_m
         x = x0
     else:
         lo, hi = 1e-8, 1e8
-        for _ in range(18):
+        for _ in range(8):
             mid = np.sqrt(lo * hi)
             Ar[ETL:] = np.sqrt(mid) * H
             x, _ = nnls(Ar, br)
@@ -191,10 +199,10 @@ def _init_worker():
 
 
 def _fit_chunk(args):
-    signals, bases, angles, H, mwc, iwc, chi2, te_ms = args
+    signals, bases, coarse_bases, angles, H, mwc, iwc, chi2, te_ms = args
     out = np.empty((len(signals), 5))
     for i, sig in enumerate(signals):
-        out[i] = _fit_voxel(sig, bases, angles, H, mwc, iwc, chi2, te_ms)
+        out[i] = _fit_voxel(sig, bases, coarse_bases, angles, H, mwc, iwc, chi2, te_ms)
     return out
 
 
@@ -236,6 +244,13 @@ def calculate_mwf_epg(
 
     bases = epg_bases(angles, t2_grid, TE_s, ETL, T1_s)
     H = _curvature_matrix(n_components)
+    # Coarse basis for the flip-angle search only (the refocusing angle is a
+    # smooth B1 term — it needs the angle grid, not the fine T2 grid). Big speedup
+    # at n_components >> 40, since only the final regularised fit runs at full res.
+    n_coarse = min(40, n_components)
+    coarse_grid = np.geomspace(t2_range[0] / 1000.0, t2_range[1] / 1000.0, n_coarse)
+    coarse_bases = (bases if n_coarse == n_components
+                    else epg_bases(angles, coarse_grid, TE_s, ETL, T1_s))
 
     idx = np.argwhere(mask)
     signals = [data[x, y, z, :].astype(float) for x, y, z in idx]
@@ -255,7 +270,7 @@ def calculate_mwf_epg(
     n_chunks = max(1, n_workers * 4)
     chunks = np.array_split(np.arange(len(sub)), n_chunks)
     te_ms = np.asarray(te_values, dtype=float)
-    tasks = [([sub[j] for j in ch], bases, angles, H, mw_cut, iw_cut, chi2_factor, te_ms)
+    tasks = [([sub[j] for j in ch], bases, coarse_bases, angles, H, mw_cut, iw_cut, chi2_factor, te_ms)
              for ch in chunks if len(ch)]
 
     results = []
