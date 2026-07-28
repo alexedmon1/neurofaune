@@ -24,7 +24,24 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
 import numpy as np
-from scipy.optimize import nnls
+from scipy.optimize import nnls as _scipy_nnls
+
+
+def nnls(A, b):
+    """NNLS that never aborts a run on a single degenerate voxel.
+
+    scipy's Lawson-Hanson ``nnls`` raises ``RuntimeError`` when it hits its
+    iteration cap (default ``3*n_cols``), which at the fine rodent T2 grid
+    (n=200) happens on rare ill-conditioned voxels. That exception, raised in a
+    worker process, otherwise propagates up and kills the whole session. We give
+    it a generous iteration budget and, if it still fails, fall back to a zero
+    solution for that one voxel (it contributes no MWF) rather than crashing.
+    """
+    maxiter = 20 * A.shape[1]
+    try:
+        return _scipy_nnls(A, b, maxiter=maxiter)
+    except (RuntimeError, ValueError):
+        return np.zeros(A.shape[1]), 0.0
 
 
 # ---------------------------------------------------------------------------
