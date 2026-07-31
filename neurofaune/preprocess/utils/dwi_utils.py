@@ -260,11 +260,12 @@ def normalize_dwi_intensity(
         Target maximum intensity after normalization (default: 10000)
         This value is chosen to work well with FSL BET.
     percentile_max : float
-        Upper percentile for robust scaling (default: 99.5)
-        Values above this percentile are clipped to avoid outlier influence.
+        Upper percentile used to set the scale factor (default: 99.5), so that a
+        few hot outlier voxels cannot drive the scaling. Values above this
+        percentile are NOT clipped - they simply scale past target_max.
     percentile_min : float
-        Lower percentile for robust scaling (default: 0.5)
-        Values below this percentile are set to 0.
+        Lower percentile. Reported in the returned params for QC only; it does
+        not affect the transform. Retained for backwards compatibility.
 
     Returns
     -------
@@ -278,12 +279,18 @@ def normalize_dwi_intensity(
     Notes
     -----
     The normalization applies the following transformation:
-    1. Compute percentile-based intensity range (robust to outliers)
-    2. Clip values to percentile range
-    3. Scale linearly to [0, target_max]
+    1. Compute a robust reference intensity (percentile_max, outlier-resistant)
+    2. Multiply the whole dataset by target_max / p_max
 
-    This is applied identically to all volumes in 4D data to preserve
-    relative signal differences between diffusion directions.
+    That is the entire transform: one scalar multiply, applied identically to all
+    volumes in 4D data. It preserves relative signal differences between diffusion
+    directions exactly, so S(b)/S0 - and hence every tensor, kurtosis and NODDI
+    fit - is mathematically unchanged by normalization.
+
+    This function must stay signal-preserving: its output feeds eddy and all
+    downstream model fitting, not just brain extraction. An earlier version
+    clipped to the percentile range and subtracted p_min, which truncated the b0
+    volumes (S0) across ~90% of brain voxels and produced ~40% negative kurtosis.
 
     Examples
     --------
@@ -320,24 +327,28 @@ def normalize_dwi_intensity(
         print(f"  WARNING: Very low intensity data (p{percentile_max}={p_max:.4f})")
         print(f"  This likely indicates normalized/scaled Bruker data")
 
-    # Apply normalization
-    # Clip to percentile range, then scale to [0, target_max]
-    normalized_data = data.copy()
-
-    # Set values below p_min to 0 (background)
-    normalized_data[normalized_data < p_min] = 0
-
-    # Clip values above p_max
-    normalized_data = np.clip(normalized_data, 0, p_max)
-
-    # Scale to target range
-    if p_max > p_min:
-        scale_factor = target_max / (p_max - p_min)
-        normalized_data = (normalized_data - p_min) * scale_factor
-        normalized_data[data < p_min] = 0  # Ensure background stays at 0
+    # Apply normalization: a PURELY MULTIPLICATIVE rescale.
+    #
+    # This must not clip, floor, or offset the data. Every diffusion metric is a
+    # function of the ratio S(b)/S0, which a pure scale leaves exactly invariant;
+    # any other operation is a nonlinearity that deforms the decay curve.
+    #
+    # Clipping in particular is catastrophic here: p_max is a percentile pooled
+    # over ALL volumes, but b0 volumes are both far brighter than diffusion-
+    # weighted ones and a small minority of the volumes (e.g. 5 of 95), so p_max
+    # lands *below* the b0 brain signal. Clipping then truncates S0 across most of
+    # the brain, flattening the top of every decay curve and driving the fitted
+    # kurtosis negative in ~40% of voxels. See tests/unit/test_dwi_normalization.py.
+    #
+    # p_max is still used to SET the scale (robust to hot outlier voxels), it just
+    # no longer bounds the data: voxels above it scale past target_max, unharmed.
+    if p_max > 0:
+        scale_factor = target_max / p_max
     else:
         scale_factor = 1.0
-        print("  WARNING: Cannot normalize - min equals max")
+        print("  WARNING: Cannot normalize - p_max is not positive")
+
+    normalized_data = data * scale_factor
 
     print(f"  Normalized range: {normalized_data.min():.2f} - {normalized_data.max():.2f}")
     print(f"  Scale factor: {scale_factor:.4f}")
