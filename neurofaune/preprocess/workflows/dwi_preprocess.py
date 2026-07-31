@@ -750,12 +750,17 @@ def run_dwi_preprocessing(
     print("Step 5: DTI Fitting (FA, MD, AD, RD)")
     print("="*80)
 
+    # Restrict the tensor fit to the Gaussian regime (b0 + b<=max_bval). The DTI
+    # model assumes mono-exponential decay; high-b shells are non-Gaussian and
+    # bias the tensor (deflate diffusivity, inflate FA). DKI/NODDI keep all shells.
+    dti_max_bval = get_config_value(config, 'diffusion.dti.max_bval', default=None)
     fit_dti(
         dwi_file=dwi_eddy_file,
         mask_file=brain_mask_file,
         bval_file=bval_output,
         bvec_file=eddy_rotated_bvecs,
-        output_prefix=derivatives_dir / f'{subject}_{session}'
+        output_prefix=derivatives_dir / f'{subject}_{session}',
+        max_bval=dti_max_bval,
     )
 
     print(f"\nDTI maps created:")
@@ -1001,7 +1006,8 @@ def fit_dti(
     mask_file: Path,
     bval_file: Path,
     bvec_file: Path,
-    output_prefix: Path
+    output_prefix: Path,
+    max_bval: Optional[float] = None,
 ) -> Tuple[Path, Path, Path, Path]:
     """
     Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit.
@@ -1018,6 +1024,14 @@ def fit_dti(
         b-vectors
     output_prefix : Path
         Output prefix (will create {prefix}_FA.nii.gz, etc.)
+    max_bval : float, optional
+        Upper b-value (s/mm^2) for the tensor fit. The single-tensor (DTI) model
+        assumes mono-exponential (Gaussian) decay, which only holds at low b;
+        above ~1000-1500 the signal is non-Gaussian (kurtosis), so including
+        high-b shells biases the tensor (deflates diffusivity, inflates FA). When
+        set, only b0 + volumes with b <= max_bval are used for the fit. None keeps
+        all volumes (legacy behaviour; correct only for single-shell b<=1000 data).
+        Higher shells remain available to DKI/NODDI, which model non-Gaussianity.
 
     Returns
     -------
@@ -1025,6 +1039,31 @@ def fit_dti(
         Paths to (FA, MD, AD, RD) files
     """
     print("\nFitting DTI model with FSL dtifit...")
+
+    # Restrict the tensor fit to the Gaussian regime (b0 + b <= max_bval).
+    if max_bval is not None:
+        bvals = np.atleast_1d(np.loadtxt(bval_file))
+        keep = bvals <= float(max_bval)
+        n_keep, n_tot = int(keep.sum()), keep.size
+        if n_keep < n_tot:
+            import tempfile
+            work = Path(tempfile.mkdtemp(prefix='dti_lowb_'))
+            img = nib.load(str(dwi_file))
+            sub_dwi = work / 'dwi_lowb.nii.gz'
+            nib.save(nib.Nifti1Image(img.get_fdata()[..., keep], img.affine, img.header), sub_dwi)
+            sub_bval = work / 'lowb.bval'
+            np.savetxt(sub_bval, bvals[keep][None, :], fmt='%g')
+            bvecs = np.loadtxt(bvec_file)
+            if bvecs.shape[0] != 3:
+                bvecs = bvecs.T
+            sub_bvec = work / 'lowb.bvec'
+            np.savetxt(sub_bvec, bvecs[:, keep], fmt='%.6f')
+            n_b0 = int((bvals[keep] < 100).sum())
+            print(f"  DTI tensor fit restricted to b<={max_bval:g}: "
+                  f"{n_keep}/{n_tot} volumes ({n_b0} b0 + {n_keep - n_b0} DW)")
+            dwi_file, bval_file, bvec_file = sub_dwi, sub_bval, sub_bvec
+        else:
+            print(f"  (all {n_tot} volumes have b<={max_bval:g}; no subsetting)")
 
     # Use FSL's dtifit
     cmd = [
