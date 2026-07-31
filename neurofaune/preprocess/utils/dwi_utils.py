@@ -377,6 +377,101 @@ def normalize_dwi_intensity(
     return output_file, params
 
 
+def normalize_for_brain_extraction(
+    input_file: Path,
+    output_file: Path,
+    reference_file: Optional[Path] = None,
+    target_max: float = 10000.0,
+    percentile_max: float = 99.5,
+    percentile_min: float = 0.5
+) -> Tuple[Path, dict]:
+    """Range-compress an image so brain extraction behaves. MASKING ONLY.
+
+    *** Never feed this output to eddy or to any model fit. ***
+    Use ``normalize_dwi_intensity`` for the data path.
+
+    This clips to [p_min, p_max] and rescales to [0, target_max]. Clipping is a
+    nonlinearity: it deforms the diffusion decay curve and, because b0 volumes
+    are the brightest, it truncates S0 and drives fitted kurtosis negative.
+    Which is exactly why it must not touch the data used for fitting.
+
+    For *segmentation-based* brain extraction it is not merely harmless but
+    load-bearing. ``atropos_bet`` picks the brightest of N intensity classes as
+    brain, which assumes bright tissue forms one dominant plateau. On an
+    unclipped b0 the long bright tail splits the brain across several classes
+    and the "brightest" class collapses onto a small hot subset - observed on
+    this cohort as a 46k-voxel brain fragmenting to a 794-voxel mask, which then
+    starved eddy of the voxels it needs to estimate hyperparameters. Saturating
+    the bright voxels onto a common ceiling restores the plateau the heuristic
+    depends on.
+
+    Parameters
+    ----------
+    input_file : Path
+        Image to range-compress (typically a b0 volume).
+    output_file : Path
+        Where to write the compressed copy - a throwaway used to derive a mask.
+    reference_file : Path, optional
+        Image the percentiles are computed from. Pass the FULL 4D DWI when
+        compressing a b0: pooled over all volumes, p_max falls *below* the b0
+        brain signal, so the whole b0 brain saturates onto the ceiling and forms
+        the single bright plateau atropos needs. Percentiles taken from the b0
+        alone saturate only its top 0.5% and give a much weaker plateau (on this
+        cohort: a 37.9k mask against the ~50-60k the pooled reference yields).
+        Defaults to ``input_file``. Scale-invariant, so it does not matter
+        whether the reference has already been multiplicatively rescaled.
+    target_max : float
+        Ceiling after rescaling (default 10000, chosen to suit FSL BET).
+    percentile_max, percentile_min : float
+        Robust intensity range; values outside are clipped/floored.
+
+    Returns
+    -------
+    Tuple[Path, dict]
+        Output path and the parameters applied.
+    """
+    img = nib.load(input_file)
+    data = img.get_fdata()
+
+    # Percentiles come from the reference (the full 4D when compressing a b0),
+    # the transform is applied to input_file.
+    ref = data if reference_file is None else nib.load(reference_file).get_fdata()
+    nonzero_data = ref[ref > 0]
+    if len(nonzero_data) == 0 or not np.any(data > 0):
+        print("WARNING: All voxels are zero, skipping normalization")
+        nib.save(img, output_file)
+        return output_file, {'was_normalized': False, 'reason': 'all_zeros'}
+
+    p_min = float(np.percentile(nonzero_data, percentile_min))
+    p_max = float(np.percentile(nonzero_data, percentile_max))
+
+    out = data.copy()
+    out[out < p_min] = 0
+    out = np.clip(out, 0, p_max)
+    if p_max > p_min:
+        scale_factor = target_max / (p_max - p_min)
+        out = (out - p_min) * scale_factor
+        out[data < p_min] = 0
+    else:
+        scale_factor = 1.0
+        print("  WARNING: Cannot range-compress - percentile min equals max")
+
+    print(f"  Brain-extraction copy: clipped to [{p_min:.1f}, {p_max:.1f}] "
+          f"-> [0, {out.max():.1f}] (masking only, not the data path)")
+
+    nib.save(nib.Nifti1Image(out.astype(np.float32), img.affine, img.header),
+             output_file)
+
+    return output_file, {
+        'was_normalized': True,
+        'original_p_min': p_min,
+        'original_p_max': p_max,
+        'target_max': target_max,
+        'scale_factor': scale_factor,
+        'masking_only': True,
+    }
+
+
 def extract_b0_volume(
     dwi_file: Path,
     bval_file: Path,

@@ -88,6 +88,61 @@ def test_rescales_wildly_different_input_scales_to_same_range(tmp_path):
     assert max(ranges) / min(ranges) < 1.05
 
 
+def test_brain_extraction_copy_does_clip(tmp_path):
+    """The masking helper is the ONE place clipping is wanted."""
+    from neurofaune.preprocess.utils.dwi_utils import normalize_for_brain_extraction
+
+    src, data = _multishell(tmp_path)
+    out, params = normalize_for_brain_extraction(src, tmp_path / "strip.nii.gz")
+    got = nib.load(out).get_fdata()
+
+    assert got.max() == pytest.approx(params["target_max"], rel=1e-6)
+    assert params["masking_only"] is True
+    # explicitly NOT a pure scale — that's the point
+    assert not np.allclose(got, data * params["scale_factor"], rtol=1e-3)
+
+
+def test_brain_extraction_reference_saturates_the_b0(tmp_path):
+    """Percentiles from the full 4D must saturate the b0 into one plateau.
+
+    Regression: taking percentiles from the b0 alone leaves only its top 0.5%
+    at the ceiling, the bright plateau never forms, atropos picks a small hot
+    subset and the mask collapses (observed: 46k brain -> 794 voxels).
+    """
+    from neurofaune.preprocess.utils.dwi_utils import normalize_for_brain_extraction
+
+    # Geometry matters here: the brain is a small BRIGHT minority of the volume
+    # (~7% in this cohort). Pooled over 95 volumes, every b0 brain voxel then
+    # falls inside the top 0.5%, so p_max lands below the whole brain and it
+    # saturates. Taken from the b0 alone, p99.5 sits near the brain's own max
+    # and almost nothing saturates.
+    shape = (10, 10, 4)
+    rng = np.random.default_rng(3)
+    brain = np.zeros(shape, bool)
+    brain[3:7, 3:7, 1:3] = True                      # 32/400 voxels = 8%
+    s0 = np.where(brain, rng.normal(20_000, 2_000, shape),
+                  rng.normal(1_500, 50, shape))
+    vols = [s0 + rng.normal(0, 50, shape) for _ in range(5)]
+    for shell in (1018.0, 2021.0, 3025.0):
+        dw = np.where(brain, s0 * np.exp(-shell * 0.7e-3), s0)
+        vols += [dw + rng.normal(0, 50, shape) for _ in range(30)]
+    data = np.stack(vols, axis=-1)
+    src = tmp_path / "dwi4d.nii.gz"
+    nib.save(nib.Nifti1Image(data.astype(np.float32), np.eye(4)), src)
+    b0 = tmp_path / "b0.nii.gz"
+    nib.save(nib.Nifti1Image(data[..., 0].astype(np.float32), np.eye(4)), b0)
+
+    pooled = nib.load(normalize_for_brain_extraction(
+        b0, tmp_path / "pooled.nii.gz", reference_file=src)[0]).get_fdata()
+    alone = nib.load(normalize_for_brain_extraction(
+        b0, tmp_path / "alone.nii.gz")[0]).get_fdata()
+
+    # measured over BRAIN voxels — those are the ones that must form the plateau
+    at_ceiling = lambda a: (a[brain] >= a.max() * 0.999).mean()
+    assert at_ceiling(pooled) > 0.9, "pooled reference must saturate the brain"
+    assert at_ceiling(alone) < 0.1, "b0-only reference leaves no plateau"
+
+
 def test_all_zero_input_is_passed_through(tmp_path):
     src = tmp_path / "zeros.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros(SHAPE + (4,), dtype=np.float32), np.eye(4)), src)

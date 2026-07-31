@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 132 across 9 stages.
+**Entry points:** 133 across 9 stages.
 
 
 ## analysis
@@ -90,6 +90,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 | `convert_5d_to_4d` | `neurofaune.preprocess.utils.dwi_utils` | Convert 5D DWI data to 4D by averaging or selecting across 5th dimension. | — |
 | `extract_b0_volume` | `neurofaune.preprocess.utils.dwi_utils` | Extract first b0 volume from DWI data. | — |
 | `normalize_dwi_intensity` | `neurofaune.preprocess.utils.dwi_utils` | Normalize DWI intensity to a consistent range for robust brain extraction. | — |
+| `normalize_for_brain_extraction` | `neurofaune.preprocess.utils.dwi_utils` | Range-compress an image so brain extraction behaves. MASKING ONLY. | — |
 | `extract_acompcor_components` | `neurofaune.preprocess.utils.func.acompcor` | Extract aCompCor components from CSF and white matter regions. | — |
 | `run_melodic_ica` | `neurofaune.preprocess.utils.func.ica_denoising` | Run FSL MELODIC ICA decomposition. | — |
 | `compute_meica_kappa_rho` | `neurofaune.preprocess.utils.func.meica_classify` | Compute kappa (TE-dependence) and rho (TE-independence) for MELODIC components. | — |

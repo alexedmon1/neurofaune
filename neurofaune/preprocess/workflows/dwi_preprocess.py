@@ -22,7 +22,8 @@ from neurofaune.preprocess.utils.dwi_utils import (
     pad_slices_for_eddy,
     pad_mask_for_eddy,
     crop_slices_after_eddy,
-    normalize_dwi_intensity
+    normalize_dwi_intensity,
+    normalize_for_brain_extraction
 )
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
@@ -610,11 +611,24 @@ def run_dwi_preprocessing(
     skull_strip_work_dir = work_dir / 'skull_strip'
     skull_strip_work_dir.mkdir(exist_ok=True)
 
+    # Brain extraction gets its OWN range-compressed copy of the b0. The data
+    # path must never be clipped (clipping truncates S0 and wrecks the decay
+    # curve), but atropos_bet's "brightest class is brain" heuristic needs the
+    # bright tissue saturated onto a common plateau -- on an unclipped b0 the
+    # brain splits across intensity classes and the mask collapses (observed:
+    # ~46k-voxel brain -> 794-voxel mask, which then starved eddy of the voxels
+    # it needs for hyperparameter estimation). Percentiles come from the full 4D
+    # exactly as the legacy path did: pooled over all volumes, p_max sits below
+    # the b0 brain level, so the b0 brain saturates into that plateau. This copy
+    # is a throwaway -- only the MASK is kept, applied to unclipped data.
+    b0_strip_file = work_dir / f'{subject}_{session}_b0_for-strip.nii.gz'
+    normalize_for_brain_extraction(b0_file, b0_strip_file, reference_file=dwi_input)
+
     cohort = session.split('-')[1] if '-' in session else 'p60'
     dwi_ss_method = get_config_value(config, 'diffusion.skull_strip.method', default='atropos_bet')
     dwi_ss_n_classes = get_config_value(config, 'diffusion.skull_strip.n_classes', default=3)
     _, _, skull_strip_info = skull_strip(
-        input_file=b0_file,
+        input_file=b0_strip_file,
         output_file=b0_brain_file,
         mask_file=brain_mask_file,
         work_dir=skull_strip_work_dir,
@@ -624,6 +638,15 @@ def run_dwi_preprocessing(
     )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
+
+    # skull_strip wrote the brain image from the range-compressed copy; rewrite
+    # it from the real b0 so QC (which pairs it with the unclipped b0_file) and
+    # anything else reading it see true intensities. Only the mask carries over.
+    _b0_img = nib.load(str(b0_file))
+    _b0_mask = nib.load(str(brain_mask_file)).get_fdata() > 0
+    nib.save(nib.Nifti1Image(
+        (_b0_img.get_fdata() * _b0_mask).astype(np.float32),
+        _b0_img.affine, _b0_img.header), str(b0_brain_file))
 
     # ==========================================================================
     # Step 4: GPU-accelerated eddy correction (with slice padding)
