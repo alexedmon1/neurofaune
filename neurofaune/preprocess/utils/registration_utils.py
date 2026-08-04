@@ -82,16 +82,23 @@ def propagate_anat_mask(
     out_mask: Path,
     work_dir: Path,
     out_brain: Optional[Path] = None,
+    nonlinear: bool = False,
 ) -> Dict[str, Any]:
-    """Derive a partial-slab brain mask by warping the same-session anat mask in.
+    """Derive a brain mask by warping the same-session anat mask into moving space.
 
-    A within-subject rigid registration of the moving reference to the preproc
-    T2w (centre-of-mass initialised, mutual information) followed by inverse-
-    warping the anatomical brain mask (nearest-neighbour) into the moving image's
-    native space. Unlike an intensity-threshold strip (e.g. slice-wise BET, which
-    on low-contrast MSME degenerates to a fixed-area oval that clips cortex and
+    A within-subject registration of the moving reference to the preproc T2w
+    (centre-of-mass initialised, mutual information) followed by inverse-warping
+    the anatomical brain mask (nearest-neighbour) into the moving image's native
+    space. Unlike an intensity-threshold strip (e.g. slice-wise BET, which on
+    low-contrast MSME degenerates to a fixed-area oval that clips cortex and
     swallows muscle), this inherits the true anatomical boundary from the T2w
     skull-strip, so the mask edge follows the brain.
+
+    ``nonlinear=False`` (default) uses a rigid registration — correct for
+    non-distorted moving images (e.g. spin-echo MSME). ``nonlinear=True`` adds a
+    SyN stage, so the warp absorbs EPI susceptibility distortion; use it for EPI
+    moving images (e.g. the DWI b0) where a rigid fit would misplace the mask at
+    frontal/olfactory distortion zones. For EPI, run on the eddy-corrected b0.
 
     Writes ``out_mask`` (uint8, in moving space); if ``out_brain`` is given, also
     writes the masked moving reference. Returns the moving->anat affine so a
@@ -102,22 +109,36 @@ def propagate_anat_mask(
     m2a_prefix = work_dir / 'mask_moving_to_anat_'
     m2a_affine = Path(str(m2a_prefix) + '0GenericAffine.mat')
 
-    # moving -> anat: rigid, COM-initialised, mutual information (within-subject).
-    subprocess.run([
+    reg_cmd = [
         'antsRegistration', '-d', '3',
         '--output', f'[{m2a_prefix},{work_dir}/mask_moving_in_anat.nii.gz]',
         '--initial-moving-transform', f'[{anat_t2w},{moving_ref},1]',
+        # moving -> anat: rigid, COM-initialised, mutual information (within-subject).
         '--transform', 'Rigid[0.1]',
         '--metric', f'MI[{anat_t2w},{moving_ref},1,32,Regular,0.25]',
         '--convergence', '[500x250x100,1e-6,10]',
         '--shrink-factors', '4x2x1', '--smoothing-sigmas', '2x1x0vox',
-        '--interpolation', 'Linear', '-v', '0',
-    ], check=True, capture_output=True, text=True)
+    ]
+    if nonlinear:
+        # SyN stage to absorb EPI distortion (cross-correlation, within-subject).
+        reg_cmd += [
+            '--transform', 'SyN[0.1,3,0]',
+            '--metric', f'CC[{anat_t2w},{moving_ref},1,3]',
+            '--convergence', '[100x70x50,1e-6,10]',
+            '--shrink-factors', '4x2x1', '--smoothing-sigmas', '2x1x0vox',
+        ]
+    reg_cmd += ['--interpolation', 'Linear', '-v', '0']
+    subprocess.run(reg_cmd, check=True, capture_output=True, text=True)
 
-    # anat mask -> moving space = inverse of (moving->anat), nearest-neighbour.
+    # anat mask -> moving space: inverse of (moving->anat), nearest-neighbour.
+    # With SyN, prepend the inverse warp; ANTs applies transforms right-to-left.
+    inv_transforms = ['-t', f'[{m2a_affine},1]']
+    if nonlinear:
+        inv_warp = Path(str(m2a_prefix) + '1InverseWarp.nii.gz')
+        inv_transforms = ['-t', str(inv_warp)] + inv_transforms
     subprocess.run([
         'antsApplyTransforms', '-d', '3', '-i', str(anat_mask),
-        '-r', str(moving_ref), '-t', f'[{m2a_affine},1]',
+        '-r', str(moving_ref), *inv_transforms,
         '-o', str(out_mask), '--interpolation', 'NearestNeighbor',
     ], check=True, capture_output=True, text=True)
 
@@ -255,4 +276,64 @@ def find_z_offset_ncc(
         "z_offset_mm": z_offset_mm,
         "ncc": best_ncc,
         "bold_fixed_range": (best_offset, best_offset + n_moving_in_fixed),
+    }
+
+
+def restrict_mask_to(
+    base_mask: Path,
+    limiting_mask: Path,
+    out_mask: Path,
+) -> Dict[str, Any]:
+    """Intersect ``base_mask`` with ``limiting_mask``; write to ``out_mask``.
+
+    A refinement that can only ever REMOVE. Used to strip residual non-brain
+    tissue (muscle, ear canals, skull) from a mask derived from the functional
+    or diffusion data itself, using an anatomically-derived mask propagated in
+    from the same-session structural scan.
+
+    Intersecting rather than replacing matters. A propagated structural mask is
+    not reliable enough to be taken as truth in its own right in EPI space: it
+    is warped across contrasts and through uncorrected susceptibility
+    distortion, and it covers regions where the EPI has no usable signal at all
+    (dorsal dropout, slab-end slices). Replacing outright therefore ADDS large
+    amounts of signal-free territory - measured on this cohort's DWI at 46.5% of
+    the mask, at a third of brain-core intensity and 9x the rate of degenerate
+    FA. Intersecting keeps the data-derived coverage decisions and uses the
+    structural mask only to veto.
+
+    Parameters
+    ----------
+    base_mask : Path
+        The mask to refine (e.g. atropos_bet / adaptive-BET output). Its
+        geometry and coverage are authoritative.
+    limiting_mask : Path
+        Anatomical mask propagated into the same space. Acts only as a veto.
+    out_mask : Path
+        Destination. May be the same path as ``base_mask`` (overwrite in place).
+
+    Returns
+    -------
+    dict
+        ``n_before``, ``n_after``, ``n_removed``, ``fraction_removed``.
+    """
+    img = nib.load(str(base_mask))
+    before = img.get_fdata() > 0
+    limit = nib.load(str(limiting_mask)).get_fdata() > 0
+
+    if before.shape != limit.shape:
+        raise ValueError(
+            f"mask shape mismatch: base {before.shape} vs limiting {limit.shape}"
+        )
+
+    keep = before & limit
+    Path(out_mask).parent.mkdir(parents=True, exist_ok=True)
+    nib.save(nib.Nifti1Image(keep.astype(np.uint8), img.affine, img.header),
+             str(out_mask))
+
+    n_before, n_after = int(before.sum()), int(keep.sum())
+    return {
+        "n_before": n_before,
+        "n_after": n_after,
+        "n_removed": n_before - n_after,
+        "fraction_removed": (n_before - n_after) / n_before if n_before else 0.0,
     }

@@ -26,6 +26,10 @@ from neurofaune.preprocess.utils.dwi_utils import (
     normalize_for_brain_extraction
 )
 from neurofaune.preprocess.utils.skull_strip import skull_strip
+from neurofaune.preprocess.utils.registration_utils import (
+    propagate_anat_mask,
+    restrict_mask_to,
+)
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.orientation import (
     match_orientation_to_reference,
@@ -765,6 +769,67 @@ def run_dwi_preprocessing(
 
     print(f"\nEddy-corrected DWI saved to: {dwi_eddy_file}")
     print(f"Rotated bvecs saved to: {eddy_rotated_bvecs}")
+
+    # ==========================================================================
+    # Step 4.5: Post-eddy brain mask refinement (same-session T2w, SyN)
+    # ==========================================================================
+    # The atropos_bet mask retains some non-brain tissue (muscle, ear canals).
+    # Once eddy has produced a clean, motion-corrected b0, the same-session T2w
+    # brain mask is propagated in via SyN (nonlinear = absorbs EPI susceptibility
+    # distortion, which a rigid fit can't) and INTERSECTED with the atropos mask
+    # to strip that residue.
+    #
+    # Intersect, not replace: this is a cleanup pass over atropos_bet, not a
+    # substitute for it. atropos_bet still produces the mask eddy itself uses
+    # (Step 3); this only refines the mask that Step 5 / DKI / NODDI fit within.
+    #
+    # NO erosion — the FA maps stay full-brain and unbiased, and the brain-edge
+    # rim is handled at the analysis stage (TBSS erodes the template WM mask;
+    # ROI analyses use interior atlas WM ROIs).
+    # Off by default (legacy atropos mask preserved).
+    second_mask = get_config_value(config, 'diffusion.second_mask.method', default=None)
+    if second_mask == 'anat_mask':
+        print("\n" + "="*80)
+        print("Step 4.5: Post-eddy brain mask refinement (T2w SyN propagation)")
+        print("="*80)
+        anat_t2w = (output_dir / 'derivatives' / subject / session / 'anat'
+                    / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+        anat_mask = (output_dir / 'derivatives' / subject / session / 'anat'
+                     / f'{subject}_{session}_desc-brain_mask.nii.gz')
+        if not (anat_t2w.exists() and anat_mask.exists()):
+            print(f"  WARNING: preproc T2w / brain mask not found for {subject} "
+                  f"{session}; keeping the atropos_bet mask.")
+        else:
+            mean_b0 = work_dir / f'{subject}_{session}_meanb0_eddy.nii.gz'
+            ec = nib.load(str(dwi_eddy_file))
+            bvals_ec = np.atleast_1d(np.loadtxt(bval_output))
+            b0_idx = bvals_ec < 100
+            nib.save(nib.Nifti1Image(
+                ec.get_fdata()[..., b0_idx].mean(-1).astype(np.float32),
+                ec.affine, ec.header), mean_b0)
+            # INTERSECT, never replace. The propagated T2w mask is written to
+            # its own file and ANDed with the atropos mask, so this step can
+            # only ever REMOVE tissue.
+            #
+            # Replacing outright was measured on sub-7Y ses-1 and is wrong here:
+            # the propagated mask ADDS 22,583 voxels (46.5% of the atropos mask)
+            # whose b0 signal is 3.1x dimmer than brain core (4,728 vs 14,458)
+            # and which carry 9x the rate of degenerate FA>0.8 (1.8% vs 0.2%) --
+            # a dorsal region of EPI signal dropout, not recoverable brain.
+            # Dice(atropos, propagated) is only 0.78, so the propagated boundary
+            # is not reliable enough to be taken as truth in its own right.
+            propagated = work_dir / 'second_mask' / 'anat_mask_in_dwi.nii.gz'
+            propagated.parent.mkdir(parents=True, exist_ok=True)
+            propagate_anat_mask(
+                moving_ref=mean_b0, anat_t2w=anat_t2w, anat_mask=anat_mask,
+                out_mask=propagated,
+                work_dir=work_dir / 'second_mask', nonlinear=True,
+            )
+            info = restrict_mask_to(brain_mask_file, propagated, brain_mask_file)
+            print(f"  Brain mask refined (T2w SyN, intersect): "
+                  f"{info['n_before']} -> {info['n_after']} voxels "
+                  f"({info['n_removed']} removed = "
+                  f"{info['fraction_removed']*100:.1f}%, 0 added by construction)")
 
     # ==========================================================================
     # Step 5: DTI fitting
