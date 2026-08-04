@@ -1004,41 +1004,42 @@ def run_dwi_preprocessing(
     # ==========================================================================
     sigma_outputs = None
 
-    if registration_results is not None and template_file is not None:
-        # Resolve template→SIGMA transforms from template directory
-        tpl_transforms_dir = template_file.parent / 'transforms'
-        tpl_to_sigma_affine = tpl_transforms_dir / 'tpl-to-SIGMA_0GenericAffine.mat'
-        tpl_to_sigma_warp = tpl_transforms_dir / 'tpl-to-SIGMA_1Warp.nii.gz'
+    if registration_results is not None:
+        from neurofaune.templates.sigma_warp import (
+            DWI_SIGMA_METRICS, build_metric_files, sigma_targets_from_config,
+            warp_maps_to_sigma,
+        )
 
-        # Resolve SIGMA reference image from config
-        sigma_template_path = config.get('atlas', {}).get('study_space', {}).get('template')
+        cohort_name = session.split('-')[1] if '-' in session else None
+        targets = sigma_targets_from_config(
+            config, session=session, cohort=cohort_name,
+            study_root=output_dir, template_file=template_file)
 
-        if not tpl_to_sigma_affine.exists():
-            print(f"\n  Step 8: Skipping SIGMA warp (template→SIGMA transform not found: {tpl_to_sigma_affine})")
-        elif not sigma_template_path or not Path(sigma_template_path).exists():
-            print(f"\n  Step 8: Skipping SIGMA warp (SIGMA template not found in config)")
+        if not targets["ready"]:
+            # Loudly: analysis reads space-SIGMA_* from derivatives, so skipping
+            # here leaves the analysis stage with nothing to find.
+            print(f"\n  Step 8: SIGMA warp SKIPPED — {targets['reason']}")
+            print("  (group analysis reads space-SIGMA_* from derivatives; "
+                  "these metrics will be unavailable downstream)")
         else:
             print("\n" + "="*80)
-            print("Step 8: Warp DTI Metrics to SIGMA Space")
+            print("Step 8: Warp DWI Metrics to SIGMA Space")
             print("="*80)
-
+            metric_files = build_metric_files(
+                derivatives_dir, f"{subject}_{session}", DWI_SIGMA_METRICS)
+            missing = sorted(set(DWI_SIGMA_METRICS) - set(metric_files))
+            if missing:
+                print(f"  (not yet fitted, skipping: {', '.join(missing)})")
             try:
-                metric_files = {
-                    'FA': fa_file,
-                    'MD': md_file,
-                    'AD': ad_file,
-                    'RD': rd_file,
-                }
-
-                sigma_outputs = warp_dti_to_sigma(
+                sigma_outputs = warp_maps_to_sigma(
                     metric_files=metric_files,
-                    fa_to_template_affine=registration_results['affine_transform'],
-                    tpl_to_sigma_affine=tpl_to_sigma_affine,
-                    tpl_to_sigma_warp=tpl_to_sigma_warp if tpl_to_sigma_warp.exists() else None,
-                    sigma_template=Path(sigma_template_path),
+                    moving_to_template=registration_results['affine_transform'],
+                    sigma_template=targets["sigma_template"],
                     output_dir=derivatives_dir,
-                    subject=subject,
-                    session=session,
+                    subject=subject, session=session,
+                    tpl_to_sigma_affine=targets["affine"],
+                    tpl_to_sigma_warp=targets["warp"],
+                    force=True,   # metrics were just refitted
                 )
             except Exception as e:
                 print(f"\n  SIGMA warping failed: {e}")

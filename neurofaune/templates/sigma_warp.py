@@ -193,3 +193,50 @@ def build_metric_files(derivatives_dir: Path, prefix: str,
         if p.exists():
             out[name] = p
     return out
+
+
+def sigma_targets_from_config(
+    config: Dict[str, Any],
+    session: str,
+    cohort: Optional[str] = None,
+    study_root: Optional[Path] = None,
+    template_file: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Resolve the SIGMA reference and template->SIGMA transforms from config.
+
+    Reads ``atlas.study_space.template`` for the reference image and, optionally,
+    ``atlas.study_space.tpl_to_sigma_dir`` for where the transforms live. The
+    latter is a path template accepting ``{study_root}``, ``{cohort}`` and
+    ``{session_num}`` -- studies key these directories differently, and guessing
+    is what caused a whole cohort to be silently skipped.
+
+    Returns a dict with ``sigma_template``, ``affine``, ``warp``, ``ready``
+    (bool) and ``reason`` (why not, when not ready).
+    """
+    study_space = (config.get("atlas", {}) or {}).get("study_space", {}) or {}
+    sigma_template = study_space.get("template")
+
+    if not sigma_template or not Path(sigma_template).exists():
+        return {"ready": False, "sigma_template": None, "affine": None,
+                "warp": None,
+                "reason": f"atlas.study_space.template not set or missing "
+                          f"({sigma_template!r})"}
+
+    candidates: List[Path] = []
+    spec = study_space.get("tpl_to_sigma_dir")
+    if spec:
+        session_num = session.replace("ses-", "")
+        candidates.append(Path(str(spec).format(
+            study_root=str(study_root or ""), cohort=cohort or "",
+            session_num=session_num)))
+
+    res = resolve_tpl_to_sigma(template_file=template_file,
+                               candidate_dirs=candidates)
+    if not res["found"]:
+        searched = ", ".join(str(p) for p in res["searched"]) or "(nowhere)"
+        return {"ready": False, "sigma_template": Path(sigma_template),
+                "affine": None, "warp": None,
+                "reason": f"template->SIGMA transforms not found; searched: {searched}"}
+
+    return {"ready": True, "sigma_template": Path(sigma_template),
+            "affine": res["affine"], "warp": res["warp"], "reason": None}

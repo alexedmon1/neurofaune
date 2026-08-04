@@ -2672,6 +2672,45 @@ def run_functional_preprocessing(
         print(f"  Total components: {results['acompcor']['n_components']}")
         print(f"  CSF voxels: {results['acompcor']['n_voxels_csf']}")
         print(f"  WM voxels: {results['acompcor']['n_voxels_wm']}")
+    # =========================================================================
+    # Warp the preprocessed 4D BOLD to SIGMA space
+    # =========================================================================
+    # Group analysis reads space-SIGMA_* out of derivatives. The 4D timeseries
+    # is the preprocessing deliverable; derived maps (fALFF, ReHo, ...) are
+    # computed at the analysis stage and take the space-SIGMA_desc-<metric>_bold
+    # naming that roi_extraction expects for them.
+    if registration_results is not None:
+        from neurofaune.templates.sigma_warp import (
+            sigma_targets_from_config, warp_maps_to_sigma,
+        )
+        cohort_name = session.split('-')[1] if '-' in session else None
+        targets = sigma_targets_from_config(
+            config, session=session, cohort=cohort_name,
+            study_root=output_dir, template_file=template_file)
+        if not targets["ready"]:
+            print(f"\n  SIGMA warp SKIPPED — {targets['reason']}")
+            print("  (group analysis reads space-SIGMA_* from derivatives; "
+                  "the BOLD timeseries will be unavailable downstream)")
+        else:
+            print("\n" + "=" * 80)
+            print("Warp preprocessed BOLD to SIGMA Space")
+            print("=" * 80)
+            bold_preproc = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+            try:
+                results['sigma'] = warp_maps_to_sigma(
+                    metric_files={"bold": bold_preproc},
+                    moving_to_template=registration_results['affine_transform'],
+                    sigma_template=targets["sigma_template"],
+                    output_dir=derivatives_dir,
+                    subject=subject, session=session,
+                    tpl_to_sigma_affine=targets["affine"],
+                    tpl_to_sigma_warp=targets["warp"],
+                    suffix_style="bold",
+                    force=True,
+                )
+            except Exception as e:
+                print(f"\n  SIGMA warping failed: {e}")
+
     print("="*80)
 
     return results

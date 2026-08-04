@@ -982,6 +982,46 @@ def run_msme_preprocessing(
     print("MSME Preprocessing Complete!")
     print("="*80 + "\n")
 
+    # =========================================================================
+    # Warp MSME maps to SIGMA space
+    # =========================================================================
+    # Group analysis reads space-SIGMA_* out of derivatives
+    # (network.roi_extraction.discover_sigma_metrics globs for them), so this is
+    # what makes the MSME arm available downstream at all.
+    sigma_outputs = None
+    if registration_results:
+        from neurofaune.templates.sigma_warp import (
+            MSME_SIGMA_METRICS, build_metric_files, sigma_targets_from_config,
+            warp_maps_to_sigma,
+        )
+        cohort_name = session.split('-')[1] if '-' in session else None
+        targets = sigma_targets_from_config(
+            config, session=session, cohort=cohort_name,
+            study_root=output_dir, template_file=template_file)
+        if not targets["ready"]:
+            print(f"\n  SIGMA warp SKIPPED — {targets['reason']}")
+            print("  (group analysis reads space-SIGMA_* from derivatives; "
+                  "MSME metrics will be unavailable downstream)")
+        else:
+            print("\n" + "=" * 80)
+            print("Warp MSME Metrics to SIGMA Space")
+            print("=" * 80)
+            metric_files = build_metric_files(
+                derivatives_dir, f"{subject}_{session}", MSME_SIGMA_METRICS)
+            try:
+                sigma_outputs = warp_maps_to_sigma(
+                    metric_files=metric_files,
+                    moving_to_template=registration_results['affine_transform'],
+                    sigma_template=targets["sigma_template"],
+                    output_dir=derivatives_dir,
+                    subject=subject, session=session,
+                    tpl_to_sigma_affine=targets["affine"],
+                    tpl_to_sigma_warp=targets["warp"],
+                    force=True,
+                )
+            except Exception as e:
+                print(f"\n  SIGMA warping failed: {e}")
+
     results = {
         'mwf': mwf_file,
         'iwf': iwf_file,
@@ -990,6 +1030,9 @@ def run_msme_preprocessing(
         'brain_mask': brain_mask_file,
         'qc_results': qc_results
     }
+
+    if sigma_outputs:
+        results['sigma'] = sigma_outputs
 
     if registration_results:
         results['registration'] = {
