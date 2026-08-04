@@ -1008,6 +1008,82 @@ def run_tedana(
     return results
 
 
+def refine_func_mask_with_anat(
+    config,
+    subject: str,
+    session: str,
+    derivatives_dir: Path,
+    brain_ref: Path,
+    brain_mask: Path,
+    work_dir: Path,
+):
+    """Intersect the func brain mask with the same-session T2w brain mask.
+
+    Opt-in via ``functional.second_mask.method: anat_mask``. Returns None when
+    disabled or when the anat inputs are unavailable.
+
+    The adaptive slice-wise BET retains temporalis muscle lateral to the brain
+    (measured on this cohort: 10.5-19.0% of the mask, at ~40% of brain BOLD
+    intensity). That matters beyond the final mask, because this mask is applied
+    to the echoes BEFORE smoothing and before aCompCor:
+
+      * smoothing (6mm FWHM) blurs muscle signal INTO brain voxels, which no
+        later masking can undo;
+      * aCompCor intersects its WM/CSF masks with the eroded brain mask, so
+        muscle enters the tissue masks too - measured at 13.3% of the WM and
+        5.5% of the CSF voxels aCompCor actually samples. Those components are
+        then regressed out of the whole brain, injecting muscle signal.
+
+    Refining here, immediately after brain extraction, fixes all three at once:
+    every downstream consumer inherits the corrected mask.
+
+    INTERSECT only - see ``restrict_mask_to``. The propagated T2w mask covers
+    territory the EPI cannot see (dorsal dropout, slab-end slices: on this
+    cohort 2,423-5,110 voxels per session at ~2x background intensity), so it
+    must veto, never add.
+    """
+    from neurofaune.preprocess.utils.registration_utils import (
+        propagate_anat_mask,
+        restrict_mask_to,
+    )
+    from neurofaune.config import get_config_value
+
+    method = get_config_value(config, 'functional.second_mask.method', default=None)
+    if method != 'anat_mask':
+        return None
+
+    anat_dir = Path(derivatives_dir).parent / 'anat'
+    anat_t2w = anat_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+    anat_mask = anat_dir / f'{subject}_{session}_desc-brain_mask.nii.gz'
+    if not (anat_t2w.exists() and anat_mask.exists()):
+        print(f"  WARNING: preproc T2w / brain mask not found for {subject} "
+              f"{session}; keeping the adaptive-BET mask.")
+        return None
+
+    print("\n" + "="*60)
+    print("Brain mask refinement against same-session T2w (intersect)")
+    print("="*60)
+    ss_work = Path(work_dir) / 'anat_mask'
+    ss_work.mkdir(parents=True, exist_ok=True)
+    propagated = ss_work / 'anat_mask_in_bold.nii.gz'
+    # Rigid by default. Measured on sub-1Y/sub-2Z ses-1, SyN removes 3-5
+    # percentage points MORE than rigid, but the extra is not muscle: it is a
+    # consistent thin band along the VENTRAL cerebrum edge, i.e. SyN warping the
+    # mask boundary inward into real tissue. Both modes remove the lateral
+    # muscle identically. Dice(kept_rigid, kept_syn) = 0.960-0.962, disagreeing
+    # on 6.2-6.3% of the mask. Rigid is the conservative and validated choice.
+    nonlinear = get_config_value(config, 'functional.second_mask.nonlinear', default=False)
+    propagate_anat_mask(
+        moving_ref=brain_ref, anat_t2w=anat_t2w, anat_mask=anat_mask,
+        out_mask=propagated, work_dir=ss_work / 'reg', nonlinear=nonlinear,
+    )
+    info = restrict_mask_to(brain_mask, propagated, brain_mask)
+    print(f"  Brain mask refined (T2w, intersect): {info['n_before']} -> "
+          f"{info['n_after']} voxels ({info['n_removed']} removed = "
+          f"{info['fraction_removed']*100:.1f}%, 0 added by construction)")
+    return info
+
+
 def run_multiecho_motion_correction(
     echo_files: List[Path],
     work_dir: Path,
@@ -1536,6 +1612,13 @@ def run_functional_preprocessing(
         brain_ref = me_results['brain_ref']
         skull_strip_info = me_results['skull_strip_info']
 
+        # Refine the mask BEFORE it is applied to the echoes: everything
+        # downstream (smoothing, TEDANA, aCompCor) inherits it.
+        refine_func_mask_with_anat(
+            config, subject, session, derivatives_dir,
+            brain_ref, brain_mask, work_dir,
+        )
+
         # Apply brain mask to all corrected echoes
         print("\nApplying brain mask to motion-corrected echoes...")
         me_masked_echoes = []
@@ -1901,6 +1984,13 @@ def run_functional_preprocessing(
         print(f"\n  Method: {skull_strip_info.get('method', 'unknown')}")
         print(f"  Mask created: {skull_strip_info.get('total_voxels', 0):,} voxels")
         print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
+
+        # Refine against the same-session T2w before the mask is used anywhere
+        # downstream (masking the timeseries, smoothing, aCompCor).
+        refine_func_mask_with_anat(
+            config, subject, session, derivatives_dir,
+            brain_ref, brain_mask, work_dir,
+        )
         if 'mean_frac' in skull_strip_info:
             print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
 
