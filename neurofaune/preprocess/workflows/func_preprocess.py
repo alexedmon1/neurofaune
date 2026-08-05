@@ -140,10 +140,20 @@ def register_bold_to_template(
             anat_to_tpl_warp=_at_warp if _at_warp.exists() else None,
             template_file=template_file, output_prefix=output_prefix,
             work_dir=work_dir, n_cores=n_cores)
+        # Keys must match the fallback return below: the caller writes them all
+        # into the registration sidecar. Omitting template_file/bold_shape/
+        # template_shape here (as this branch did from cf895bc) raises KeyError
+        # in the caller AFTER the registration has already succeeded, so the
+        # composite warp is written and used while the sidecar is never updated
+        # and the registration QC never runs -- reported only as a caught
+        # "Registration failed" that does not fail the session.
         return {
             'affine_transform': comp['composite_warp'],   # displacement field; analysis applies this
             'moving_to_anat_affine': comp['moving_to_anat_affine'],
             'warped_bold': comp['warped'],
+            'template_file': template_file,
+            'bold_shape': bold_img.shape,
+            'template_shape': template_img.shape,
             'method': 'anat_composition',
         }
 
