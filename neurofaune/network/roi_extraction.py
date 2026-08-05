@@ -16,6 +16,20 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Entity parsers for SIGMA-space derivative filenames.
+#
+# [\w-], not \w, in the metric group: BIDS entity VALUES legitimately contain
+# hyphens, and the multi-shell metrics are named model-DKI_MK / model-NODDI_ODI.
+# Under a \w-only group the glob found those files and the regex then dropped
+# every one of them with no error -- 364 of 572 images on the cuprizone study,
+# i.e. the whole of DKI and NODDI, invisible to the analysis stage.
+SIGMA_MAP_RE = re.compile(
+    r'(sub-[\w-]+?)_(ses-[\w-]+?)_space-SIGMA_([\w-]+)\.nii\.gz'
+)
+SIGMA_FUNC_RE = re.compile(
+    r'(sub-[\w-]+?)_(ses-[\w-]+?)_space-SIGMA_desc-([\w-]+)_bold\.nii\.gz'
+)
+
 
 def load_parcellation(
     parcellation_path: Path,
@@ -79,9 +93,25 @@ def extract_roi_means(
     metric_img: np.ndarray,
     parcellation_data: np.ndarray,
     labels_df: pd.DataFrame,
-) -> dict[str, float]:
+    coverage_mask: Optional[np.ndarray] = None,
+    min_coverage: float = 0.0,
+    return_coverage: bool = False,
+):
     """
-    Compute mean metric value within each labeled ROI.
+    Compute mean metric value within each labeled ROI, over COVERED voxels only.
+
+    An acquisition slab rarely spans the whole atlas: a 27-slice DWI or an
+    11-slice MSME covers part of it, and every atlas voxel outside the slab is
+    zero in the warped image. Averaging those zeros in makes the ROI value a
+    function of how much of the ROI the slab reached rather than of the tissue.
+    Measured on this data (rat MSME T2, 234 ROIs): ``corr(coverage, ROI mean)``
+    was **0.932** including zeros and **0.03** excluding them, with the median
+    ROI reading 51.1 ms instead of 60.0 ms. The bias is silent and it is
+    strongest exactly where coverage is worst, so it survives as plausible
+    numbers rather than as missing data.
+
+    Voxels are therefore restricted to `coverage_mask` when one is given, and
+    otherwise to finite non-zero voxels.
 
     Parameters
     ----------
@@ -91,24 +121,55 @@ def extract_roi_means(
         3D integer parcellation array (same shape as metric_img)
     labels_df : DataFrame
         Labels table with 'Labels' and 'roi_name' columns
+    coverage_mask : ndarray, optional
+        3D boolean mask of voxels the acquisition actually reached (e.g. the
+        session brain mask warped to SIGMA). **Prefer this.** The nonzero
+        fallback cannot distinguish "outside the slab" from a genuine zero, and
+        some metrics do take exact zeros in-slab — measured at 0.07% of in-slab
+        voxels for MWF, where NNLS returns no short-T2 component.
+    min_coverage : float
+        Return NaN for any ROI whose covered fraction is below this (0-1).
+        Default 0.0 keeps every ROI; the coverage is reported regardless, so
+        the caller can threshold later instead.
+    return_coverage : bool
+        If True, return ``(roi_means, roi_coverage)`` instead of just means.
 
     Returns
     -------
-    dict
-        Mapping of ROI name → mean metric value. NaN for labels
-        present in CSV but absent from parcellation.
+    dict, or (dict, dict) when return_coverage
+        Mapping of ROI name → mean over covered voxels (NaN when the label is
+        absent from the parcellation, nothing is covered, or coverage is below
+        `min_coverage`), and optionally ROI name → covered fraction (0-1).
     """
+    if coverage_mask is None:
+        covered_all = np.isfinite(metric_img) & (metric_img != 0)
+    else:
+        covered_all = np.asarray(coverage_mask, dtype=bool) & np.isfinite(metric_img)
+
     roi_means = {}
+    roi_coverage = {}
     for _, row in labels_df.iterrows():
         label_id = row['Labels']
         roi_name = row['roi_name']
         mask = parcellation_data == label_id
-        n_voxels = mask.sum()
+        n_voxels = int(mask.sum())
         if n_voxels == 0:
             roi_means[roi_name] = np.nan
-        else:
-            roi_means[roi_name] = float(np.nanmean(metric_img[mask]))
+            roi_coverage[roi_name] = np.nan
+            continue
 
+        covered = mask & covered_all
+        n_covered = int(covered.sum())
+        frac = n_covered / n_voxels
+        roi_coverage[roi_name] = frac
+
+        if n_covered == 0 or frac < min_coverage:
+            roi_means[roi_name] = np.nan
+        else:
+            roi_means[roi_name] = float(np.nanmean(metric_img[covered]))
+
+    if return_coverage:
+        return roi_means, roi_coverage
     return roi_means
 
 
@@ -195,18 +256,14 @@ def discover_sigma_metrics(
                 f"sub-*/ses-*/{modality}/"
                 f"sub-*_ses-*_space-SIGMA_desc-{metric}_bold.nii.gz"
             )
-            fname_re = re.compile(
-                r'(sub-\w+)_(ses-\w+)_space-SIGMA_desc-(\w+)_bold\.nii\.gz'
-            )
+            fname_re = SIGMA_FUNC_RE
         else:
             # DWI/MSME files: sub-*_ses-*_space-SIGMA_{metric}.nii.gz
             pattern = (
                 f"sub-*/ses-*/{modality}/"
                 f"sub-*_ses-*_space-SIGMA_{metric}.nii.gz"
             )
-            fname_re = re.compile(
-                r'(sub-\w+)_(ses-\w+)_space-SIGMA_(\w+)\.nii\.gz'
-            )
+            fname_re = SIGMA_MAP_RE
 
         for path in sorted(derivatives_dir.glob(pattern)):
             match = fname_re.match(path.name)
@@ -217,6 +274,13 @@ def discover_sigma_metrics(
                     'metric': match.group(3),
                     'path': path,
                 })
+            else:
+                # The glob matched but the parse did not. Never drop this on
+                # the floor: it means files exist that no one will analyse.
+                logger.warning(
+                    f"Could not parse entities from {path.name} -- skipped. "
+                    f"This file will be invisible to the analysis stage."
+                )
 
     logger.info(
         f"Discovered {len(found)} SIGMA-space {modality} images "
@@ -233,9 +297,15 @@ def extract_all_subjects(
     metrics: list[str],
     exclusions: Optional[set] = None,
     min_volumes: int = 0,
+    min_coverage: float = 0.0,
+    use_coverage_mask: bool = True,
 ) -> dict[str, pd.DataFrame]:
     """
     Extract ROI means for all subjects, one DataFrame per metric.
+
+    ROI means are computed over covered voxels only — see `extract_roi_means`
+    for why averaging in out-of-slab zeros makes an ROI value track coverage
+    rather than tissue.
 
     Parameters
     ----------
@@ -253,6 +323,16 @@ def extract_all_subjects(
         Set of (subject, session) tuples to exclude.
     min_volumes : int
         Minimum BOLD volume count for func sessions (0 = no check).
+    min_coverage : float
+        ROIs covered below this fraction (0-1) are returned as NaN. Default 0.0
+        keeps everything and lets the caller threshold using the reported
+        coverage. Partial-coverage ROIs are real for slab acquisitions: on this
+        study's 11-slice MSME, 86 of 234 atlas ROIs fall below 50%.
+    use_coverage_mask : bool
+        Prefer the session's own brain mask warped to SIGMA
+        (``{sub}_{ses}_space-SIGMA_desc-brain_mask.nii.gz``) as the coverage
+        mask, falling back to finite-nonzero when it is absent. Only the mask
+        distinguishes "outside the slab" from a genuine zero.
 
     Returns
     -------
@@ -350,10 +430,41 @@ def extract_all_subjects(
             img = nib.load(str(entry['path']))
             img_data = np.asarray(img.dataobj, dtype=np.float32)
 
-            roi_means = extract_roi_means(img_data, parcellation_data, labels_df)
+            coverage_mask = None
+            if use_coverage_mask:
+                mask_path = (
+                    entry['path'].parent
+                    / f'{sub}_{ses}_space-SIGMA_desc-brain_mask.nii.gz'
+                )
+                if mask_path.exists():
+                    coverage_mask = np.asarray(
+                        nib.load(str(mask_path)).dataobj
+                    ) > 0
+                else:
+                    logger.warning(
+                        f"[{metric}] {sub}_{ses}: no SIGMA brain mask "
+                        f"({mask_path.name}); falling back to finite-nonzero "
+                        f"coverage, which cannot tell an out-of-slab voxel "
+                        f"from a genuine zero."
+                    )
+
+            roi_means, roi_cov = extract_roi_means(
+                img_data, parcellation_data, labels_df,
+                coverage_mask=coverage_mask,
+                min_coverage=min_coverage,
+                return_coverage=True,
+            )
             territory_means = compute_territory_means(
                 roi_means, labels_df, parcellation_data
             )
+
+            cov_vals = [c for c in roi_cov.values() if np.isfinite(c)]
+            if cov_vals:
+                logger.info(
+                    f"[{metric}] {sub}_{ses}: coverage median "
+                    f"{float(np.median(cov_vals)):.2f}, "
+                    f"{sum(c < 0.5 for c in cov_vals)} ROIs <50%"
+                )
 
             row = {'subject': sub, 'session': ses}
             row.update(roi_means)

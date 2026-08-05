@@ -18,6 +18,8 @@ import nibabel as nib
 import numpy as np
 from pathlib import Path
 from typing import Optional
+
+from neurofaune.utils.bids import space_entity
 from scipy import stats
 
 
@@ -187,7 +189,9 @@ def compute_reho_map(func_file: Path,
     print("  ReHo computation complete")
 
     # Save
-    reho_file = output_dir / f"{subject}_{session}_desc-ReHo_bold.nii.gz"
+    # Inherit the input's space entity (see falff.py).
+    space = space_entity(func_file)
+    reho_file = output_dir / f"{subject}_{session}_{space}desc-ReHo_bold.nii.gz"
 
     hdr = func_img.header.copy()
     hdr.set_data_shape((nx, ny, nz))
@@ -267,7 +271,9 @@ def compute_reho_zscore(reho_file: Path,
     if std_reho > 0:
         zscore_data[mask_data] = ((brain_reho - mean_reho) / std_reho).astype(np.float32)
 
-    reho_zscore_file = output_dir / f"{subject}_{session}_desc-ReHozscore_bold.nii.gz"
+    # From the ReHo map itself: the z-score inherits its input's space.
+    space = space_entity(reho_file)
+    reho_zscore_file = output_dir / f"{subject}_{session}_{space}desc-ReHozscore_bold.nii.gz"
     nib.save(nib.Nifti1Image(zscore_data, reho_img.affine, reho_img.header), reho_zscore_file)
 
     print(f"  Saved z-scored ReHo: {reho_zscore_file.name}")

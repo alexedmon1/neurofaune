@@ -336,6 +336,25 @@ def bids_filename(base_stem: str, entity: str, suffix: str) -> str:
     return "_".join(parts)
 
 
+def space_entity(source) -> str:
+    """The ``space-<X>_`` prefix carried by `source`, or ``""`` if it has none.
+
+    A map derived from an image inherits that image's space — a metric computed
+    from ``space-SIGMA_desc-preproc_bold.nii.gz`` is in SIGMA space and has to
+    say so, or the consumer that globs ``space-SIGMA_desc-*_bold.nii.gz`` will
+    not see it. Deriving the entity from the input makes that structural rather
+    than a convention every call site has to remember.
+
+    >>> space_entity("sub-1X_ses-1_space-SIGMA_desc-preproc_bold.nii.gz")
+    'space-SIGMA_'
+    >>> space_entity("sub-1X_ses-1_desc-preproc_bold.nii.gz")
+    ''
+    """
+    name = Path(str(source)).name
+    m = re.search(r'(?:^|_)(space-[A-Za-z0-9]+)_', name)
+    return f"{m.group(1)}_" if m else ""
+
+
 def _get(d: Dict, key: str):
     v = d.get(key)
     return v.get("value") if isinstance(v, dict) else v

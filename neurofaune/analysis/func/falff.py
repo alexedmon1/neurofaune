@@ -20,6 +20,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 
+from neurofaune.utils.bids import space_entity
+
 
 def compute_falff_map(func_file: Path,
                       mask_file: Path,
@@ -179,8 +181,12 @@ def compute_falff_map(func_file: Path,
     falff_data[valid_indices] = falff_vals.astype(np.float32)
 
     # Save output maps
-    alff_file = output_dir / f"{subject}_{session}_desc-ALFF_bold.nii.gz"
-    falff_file = output_dir / f"{subject}_{session}_desc-fALFF_bold.nii.gz"
+    # Inherit the input's space entity, so a map computed from a
+    # space-SIGMA_ input is named space-SIGMA_ and stays visible to
+    # roi_extraction (which globs space-SIGMA_desc-*_bold.nii.gz).
+    space = space_entity(func_file)
+    alff_file = output_dir / f"{subject}_{session}_{space}desc-ALFF_bold.nii.gz"
+    falff_file = output_dir / f"{subject}_{session}_{space}desc-fALFF_bold.nii.gz"
 
     # Use 3D header (drop time dimension)
     hdr = func_img.header.copy()
@@ -300,8 +306,10 @@ def compute_falff_zscore(alff_file: Path,
         falff_zscore[mask_data] = ((brain_falff - mean_falff) / std_falff).astype(np.float32)
 
     # Save
-    alff_zscore_file = output_dir / f"{subject}_{session}_desc-ALFFzscore_bold.nii.gz"
-    falff_zscore_file = output_dir / f"{subject}_{session}_desc-fALFFzscore_bold.nii.gz"
+    # From the ALFF map itself: the z-score inherits its input's space.
+    space = space_entity(alff_file)
+    alff_zscore_file = output_dir / f"{subject}_{session}_{space}desc-ALFFzscore_bold.nii.gz"
+    falff_zscore_file = output_dir / f"{subject}_{session}_{space}desc-fALFFzscore_bold.nii.gz"
 
     nib.save(nib.Nifti1Image(alff_zscore, alff_img.affine, alff_img.header), alff_zscore_file)
     nib.save(nib.Nifti1Image(falff_zscore, falff_img.affine, falff_img.header), falff_zscore_file)

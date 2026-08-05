@@ -71,7 +71,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 | `run_regression` | `neurofaune.network.regression` | LOOCV regression with SVR, Ridge, and PLS + permutation test. | — |
 | `compute_territory_means` | `neurofaune.network.roi_extraction` | Aggregate region means into territory-level means, weighted by voxel count. | — |
 | `extract_all_subjects` | `neurofaune.network.roi_extraction` | Extract ROI means for all subjects, one DataFrame per metric. | — |
-| `extract_roi_means` | `neurofaune.network.roi_extraction` | Compute mean metric value within each labeled ROI. | — |
+| `extract_roi_means` | `neurofaune.network.roi_extraction` | Compute mean metric value within each labeled ROI, over COVERED voxels only. | — |
 
 ## preprocess (qc)
 
