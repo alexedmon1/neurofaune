@@ -1073,7 +1073,7 @@ def refine_func_mask_with_anat(
     # muscle identically. Dice(kept_rigid, kept_syn) = 0.960-0.962, disagreeing
     # on 6.2-6.3% of the mask. Rigid is the conservative and validated choice.
     nonlinear = get_config_value(config, 'functional.second_mask.nonlinear', default=False)
-    propagate_anat_mask(
+    reg = propagate_anat_mask(
         moving_ref=brain_ref, anat_t2w=anat_t2w, anat_mask=anat_mask,
         out_mask=propagated, work_dir=ss_work / 'reg', nonlinear=nonlinear,
     )
@@ -1081,6 +1081,10 @@ def refine_func_mask_with_anat(
     print(f"  Brain mask refined (T2w, intersect): {info['n_before']} -> "
           f"{info['n_after']} voxels ({info['n_removed']} removed = "
           f"{info['fraction_removed']*100:.1f}%, 0 added by construction)")
+    # Hand the func->anat registration back: aCompCor reuses it to bring the T2w
+    # tissue probability maps into BOLD space (see STEP 8).
+    info['moving_to_anat_affine'] = reg['moving_to_anat_affine']
+    info['inverse_warp'] = reg.get('inverse_warp')
     return info
 
 
@@ -1588,6 +1592,9 @@ def run_functional_preprocessing(
     skull_strip_info = {}
     ref_norm = None          # Used for QC in SE path
     tpl_brain_mask_file = None  # Template brain mask (SE + template method only)
+    # Set by the T2w mask refinement below; None when second_mask is disabled.
+    # aCompCor reuses this registration for the tissue maps -- see STEP 8.
+    anat_reg_info = None
 
     if is_multiecho:
         # =================================================================
@@ -1614,7 +1621,7 @@ def run_functional_preprocessing(
 
         # Refine the mask BEFORE it is applied to the echoes: everything
         # downstream (smoothing, TEDANA, aCompCor) inherits it.
-        refine_func_mask_with_anat(
+        anat_reg_info = refine_func_mask_with_anat(
             config, subject, session, derivatives_dir,
             brain_ref, brain_mask, work_dir,
         )
@@ -1987,7 +1994,7 @@ def run_functional_preprocessing(
 
         # Refine against the same-session T2w before the mask is used anywhere
         # downstream (masking the timeseries, smoothing, aCompCor).
-        refine_func_mask_with_anat(
+        anat_reg_info = refine_func_mask_with_anat(
             config, subject, session, derivatives_dir,
             brain_ref, brain_mask, work_dir,
         )
@@ -2152,9 +2159,17 @@ def run_functional_preprocessing(
         print("STEP 8: aCompCor Extraction")
         print("="*60)
 
-        # Find CSF and WM masks from anatomical preprocessing
-        # These are in T2w space — resample to BOLD space if needed
-        from nibabel.processing import resample_from_to as _resample_from_to
+        # Tissue maps come from the T2w segmentation and must be REGISTERED into
+        # BOLD space, not merely resampled onto its grid. resample_from_to maps
+        # world coordinates and applies no transform, so when the EPI and
+        # anatomical FOVs were planned independently it returns an image of the
+        # right shape sampled from the wrong anatomy -- measured on one rat
+        # session as Dice 0.398, a 64.7 mm centre-of-mass shift and 67.1% of the
+        # brain missed, with nothing raised. aCompCor then regresses out
+        # components of whatever tissue happened to sit at those coordinates.
+        from neurofaune.preprocess.utils.registration_utils import (
+            propagate_anat_image,
+        )
         anat_deriv_dir = output_dir / 'derivatives' / subject / session / 'anat'
         csf_mask = anat_deriv_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
         wm_mask = anat_deriv_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
@@ -2166,19 +2181,33 @@ def run_functional_preprocessing(
             print(f"  Skipping aCompCor extraction")
             print(f"  (Run anatomical preprocessing first to generate tissue masks)")
             acompcor_enabled = False
+        elif not (anat_reg_info and anat_reg_info.get('moving_to_anat_affine')):
+            # No registration means no honest way to place the tissue maps.
+            # Guessing produces confounds sampled from the wrong anatomy, which
+            # is worse than not denoising at all, so decline instead.
+            print("  Warning: no func->anat registration available "
+                  "(functional.second_mask.method: anat_mask supplies it).")
+            print("  Skipping aCompCor rather than sampling tissue maps that "
+                  "were never aligned to the BOLD data.")
+            acompcor_enabled = False
         else:
-            bold_ref_img = nib.load(brain_mask)
             for label, mask_path in [('CSF', csf_mask), ('WM', wm_mask)]:
-                mask_img = nib.load(mask_path)
-                if mask_img.shape[:3] != bold_ref_img.shape[:3]:
-                    print(f"  Resampling {label} mask from {mask_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
-                    resampled = _resample_from_to(mask_img, bold_ref_img, order=1)
-                    out_path = work_dir / f'{subject}_{session}_space-bold_label-{label}_probseg.nii.gz'
-                    nib.save(resampled, out_path)
-                    if label == 'CSF':
-                        csf_mask = out_path
-                    else:
-                        wm_mask = out_path
+                out_path = (work_dir /
+                            f'{subject}_{session}_space-bold_label-{label}_probseg.nii.gz')
+                print(f"  Propagating {label} probseg into BOLD space "
+                      f"(func->anat registration, Linear)")
+                propagate_anat_image(
+                    anat_image=mask_path,
+                    moving_ref=brain_mask,
+                    moving_to_anat_affine=anat_reg_info['moving_to_anat_affine'],
+                    inverse_warp=anat_reg_info.get('inverse_warp'),
+                    out_image=out_path,
+                    interpolation='Linear',   # probability maps, not labels
+                )
+                if label == 'CSF':
+                    csf_mask = out_path
+                else:
+                    wm_mask = out_path
 
     if acompcor_enabled:
         acompcor_file = derivatives_dir / f"{subject}_{session}_desc-acompcor_timeseries.tsv"
