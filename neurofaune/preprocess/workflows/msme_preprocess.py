@@ -992,7 +992,7 @@ def run_msme_preprocessing(
     if registration_results:
         from neurofaune.templates.sigma_warp import (
             MSME_SIGMA_METRICS, build_metric_files, sigma_targets_from_config,
-            warp_maps_to_sigma,
+            warp_coverage_mask, warp_maps_to_sigma,
         )
         cohort_name = session.split('-')[1] if '-' in session else None
         targets = sigma_targets_from_config(
@@ -1009,6 +1009,17 @@ def run_msme_preprocessing(
             metric_files = build_metric_files(
                 derivatives_dir, f"{subject}_{session}", MSME_SIGMA_METRICS)
             try:
+                warp_coverage_mask(
+                    mask_file=(derivatives_dir /
+                               f"{subject}_{session}_desc-brain_mask.nii.gz"),
+                    moving_to_template=registration_results['affine_transform'],
+                    sigma_template=targets["sigma_template"],
+                    output_dir=derivatives_dir,
+                    subject=subject, session=session,
+                    tpl_to_sigma_affine=targets["affine"],
+                    tpl_to_sigma_warp=targets["warp"],
+                    force=True,
+                )
                 sigma_outputs = warp_maps_to_sigma(
                     metric_files=metric_files,
                     moving_to_template=registration_results['affine_transform'],

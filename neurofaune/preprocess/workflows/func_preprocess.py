@@ -2681,7 +2681,7 @@ def run_functional_preprocessing(
     # naming that roi_extraction expects for them.
     if registration_results is not None:
         from neurofaune.templates.sigma_warp import (
-            sigma_targets_from_config, warp_maps_to_sigma,
+            sigma_targets_from_config, warp_coverage_mask, warp_maps_to_sigma,
         )
         cohort_name = session.split('-')[1] if '-' in session else None
         targets = sigma_targets_from_config(
@@ -2697,6 +2697,17 @@ def run_functional_preprocessing(
             print("=" * 80)
             bold_preproc = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
             try:
+                warp_coverage_mask(
+                    mask_file=(derivatives_dir /
+                               f"{subject}_{session}_desc-brain_mask.nii.gz"),
+                    moving_to_template=registration_results['affine_transform'],
+                    sigma_template=targets["sigma_template"],
+                    output_dir=derivatives_dir,
+                    subject=subject, session=session,
+                    tpl_to_sigma_affine=targets["affine"],
+                    tpl_to_sigma_warp=targets["warp"],
+                    force=True,
+                )
                 results['sigma'] = warp_maps_to_sigma(
                     metric_files={"bold": bold_preproc},
                     moving_to_template=registration_results['affine_transform'],

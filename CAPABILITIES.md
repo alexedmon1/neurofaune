@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 135 across 9 stages.
+**Entry points:** 136 across 9 stages.
 
 
 ## analysis
@@ -163,6 +163,7 @@ _Generated from the code by `neurofaune capabilities` (v0.5.3a0)._ Do not edit b
 | `compute_dice_coefficient` | `neurofaune.templates.registration_qc` | Compute Dice coefficient between two binary masks. | — |
 | `compute_registration_metrics` | `neurofaune.templates.registration_qc` | Compute comprehensive registration QC metrics. | — |
 | `build_metric_files` | `neurofaune.templates.sigma_warp` | Expand a metric spec into ``{name: path}``, keeping only what exists. | — |
+| `warp_coverage_mask` | `neurofaune.templates.sigma_warp` | Warp a session brain mask into SIGMA as the COVERAGE mask. | — |
 | `warp_maps_to_sigma` | `neurofaune.templates.sigma_warp` | Warp scalar maps (or a 4D timeseries) from modality space into SIGMA. | — |
 | `compute_slice_correspondence` | `neurofaune.templates.slice_registration` | Compute which atlas region corresponds to each template slice. | — |
 | `extract_coronal_slab_atlas` | `neurofaune.templates.slice_registration` | Extract and average a coronal slab from the atlas. | — |

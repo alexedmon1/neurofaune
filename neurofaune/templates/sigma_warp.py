@@ -195,6 +195,55 @@ def build_metric_files(derivatives_dir: Path, prefix: str,
     return out
 
 
+COVERAGE_MASK_NAME = "desc-brain_mask"
+
+
+def warp_coverage_mask(
+    mask_file: Path,
+    moving_to_template: Path,
+    sigma_template: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    tpl_to_sigma_affine: Path,
+    tpl_to_sigma_warp: Optional[Path] = None,
+    force: bool = False,
+) -> Optional[Path]:
+    """Warp a session brain mask into SIGMA as the COVERAGE mask.
+
+    These are slab acquisitions -- a 27-slice DWI or an 11-slice MSME does not
+    span the atlas -- so a warped map is zero wherever the slab did not reach.
+    `network.roi_extraction` needs to tell those voxels from genuine zeros, and
+    only an explicit mask can: MWF, for one, returns exact zeros in-slab where
+    NNLS finds no short-T2 component. Without this file ROI extraction falls
+    back to finite-nonzero and silently mixes the two.
+
+    NearestNeighbor, so the mask stays binary.
+
+    Returns the output path, or None when `mask_file` does not exist.
+    """
+    mask_file = Path(mask_file)
+    if not mask_file.exists():
+        print(f"  Coverage mask not found ({mask_file.name}); ROI extraction "
+              f"will fall back to finite-nonzero coverage.")
+        return None
+
+    out = warp_maps_to_sigma(
+        metric_files={COVERAGE_MASK_NAME: mask_file},
+        moving_to_template=moving_to_template,
+        sigma_template=sigma_template,
+        output_dir=output_dir,
+        subject=subject,
+        session=session,
+        tpl_to_sigma_affine=tpl_to_sigma_affine,
+        tpl_to_sigma_warp=tpl_to_sigma_warp,
+        interpolation="NearestNeighbor",
+        suffix_style="metric",
+        force=force,
+    )
+    return out.get(COVERAGE_MASK_NAME)
+
+
 def sigma_targets_from_config(
     config: Dict[str, Any],
     session: str,
@@ -212,15 +261,31 @@ def sigma_targets_from_config(
 
     Returns a dict with ``sigma_template``, ``affine``, ``warp``, ``ready``
     (bool) and ``reason`` (why not, when not ready).
+
+    Set ``atlas.study_space.required: true`` to make a non-ready result RAISE
+    instead of returning. A printed skip is not a safeguard in a cohort run: on
+    the cuprizone study it printed on all 52 sessions, every run exited 0, and
+    the missing warps were only found later by grepping the log. If a study's
+    analysis stage depends on space-SIGMA images, failing the session is the
+    honest behaviour.
     """
     study_space = (config.get("atlas", {}) or {}).get("study_space", {}) or {}
     sigma_template = study_space.get("template")
+    required = bool(study_space.get("required", False))
+
+    def _not_ready(reason, tpl=None):
+        if required:
+            raise RuntimeError(
+                f"SIGMA warp is required (atlas.study_space.required) but is "
+                f"not resolvable: {reason}"
+            )
+        return {"ready": False, "sigma_template": tpl, "affine": None,
+                "warp": None, "reason": reason}
 
     if not sigma_template or not Path(sigma_template).exists():
-        return {"ready": False, "sigma_template": None, "affine": None,
-                "warp": None,
-                "reason": f"atlas.study_space.template not set or missing "
-                          f"({sigma_template!r})"}
+        return _not_ready(
+            f"atlas.study_space.template not set or missing ({sigma_template!r})"
+        )
 
     candidates: List[Path] = []
     spec = study_space.get("tpl_to_sigma_dir")
@@ -234,9 +299,10 @@ def sigma_targets_from_config(
                                candidate_dirs=candidates)
     if not res["found"]:
         searched = ", ".join(str(p) for p in res["searched"]) or "(nowhere)"
-        return {"ready": False, "sigma_template": Path(sigma_template),
-                "affine": None, "warp": None,
-                "reason": f"template->SIGMA transforms not found; searched: {searched}"}
+        return _not_ready(
+            f"template->SIGMA transforms not found; searched: {searched}",
+            tpl=Path(sigma_template),
+        )
 
     return {"ready": True, "sigma_template": Path(sigma_template),
             "affine": res["affine"], "warp": res["warp"], "reason": None}
