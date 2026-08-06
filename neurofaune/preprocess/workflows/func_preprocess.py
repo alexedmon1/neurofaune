@@ -54,6 +54,25 @@ from neurofaune.preprocess.utils.registration_utils import find_z_offset_ncc
 from typing import Union
 
 
+def cache_is_stale(cache: Union[str, Path], inputs) -> bool:
+    """True when ``cache`` is missing or older than any existing input.
+
+    ``work/`` persists between runs, so an "if not exists" guard around an
+    intermediate silently reuses the previous run's file even after the inputs
+    that produced it have changed. That is how a re-run can honour a new brain
+    mask everywhere except the one cached image it registers against.
+
+    A missing input is ignored rather than treated as stale: it is not evidence
+    the cache is out of date, and the caller fails on it soon enough.
+    """
+    cache = Path(cache)
+    if not cache.exists():
+        return True
+    cache_mtime = cache.stat().st_mtime
+    return any(Path(p).exists() and Path(p).stat().st_mtime > cache_mtime
+               for p in inputs)
+
+
 def _find_z_offset_ncc(
     bold_img: nib.Nifti1Image,
     t2w_img: nib.Nifti1Image,
@@ -2445,6 +2464,16 @@ def run_functional_preprocessing(
         },
         'brain_extraction': {
             'method': skull_strip_info.get('method', 'auto'),
+            # Whether the mask was intersected with the same-session T2w. Without
+            # this the sidecar reads identically before and after the refinement,
+            # so the only way to tell which mask a derivative carries is to go
+            # back to the run log.
+            'second_mask': ({
+                'method': 'anat_mask',
+                'n_voxels_before': anat_reg_info.get('n_before'),
+                'n_voxels_after': anat_reg_info.get('n_after'),
+                'fraction_removed': anat_reg_info.get('fraction_removed'),
+            } if anat_reg_info else None),
         },
         'smoothing': {
             'fwhm_mm': smoothing_fwhm
@@ -2530,7 +2559,11 @@ def run_functional_preprocessing(
             reg_work_dir.mkdir(parents=True, exist_ok=True)
             mean_mcf_brain = reg_work_dir / f'{subject}_{session}_mean_mcf_brain.nii.gz'
 
-            if not mean_mcf_brain.exists():
+            _stale = cache_is_stale(mean_mcf_brain, [bold_mcf, brain_mask])
+            if _stale and mean_mcf_brain.exists():
+                print("  Registration reference is older than the motion-corrected "
+                      "BOLD or the brain mask - recomputing it.")
+            if _stale:
                 print("  Computing temporal mean of motion-corrected BOLD...")
                 mcf_img = nib.load(bold_mcf)
                 mcf_data = mcf_img.get_fdata()
