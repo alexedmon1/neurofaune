@@ -4,7 +4,8 @@ Scans a study's ``qc/`` tree and renders one navigable ``index.html`` that ties
 every QC layer together:
 
 * per-modality **batch dashboards** (``reports/<mod>/summary.html``) + galleries,
-* cohort **montage galleries** (``slicesdir/**/index.html``), and
+* cohort **montage galleries** (``slicesdir/**/slicesdir/index.html``, at any
+  depth — the anat arm nests one level, the modality arms two), and
 * a **subject x session x modality matrix** linking every per-session report
   (``subjects/<sub>/<ses>/<mod>/*_qc.html``), with batch-flagged sessions marked.
 
@@ -121,11 +122,18 @@ def generate_qc_index(
             flagged[mod] = _load_flagged(reports_dir, mod)
 
     # ---- 3. montage galleries (slicesdir/**/slicesdir/index.html) ------------
+    # Galleries sit at whatever depth the arm that wrote them used: the anat arm
+    # writes slicesdir/<name>/slicesdir/, the modality arms slicesdir/<mod>/<name>/
+    # slicesdir/. Match any depth and build the label from the path — a fixed
+    # `*/*/` glob silently drops every gallery that isn't exactly two deep.
     montages: List[Tuple[str, str]] = []
     if slices_dir.exists():
-        for idx in sorted(slices_dir.glob("*/*/slicesdir/index.html")):
-            name = idx.relative_to(slices_dir).parts[:2]  # (group, name)
-            montages.append((" / ".join(name), _rel(idx, qc_dir)))
+        for idx in slices_dir.rglob("index.html"):
+            parts = idx.relative_to(slices_dir).parts
+            if len(parts) < 3 or parts[-2] != "slicesdir":
+                continue  # not a slicesdir gallery index
+            montages.append((" / ".join(parts[:-2]), _rel(idx, qc_dir)))
+        montages.sort()
 
     # ---- 4. render -----------------------------------------------------------
     n_sessions = len(sessions)

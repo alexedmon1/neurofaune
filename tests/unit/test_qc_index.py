@@ -23,8 +23,9 @@ def _make_qc_tree(qc: Path):
     (qc / "reports/dwi/exclusions_by_reason.json").write_text(json.dumps({
         "by_reason": {"high_motion": [{"subject": "sub-1A", "session": "ses-1", "flags": "mean_fd high"}]}
     }))
-    # a montage gallery
+    # montage galleries: the modality arms nest two deep, the anat arm one
     _touch(qc / "slicesdir/dwi/fa/slicesdir/index.html")
+    _touch(qc / "slicesdir/brain_extraction/slicesdir/index.html")
 
 
 def test_index_renders_and_links_resolve(tmp_path):
@@ -54,6 +55,34 @@ def test_index_renders_and_links_resolve(tmp_path):
 
     # flagged session marked (warn glyph + tooltip)
     assert "⚠" in html and "mean_fd high" in html
+
+
+def test_montage_galleries_found_at_any_depth(tmp_path):
+    # A gallery must be listed wherever the arm that wrote it put it. The anat
+    # arm nests one level below slicesdir/, the modality arms two; a fixed
+    # two-level glob silently drops the anat galleries.
+    qc = tmp_path / "qc"
+    _make_qc_tree(qc)
+    _touch(qc / "slicesdir/templates/slicesdir/index.html")          # one deep
+    _touch(qc / "slicesdir/msme/t2/slicesdir/index.html")            # two deep
+    _touch(qc / "slicesdir/a/b/c/slicesdir/index.html")              # three deep
+    _touch(qc / "slicesdir/dwi/fa/slicesdir/notes.html")             # not an index
+    _touch(qc / "slicesdir/stray/index.html")                        # not a gallery
+
+    html = generate_qc_index(qc, study_name="teststudy").read_text()
+
+    for path, label in [
+        ("slicesdir/brain_extraction/slicesdir/index.html", "brain_extraction"),
+        ("slicesdir/templates/slicesdir/index.html", "templates"),
+        ("slicesdir/dwi/fa/slicesdir/index.html", "dwi / fa"),
+        ("slicesdir/msme/t2/slicesdir/index.html", "msme / t2"),
+        ("slicesdir/a/b/c/slicesdir/index.html", "a / b / c"),
+    ]:
+        assert path in html, f"gallery not listed: {path}"
+        assert f">{label}</a>" in html, f"gallery mislabelled: {label}"
+
+    # an index.html that isn't a slicesdir gallery index is not a montage
+    assert "slicesdir/stray/index.html" not in html
 
 
 def test_incremental_regeneration(tmp_path):
