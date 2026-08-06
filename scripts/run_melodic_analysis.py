@@ -102,7 +102,7 @@ def ensure_sigma_bold(
     """
     transforms_root = study_root / "transforms"
     templates_root = study_root / "templates"
-    sigma_template = study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain.nii.gz"
+    sigma_template = study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain_Template.nii.gz"
     sigma_mask = study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain_Mask.nii.gz"
     work_dir = study_root / "work" / "melodic_warp"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -244,7 +244,7 @@ def main():
         study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain_Mask.nii.gz"
     )
     sigma_template = (
-        study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain.nii.gz"
+        study_root / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_Brain_Template.nii.gz"
     )
 
     if not sigma_mask.exists():
@@ -272,13 +272,6 @@ def main():
         exclusions=exclusions,
         min_volumes=args.min_volumes,
     )
-
-    if not sessions:
-        logger.error("No SIGMA-space BOLD files found — have you run warp_bold_to_sigma?")
-        logger.error(
-            "Check that derivatives contain: *_space-SIGMA_desc-preproc_bold.nii.gz"
-        )
-        sys.exit(1)
 
     logger.info("")
     logger.info("[Phase 1] Checking SIGMA-space BOLD coverage...")
@@ -330,6 +323,10 @@ def main():
             )
         else:
             logger.info("  All sessions already have SIGMA-space BOLD.")
+
+    if not sessions:
+        logger.error("No SIGMA-space BOLD files found after warping — check transform availability")
+        sys.exit(1)
 
     bold_files = [s["bold_file"] for s in sessions]
     logger.info("  Total sessions for MELODIC: %d", len(bold_files))
