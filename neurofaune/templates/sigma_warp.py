@@ -12,10 +12,26 @@ handles so callers pass them in the natural order.
 """
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+import shutil
 import subprocess
+import tempfile
 
 TPL_TO_SIGMA_AFFINE = "tpl-to-SIGMA_0GenericAffine.mat"
 TPL_TO_SIGMA_WARP = "tpl-to-SIGMA_1Warp.nii.gz"
+
+#: Timepoints per ``antsApplyTransforms -e 3`` call for a 4-D input.
+#:
+#: ANTs materialises the WHOLE output time series in memory, so a single call
+#: scales with run length, not with anything the caller controls. A rat BOLD run
+#: warped onto SIGMA is 128x128x218 per volume; at 360 volumes that is 1.29e9
+#: voxels, which ITK holds in double unless told otherwise -- 10.3 GB for the
+#: buffer alone, ~24 GB peak measured, on a 31 GB machine. It OOMed at
+#: concurrency 1 and the kill left empty stderr, so the failure looked like a
+#: data problem rather than a memory one.
+#:
+#: Chunking makes peak memory a property of THIS constant instead of a property
+#: of the acquisition. 60 volumes ~= 3 GB peak with --float.
+TIMESERIES_CHUNK = 60
 
 
 def resolve_tpl_to_sigma(
@@ -135,26 +151,114 @@ def warp_maps_to_sigma(
             out[name] = dst
             continue
 
-        cmd = ["antsApplyTransforms", "-d", "3",
-               "-i", str(src), "-r", str(sigma_template), "-o", str(dst),
-               "-n", interpolation]
-        # 4D input needs -e 3 so ANTs treats it as a timeseries of 3D volumes
         import nibabel as nib
-        if nib.load(str(src)).ndim == 4:
-            cmd = ["antsApplyTransforms", "-d", "3", "-e", "3",
-                   "-i", str(src), "-r", str(sigma_template), "-o", str(dst),
-                   "-n", interpolation]
-        for t in chain:
-            cmd += ["-t", t]
+        is_4d = nib.load(str(src)).ndim == 4
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            print(f"  {name}: FAILED\n{res.stderr[-500:]}")
+        try:
+            if is_4d:
+                _warp_timeseries(src, dst, sigma_template, chain, interpolation)
+            else:
+                _run_ants(_ants_cmd(src, dst, sigma_template, chain, interpolation))
+        except RuntimeError as e:
+            print(f"  {name}: FAILED\n{e}")
             continue
+
         print(f"  {name} -> {dst.name}")
         out[name] = dst
 
     return out
+
+
+def _ants_cmd(src: Path, dst: Path, sigma_template: Path, chain: Sequence[str],
+              interpolation: str, timeseries: bool = False) -> List[str]:
+    """Build an antsApplyTransforms invocation.
+
+    ``--float`` is always passed: the inputs are float32 on disk, so ITK's
+    default double precision doubles peak memory to buy accuracy the data does
+    not carry.
+    """
+    cmd = ["antsApplyTransforms", "-d", "3", "--float", "1"]
+    if timeseries:
+        cmd += ["-e", "3"]
+    cmd += ["-i", str(src), "-r", str(sigma_template), "-o", str(dst),
+            "-n", interpolation]
+    for t in chain:
+        cmd += ["-t", t]
+    return cmd
+
+
+def _run_ants(cmd: List[str]) -> None:
+    """Run antsApplyTransforms, raising with whatever it told us.
+
+    A process killed by the OOM killer exits nonzero with EMPTY stderr, so
+    reporting stderr alone renders the most likely failure invisible. Report the
+    exit code always, and say so explicitly when stderr is empty.
+    """
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode == 0:
+        return
+    detail = res.stderr.strip()
+    if not detail:
+        detail = (f"no stderr (exit {res.returncode}); a silent nonzero exit "
+                  "usually means the process was killed -- check for OOM")
+    else:
+        detail = f"exit {res.returncode}\n{detail[-500:]}"
+    raise RuntimeError(detail)
+
+
+def _warp_timeseries(src: Path, dst: Path, sigma_template: Path,
+                     chain: Sequence[str], interpolation: str) -> None:
+    """Warp a 4-D series in chunks of :data:`TIMESERIES_CHUNK` volumes.
+
+    Equivalent to one ``-e 3`` call over the whole series -- each volume is
+    warped independently either way -- but peak memory is bounded by the chunk
+    size rather than by the number of timepoints. See TIMESERIES_CHUNK.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    img = nib.load(str(src))
+    n_vols = img.shape[3]
+    if n_vols <= TIMESERIES_CHUNK:
+        _run_ants(_ants_cmd(src, dst, sigma_template, chain, interpolation,
+                            timeseries=True))
+        return
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="sigma_warp_", dir=dst.parent))
+    try:
+        warped_chunks: List[Path] = []
+        for start in range(0, n_vols, TIMESERIES_CHUNK):
+            stop = min(start + TIMESERIES_CHUNK, n_vols)
+            chunk_in = tmpdir / f"in_{start:04d}.nii.gz"
+            chunk_out = tmpdir / f"out_{start:04d}.nii.gz"
+            # slicer keeps the chunk off the heap between calls; dataobj slicing
+            # reads only the requested volumes rather than the whole series.
+            nib.save(
+                nib.Nifti1Image(np.asarray(img.dataobj[..., start:stop]),
+                                img.affine, img.header),
+                str(chunk_in))
+            _run_ants(_ants_cmd(chunk_in, chunk_out, sigma_template, chain,
+                                interpolation, timeseries=True))
+            chunk_in.unlink()
+            warped_chunks.append(chunk_out)
+
+        merged = nib.concat_images([nib.load(str(c)) for c in warped_chunks],
+                                   axis=3)
+        # concat_images gives (x,y,z,1,t) when the parts are themselves 4-D.
+        data = np.asarray(merged.dataobj)
+        if data.ndim == 5:
+            data = data.reshape(data.shape[:3] + (-1,))
+        ref = nib.load(str(warped_chunks[0]))
+        outimg = nib.Nifti1Image(data.astype(np.float32), ref.affine, ref.header)
+        outimg.header.set_data_dtype(np.float32)
+        nib.save(outimg, str(dst))
+
+        n_out = nib.load(str(dst)).shape[3]
+        if n_out != n_vols:
+            raise RuntimeError(
+                f"chunked warp produced {n_out} volumes, expected {n_vols}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # Metric sets per modality. Kept here so every caller warps the same things and

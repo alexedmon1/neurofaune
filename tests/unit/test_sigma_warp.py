@@ -16,6 +16,7 @@ import pytest
 from neurofaune.templates.sigma_warp import (
     DWI_SIGMA_METRICS,
     MSME_SIGMA_METRICS,
+    TIMESERIES_CHUNK,
     build_metric_files,
     resolve_tpl_to_sigma,
     warp_maps_to_sigma,
@@ -179,3 +180,89 @@ def test_missing_input_is_skipped_not_fatal(tmp_path, warp_env):
     got = warp_maps_to_sigma({"FA": tmp_path / "nope.nii.gz"}, mov, sigma,
                              tmp_path / "out", "sub-1X", "ses-1", aff, wrp)
     assert got == {} and calls == []
+
+
+# ------------------------------------------------- 4-D memory containment ---
+# ANTs materialises a whole warped time series in memory. On the cuprizone rat
+# cohort one session is 128x128x218x360 = 1.29e9 voxels; in ITK's default double
+# that is 10.3 GB for the output buffer alone and ~24 GB peak, which OOMed a
+# 31 GB machine at concurrency 1. The kill left stderr empty, so the log said
+# only "bold: FAILED" and the cause looked like bad data. These tests pin both
+# halves of the fix: bound the memory, and make the failure legible.
+
+@pytest.fixture
+def chunk_env(tmp_path, monkeypatch):
+    """Stub ANTs, echoing the input's volume count into the output."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        src = Path(cmd[cmd.index("-i") + 1])
+        out = Path(cmd[cmd.index("-o") + 1])
+        img = nib.load(str(src))
+        n = img.shape[3] if img.ndim == 4 else None
+        # record n_vols NOW: chunk inputs are unlinked as soon as they are warped
+        calls.append({"argv": cmd, "n_vols": n})
+        _nii(out, shape=SHAPE + (n,) if n else SHAPE)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("neurofaune.templates.sigma_warp.subprocess.run", fake_run)
+    sigma = _nii(tmp_path / "sigma.nii.gz")
+    mov = tmp_path / "mov.mat"; mov.touch()
+    aff = tmp_path / "aff.mat"; aff.touch()
+    return calls, sigma, mov, aff
+
+
+def test_float_precision_is_always_requested(tmp_path, chunk_env):
+    """Inputs are float32 on disk; ITK's default double just doubles peak RAM."""
+    calls, sigma, mov, aff = chunk_env
+    src = _nii(tmp_path / "in" / "x.nii.gz")
+    warp_maps_to_sigma({"FA": src}, mov, sigma, tmp_path / "out",
+                       "sub-1X", "ses-1", aff, None)
+    assert "--float" in calls[0]["argv"]
+
+
+def test_long_timeseries_is_warped_in_bounded_chunks(tmp_path, chunk_env):
+    """Peak memory must follow TIMESERIES_CHUNK, not the run length."""
+    calls, sigma, mov, aff = chunk_env
+    n_vols = TIMESERIES_CHUNK * 2 + 7
+    bold = _nii(tmp_path / "in" / "bold.nii.gz", shape=SHAPE + (n_vols,))
+
+    got = warp_maps_to_sigma({"bold": bold}, mov, sigma, tmp_path / "out",
+                             "sub-1X", "ses-1", aff, None, suffix_style="bold")
+
+    assert len(calls) == 3, "one ANTs call per chunk"
+    for c in calls:
+        argv = c["argv"]
+        assert argv[argv.index("-e") + 1] == "3"
+        assert c["n_vols"] <= TIMESERIES_CHUNK, "a chunk exceeded the memory bound"
+    assert sum(c["n_vols"] for c in calls) == n_vols, "lost volumes across chunks"
+    # every timepoint survives the split/merge, in one 4-D image
+    merged = nib.load(str(got["bold"]))
+    assert merged.ndim == 4 and merged.shape[3] == n_vols
+
+
+def test_short_timeseries_is_not_split(tmp_path, chunk_env):
+    """Chunking is overhead when the series already fits."""
+    calls, sigma, mov, aff = chunk_env
+    bold = _nii(tmp_path / "in" / "b.nii.gz", shape=SHAPE + (TIMESERIES_CHUNK,))
+    warp_maps_to_sigma({"bold": bold}, mov, sigma, tmp_path / "out",
+                       "sub-1X", "ses-1", aff, None, suffix_style="bold")
+    assert len(calls) == 1
+
+
+def test_silent_nonzero_exit_is_reported_as_a_kill(tmp_path, monkeypatch, capsys):
+    """An OOM kill exits nonzero with EMPTY stderr -- don't print nothing."""
+    def oom(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, -9, stdout="", stderr="")
+
+    monkeypatch.setattr("neurofaune.templates.sigma_warp.subprocess.run", oom)
+    sigma = _nii(tmp_path / "sigma.nii.gz")
+    mov = tmp_path / "m.mat"; mov.touch()
+    aff = tmp_path / "a.mat"; aff.touch()
+    src = _nii(tmp_path / "in" / "x.nii.gz")
+
+    got = warp_maps_to_sigma({"FA": src}, mov, sigma, tmp_path / "out",
+                             "sub-1X", "ses-1", aff, None)
+    assert got == {}
+    msg = capsys.readouterr().out
+    assert "-9" in msg and "OOM" in msg
