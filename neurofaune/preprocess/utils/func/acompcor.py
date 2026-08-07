@@ -30,6 +30,7 @@ def extract_acompcor_components(
     variance_threshold: float = 0.5,
     erode_voxels: int = 1,
     brain_mask: Optional[Path] = None,
+    drop_first_component: bool = False,
     output_file: Optional[Path] = None
 ) -> Dict[str, Any]:
     """
@@ -65,6 +66,22 @@ def extract_acompcor_components(
         Binary brain mask in the same space as the tissue masks. When given and
         ``erode_voxels > 0``, drives the erode-brain-then-intersect rim removal
         described above.
+    drop_first_component : bool
+        Discard the leading PC of each tissue and keep the next
+        ``n_components`` instead (default: False, i.e. keep PC1..PCn).
+
+        The leading PC of a large tissue mask is the global signal, not
+        tissue-specific physiology. Measured on the cuprizone rat cohort,
+        ``corr(PC1, brain-mean signal)`` is 0.980 for WM and 0.984 for CSF,
+        while PC2 onward sit near zero (0.008, 0.099). A pipeline that also runs
+        global signal regression therefore models the same nuisance three times,
+        which costs degrees of freedom and makes the CSF and WM regressor sets
+        look interchangeable when the informative components are not.
+
+        This does NOT assume PC1 is always global: whenever ``brain_mask`` is
+        given, the correlation between each dropped component and the brain-mean
+        signal is returned in ``dropped_component_gs_corr`` so the assumption is
+        checkable per session rather than taken on faith.
     output_file : Path, optional
         Output TSV file for aCompCor regressors
 
@@ -185,9 +202,13 @@ def extract_acompcor_components(
     csf_std[csf_std == 0] = 1  # Avoid division by zero
     csf_timeseries = csf_timeseries / csf_std
 
+    # Fit one extra PC when the leading one is to be discarded, so the caller
+    # still receives the number of regressors it asked for.
+    n_skip = 1 if drop_first_component else 0
+
     # PCA on CSF
     print(f"  Running PCA on CSF ({n_components_csf} components)...")
-    pca_csf = PCA(n_components=n_components_csf)
+    pca_csf = PCA(n_components=min(n_components_csf + n_skip, csf_timeseries.shape[0]))
     csf_components = pca_csf.fit_transform(csf_timeseries.T)  # (n_timepoints, n_components)
 
     print(f"    Explained variance: {pca_csf.explained_variance_ratio_.sum():.2%}")
@@ -204,10 +225,32 @@ def extract_acompcor_components(
 
     # PCA on WM
     print(f"  Running PCA on WM ({n_components_wm} components)...")
-    pca_wm = PCA(n_components=n_components_wm)
+    pca_wm = PCA(n_components=min(n_components_wm + n_skip, wm_timeseries.shape[0]))
     wm_components = pca_wm.fit_transform(wm_timeseries.T)  # (n_timepoints, n_components)
 
     print(f"    Explained variance: {pca_wm.explained_variance_ratio_.sum():.2%}")
+
+    # Discard the leading (global-signal) PC of each tissue, recording how
+    # global it actually was so the assumption is auditable per session.
+    dropped_gs_corr: Dict[str, Optional[float]] = {}
+    if drop_first_component:
+        gs = None
+        if brain_mask is not None:
+            gs = bold_data[nib.load(brain_mask).get_fdata() > 0, :].mean(axis=0)
+        for label, comps in (('CSF', csf_components), ('WM', wm_components)):
+            if gs is not None and comps.shape[1] > 0 and np.std(comps[:, 0]) > 0:
+                dropped_gs_corr[label] = float(
+                    abs(np.corrcoef(comps[:, 0], gs)[0, 1]))
+            else:
+                dropped_gs_corr[label] = None
+        csf_components = csf_components[:, 1:]
+        wm_components = wm_components[:, 1:]
+        n_components_csf = csf_components.shape[1]
+        n_components_wm = wm_components.shape[1]
+        shown = {k: (f"{v:.3f}" if v is not None else "n/a")
+                 for k, v in dropped_gs_corr.items()}
+        print(f"  Dropped the leading PC of each tissue "
+              f"(|corr| with brain-mean signal: {shown})")
 
     # Combine CSF and WM components
     all_components = np.hstack([csf_components, wm_components])
@@ -216,10 +259,12 @@ def extract_acompcor_components(
     if output_file:
         print(f"  Saving aCompCor regressors to {output_file}")
 
-        # Create header
+        # Number columns by their TRUE PC index: with drop_first_component the
+        # first retained regressor is PC2, and calling it comp_1 would erase
+        # that from the record.
         headers = []
-        headers.extend([f'csf_comp_{i+1}' for i in range(n_components_csf)])
-        headers.extend([f'wm_comp_{i+1}' for i in range(n_components_wm)])
+        headers.extend([f'csf_comp_{i+1+n_skip}' for i in range(n_components_csf)])
+        headers.extend([f'wm_comp_{i+1+n_skip}' for i in range(n_components_wm)])
 
         # Save as TSV
         np.savetxt(
@@ -240,7 +285,9 @@ def extract_acompcor_components(
         'n_voxels_wm': int(n_voxels_wm),
         'n_components_csf': int(n_components_csf),
         'n_components_wm': int(n_components_wm),
-        'erode_voxels': int(erode_voxels)
+        'erode_voxels': int(erode_voxels),
+        'drop_first_component': bool(drop_first_component),
+        'dropped_component_gs_corr': dropped_gs_corr,
     }
 
     print(f"  ✓ Extracted {all_components.shape[1]} aCompCor components")
