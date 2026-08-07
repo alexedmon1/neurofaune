@@ -408,23 +408,47 @@ functional:
   # QC settings
   run_qc: true
 
-# Spectroscopy (FSL-MRS)
+# Single-voxel spectroscopy (Bruker PRESS -> FSL-MRS)
 spectroscopy:
-  # Basis set
-  basis_set: "7T_rat"  # Study-specific
+  # FSL-MRS basis set: a directory of per-metabolite JSON files, or an LCModel
+  # .basis file. Must match the sequence, echo time and field strength -- e.g.
+  # PRESS TE 20 ms at 7T. Required; there is no sensible default.
+  basis: null
 
-  # Preprocessing
-  preprocess:
-    frequency_correction: true
-    phase_correction: true
-    eddy_correction: true
-    water_suppression: true
+  # Directory holding fsl_mrs / fsl_mrs_preproc. Leave null to use $FSLDIR/bin
+  # then $PATH. FSL 6.0.7+ bundles them, so no separate conda env is needed;
+  # set this only to point at a different fsl_mrs build.
+  fsl_bin: null
 
-  # Quantification
-  quantification:
-    method: "Newton"  # or "MH" (Metropolis-Hastings)
-    baseline_order: 2
-    metab_groups: []  # Metabolite groups for fitting
+  # Read rawdata.job0 so coils and individual averages are preserved. Set false
+  # to use Bruker's pre-averaged reconstruction, which disables coil
+  # combination, shot alignment and outlier rejection.
+  prefer_raw: true
+
+  # Preprocessing (fsl_mrs_preproc)
+  # Align averages in windows of this many shots. Single rodent averages are
+  # too noisy for per-shot alignment: on CPZ test data the default per-shot
+  # alignment gave NAA SNR 6.0 against 28.7 with a 32-shot window. Set to 0 to
+  # skip alignment entirely.
+  align_window: 32
+  remove_outliers: true          # Drop averages unlike the rest (motion)
+  remove_water: false            # HLSVD residual water removal
+
+  # Fitting (fsl_mrs)
+  ppmlim: [0.2, 4.2]             # Fit range
+  baseline: "poly,4"             # Higher order compensates for basis sets
+                                 # without macromolecule components
+  metab_groups: ["NAA"]          # Separate lineshape groups
+  # Let the fit find the peak positions. Sessions vary by up to ~0.15 ppm in
+  # where peaks land after preprocessing, and with a fixed shift a displaced
+  # NAA fits to zero instead of moving.
+  free_shift: true
+  internal_ref: ["Cr", "PCr"]    # Falls back to NAA if this fits to zero
+  combine:                       # Reported as sums
+    - ["NAA", "NAAG"]
+    - ["Cr", "PCr"]
+    - ["GPC", "PCh"]
+    - ["Glu", "Gln"]
 
   # QC settings
   run_qc: true

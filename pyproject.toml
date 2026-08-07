@@ -42,6 +42,9 @@ dependencies = [
     "click>=8.1.0",
     # Bruker raw I/O (imported by utils/bruker_convert.py + utils/bidsify.py)
     "brukerapi>=0.2.4",
+    # NIfTI-MRS I/O for the spectroscopy workflow. The fitting itself runs
+    # through FSL's bundled fsl_mrs; this is only needed to write the format.
+    "nifti-mrs>=1.2",
     # Utilities
     "tqdm>=4.65.0",
     "natsort>=8.0.0",

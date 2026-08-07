@@ -548,6 +548,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dill"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/e1/56027a71e31b02ddc53c7d65b01e68edf64dea2932122fe7746a516f75d5/dill-0.4.1.tar.gz", hash = "sha256:423092df4182177d4d8ba8290c8a5b640c66ab35ec7da59ccfa00f6fa3eea5fa", size = 187315, upload-time = "2026-01-19T02:36:56.85Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl", hash = "sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d", size = 120019, upload-time = "2026-01-19T02:36:55.663Z" },
+]
+
+[[package]]
 name = "dipy"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -767,6 +776,24 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/63/22/8553ff6166f5cd21cfaa115aaacaa0dc73b91c079a8cfd54a482cbc0f4f5/fonttools-4.60.1-cp314-cp314t-win32.whl", hash = "sha256:1410155d0e764a4615774e5c2c6fc516259fe3eca5882f034eb9bfdbee056259", size = 2282241, upload-time = "2025-09-29T21:12:58.179Z" },
     { url = "https://files.pythonhosted.org/packages/8a/cb/fa7b4d148e11d5a72761a22e595344133e83a9507a4c231df972e657579b/fonttools-4.60.1-cp314-cp314t-win_amd64.whl", hash = "sha256:022beaea4b73a70295b688f817ddc24ed3e3418b5036ffcd5658141184ef0d0c", size = 2345760, upload-time = "2025-09-29T21:13:00.375Z" },
     { url = "https://files.pythonhosted.org/packages/c7/93/0dd45cd283c32dea1545151d8c3637b4b8c53cdb3a625aeb2885b184d74d/fonttools-4.60.1-py3-none-any.whl", hash = "sha256:906306ac7afe2156fcf0042173d6ebbb05416af70f6b370967b47f8f00103bbb", size = 1143175, upload-time = "2025-09-29T21:13:24.134Z" },
+]
+
+[[package]]
+name = "fslpy"
+version = "3.28.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dill" },
+    { name = "h5py" },
+    { name = "nibabel" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/65/be/09bea4f1f71c20d80fba8f6d55c41b71ee1175171ed9f0c61dbcb68a7b76/fslpy-3.28.1.tar.gz", hash = "sha256:40a005df4335b7845ab646761b9c7389de99e604ecb778fb1831ee4de78c25d6", size = 4830016, upload-time = "2026-07-14T09:54:40.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/1a/bbda4f6fb94337a2182e1740051dee95aa9e60c4ca6908438b0065c890d8/fslpy-3.28.1-py3-none-any.whl", hash = "sha256:e7f21b59d178434f746094c897f0385941007f73a1dfc1b326868496d3bdb39d", size = 4816985, upload-time = "2026-07-14T09:54:32.817Z" },
 ]
 
 [[package]]
@@ -1430,6 +1457,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "natsort" },
     { name = "nibabel" },
+    { name = "nifti-mrs" },
     { name = "nilearn" },
     { name = "nipype" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1481,6 +1509,7 @@ requires-dist = [
     { name = "natsort", specifier = ">=8.0.0" },
     { name = "neurofaune", extras = ["dev", "fslmrs", "bruker", "multishell"], marker = "extra == 'all'" },
     { name = "nibabel", specifier = ">=5.3.2" },
+    { name = "nifti-mrs", specifier = ">=1.2" },
     { name = "nilearn", specifier = ">=0.10.0,<0.11" },
     { name = "nipype", specifier = ">=1.10.0" },
     { name = "numpy", specifier = ">=1.24,<3.0" },
@@ -1514,6 +1543,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d9/61/33036cb89f1ec1fedbc4039602345d830b27cbd8a5c7bf28c2e5b5de3ea2/nibabel-5.3.2.tar.gz", hash = "sha256:0bdca6503b1c784b446c745a4542367de7756cfba0d72143b91f9ffb78be569b", size = 4504842, upload-time = "2024-10-23T14:19:55.866Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/b2/dc384197be44e2a640bb43311850e23c2c30f3b82ce7c8cdabbf0e53045e/nibabel-5.3.2-py3-none-any.whl", hash = "sha256:52970a5a8a53b1b55249cba4d9bcfaa8cc57e3e5af35a29d7352237e8680a6f8", size = 3293839, upload-time = "2024-10-23T14:19:52.65Z" },
+]
+
+[[package]]
+name = "nifti-mrs"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fslpy" },
+    { name = "nibabel" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/71/12/0d56f57d8274fe21777a729b9bd5909fa3a30307e6674e4d187f3d71b737/nifti_mrs-1.4.1.tar.gz", hash = "sha256:a5ae26636dc6504cc58a7ff3e81e23ff4ebdc12bf7073916106b184c59b2a93e", size = 46853, upload-time = "2026-05-20T08:10:43.74Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/07/a1a99863bb9a2b0aa5f0e41759209456134c807eae4d8b076bc2f6706699/nifti_mrs-1.4.1-py3-none-any.whl", hash = "sha256:abaed0898532e277ab4a565ec1dba97bd0cbe483de9ce9ec3a6e35572ee920fe", size = 39332, upload-time = "2026-05-20T08:10:42.834Z" },
 ]
 
 [[package]]
