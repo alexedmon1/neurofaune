@@ -218,10 +218,11 @@ def voxel_corners(svs: BrukerSVS) -> np.ndarray:
 
 def make_voxel_mask(
     svs: BrukerSVS,
-    anat_scan_dir: Path,
+    anat_scan_dir: Optional[Path],
     anat_image: Path,
     output_file: Optional[Path] = None,
     supersample: int = 3,
+    geometry: Optional[AnatGeometry] = None,
 ) -> Tuple[np.ndarray, Optional[Path]]:
     """Rasterise the SVS voxel onto the anatomical image grid.
 
@@ -235,14 +236,17 @@ def make_voxel_mask(
     ----------
     svs : BrukerSVS
         The spectroscopy acquisition, carrying the voxel geometry.
-    anat_scan_dir : Path
-        Bruker scan directory of the anatomical image (for its geometry).
+    anat_scan_dir : Path or None
+        Bruker scan directory of the anatomical image, read for its geometry.
+        May be None when ``geometry`` is supplied directly.
     anat_image : Path
         The converted anatomical NIfTI, used for its grid and header.
     output_file : Path, optional
         Where to write the mask. Not written when None.
     supersample : int
         Sub-samples per axis per anatomical voxel.
+    geometry : AnatGeometry, optional
+        Pre-read geometry, used instead of reading ``anat_scan_dir``.
 
     Returns
     -------
@@ -255,7 +259,8 @@ def make_voxel_mask(
         If the anatomical NIfTI's shape disagrees with its Bruker geometry,
         which would mean the two are not the same acquisition.
     """
-    geometry = read_anat_geometry(anat_scan_dir)
+    if geometry is None:
+        geometry = read_anat_geometry(anat_scan_dir)
     anat = nib.load(str(anat_image))
     shape = anat.shape[:3]
 

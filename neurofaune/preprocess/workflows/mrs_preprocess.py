@@ -342,7 +342,7 @@ def run_mrs_preprocessing(
     subject: str,
     session: str,
     session_dir: Path,
-    output_dir: Path,
+    mrs_root: Path,
     basis: Optional[Path] = None,
     anat_scan: Optional[str] = None,
     anat_image: Optional[Path] = None,
@@ -359,8 +359,13 @@ def run_mrs_preprocessing(
         BIDS-style identifiers, e.g. ``sub-CPZ01`` / ``ses-1``.
     session_dir : Path
         Raw Bruker session directory.
-    output_dir : Path
-        Study root. Outputs land in ``derivatives/{subject}/{session}/mrs/``.
+    mrs_root : Path
+        Root of the spectroscopy output tree, e.g. ``{study}/mrs``. Spectroscopy
+        is self-contained rather than living under ``derivatives/`` alongside
+        the image modalities, because it never enters the BIDS tree in the
+        first place -- spec2nii cannot convert it. Per-session outputs land in
+        ``{mrs_root}/{subject}/{session}/`` and QC in
+        ``{mrs_root}/qc/{subject}/{session}/``.
     basis : Path, optional
         FSL-MRS basis set directory. Defaults to ``spectroscopy.basis`` in the config.
     anat_scan : str, optional
@@ -380,7 +385,8 @@ def run_mrs_preprocessing(
         Paths and summary metrics, or None if the session has no SVS scan.
     """
     session_dir = Path(session_dir)
-    mrs_dir = Path(output_dir) / 'derivatives' / subject / session / 'mrs'
+    mrs_root = Path(mrs_root)
+    mrs_dir = mrs_root / subject / session
     mrs_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 70)
@@ -490,7 +496,7 @@ def run_mrs_preprocessing(
             fit_dir=fit_dir,
             preproc_dir=preproc_dir,
             metadata=metadata,
-            output_dir=Path(output_dir),
+            qc_dir=mrs_root / 'qc' / subject / session,
             anat_image=Path(anat_image) if anat_image else None,
             voxel_mask=fractions.get('mask'),
         )

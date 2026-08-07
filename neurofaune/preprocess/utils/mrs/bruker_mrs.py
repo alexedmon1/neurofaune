@@ -88,6 +88,8 @@ class BrukerSVS:
     source : str
         ``'rawdata'`` when read from ``rawdata.job0`` (coils and averages
         preserved) or ``'bruker_averaged'`` for the ``fid_proc.64`` fallback.
+    ppm_correction : float
+        Chemical-shift correction applied when re-referencing, in ppm.
     """
 
     metab: np.ndarray
@@ -101,6 +103,7 @@ class BrukerSVS:
     voxel_position: np.ndarray
     voxel_orientation: np.ndarray
     source: str
+    ppm_correction: float = 0.0
     scan_dir: Optional[Path] = None
     params: Dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -277,29 +280,95 @@ def _deinterleave(raw: np.ndarray) -> np.ndarray:
     return raw[0::2] + 1j * raw[1::2]
 
 
-def apply_ppm_reference_shift(
-    fid: np.ndarray,
-    delta_ppm: float,
-    spectrometer_frequency: float,
-    dwelltime: float,
-) -> np.ndarray:
-    """Shift FIDs in frequency to re-reference the ppm axis.
-
-    Bruker references this sequence's carrier to ``PVM_FrqRefPpm`` (4.7 ppm for
-    water), while FSL-MRS builds its ppm axis assuming 4.65. Left uncorrected,
-    every peak sits 0.05 ppm low on the FSL-MRS axis. That is small but it is
-    not harmless: ``fsl_mrs_preproc`` searches a hardcoded 2.9-3.1 ppm window
-    for total creatine to shift and phase on, so a spectrum whose tCr already
-    sits at 2.98 has almost no margin, and a session with a little extra B0
-    offset lands on the wrong feature -- which phases the whole spectrum
-    upside down and displaces it.
-    """
+def _frequency_shift(fid: np.ndarray, delta_ppm: float,
+                     spectrometer_frequency: float, dwelltime: float) -> np.ndarray:
+    """Move every peak by ``delta_ppm`` along the chemical-shift axis."""
     if delta_ppm == 0.0:
         return fid
-    delta_hz = delta_ppm * spectrometer_frequency
+    # The ppm axis runs opposite to the FFT frequency axis, so moving a peak
+    # +delta_ppm needs a -delta_ppm frequency ramp.
+    delta_hz = -delta_ppm * spectrometer_frequency
     time = np.arange(fid.shape[0]) * dwelltime
     ramp = np.exp(2j * np.pi * delta_hz * time)
     return fid * ramp.reshape([-1] + [1] * (fid.ndim - 1))
+
+
+def measure_water_ppm_offset(
+    water_ref: np.ndarray,
+    spectrometer_frequency: float,
+    dwelltime: float,
+    zero_fill: int = 8,
+) -> float:
+    """Chemical-shift offset of the water peak from the carrier, in ppm.
+
+    The unsuppressed reference is a single dominant peak, so its position is
+    unambiguous -- far more reliable than any parameter-derived assumption
+    about where the carrier sits.
+    """
+    fid = water_ref.reshape(water_ref.shape[0], -1)
+    # Combine coils by their first-point phase before locating the peak;
+    # summing them raw would let them cancel.
+    weights = np.conj(fid[0]) / np.abs(fid[0]).sum()
+    combined = (fid * weights).sum(axis=1)
+
+    n_points = combined.size * zero_fill
+    spectrum = np.fft.fftshift(np.fft.fft(combined, n_points))
+    frequency = np.fft.fftshift(np.fft.fftfreq(n_points, dwelltime))
+    peak_hz = frequency[np.abs(spectrum).argmax()]
+    # Frequency and ppm run in opposite directions.
+    return -peak_hz / spectrometer_frequency
+
+
+def apply_ppm_reference_shift(
+    metab: np.ndarray,
+    water_ref: Optional[np.ndarray],
+    water_ppm: float,
+    reference_ppm: float,
+    spectrometer_frequency: float,
+    dwelltime: float,
+) -> Tuple[np.ndarray, Optional[np.ndarray], float]:
+    """Re-reference the spectrum so water lands at its true chemical shift.
+
+    Why this is needed, and why it is measured rather than assumed:
+    ``fsl_mrs_preproc`` searches a hardcoded 2.9-3.1 ppm window for total
+    creatine and shifts and phases the whole spectrum on whatever it finds
+    there. Choline sits at 3.20 and tCr at 3.03, so the window only holds the
+    intended peak if the ppm axis is right to within about 0.07 ppm. Bruker
+    references the carrier to ``PVM_FrqRefPpm`` (4.7) while FSL-MRS assumes
+    4.65, and sessions drift on top of that -- enough that the search
+    intermittently locks onto choline instead, which displaces the spectrum by
+    ~0.15 ppm and phases it upside down. Testing showed this is bistable: a
+    fixed offset in either direction simply moves which sessions fail.
+
+    Measuring the water peak from the unsuppressed reference removes the
+    guesswork and centres tCr in the window with margin on both sides.
+
+    Parameters
+    ----------
+    water_ppm : float
+        True chemical shift of water, from ``PVM_FrqRefPpm`` (4.7).
+    reference_ppm : float
+        The shift FSL-MRS assigns to the carrier when it builds its ppm axis
+        (4.65), which is what makes a correction necessary at all.
+
+    Returns
+    -------
+    (metab, water_ref, applied_ppm)
+        The shifted data and the correction that was applied.
+    """
+    if water_ref is None:
+        return metab, water_ref, 0.0
+
+    # FSL-MRS labels the carrier reference_ppm, so a peak at true shift d
+    # currently reads (d - water_ppm + reference_ppm); correct that back, and
+    # take out the session's measured water offset at the same time.
+    offset = measure_water_ppm_offset(water_ref, spectrometer_frequency, dwelltime)
+    correction = (water_ppm - reference_ppm) - offset
+    return (
+        _frequency_shift(metab, correction, spectrometer_frequency, dwelltime),
+        _frequency_shift(water_ref, correction, spectrometer_frequency, dwelltime),
+        correction,
+    )
 
 
 def _read_rawdata(scan_dir: Path, params: Dict[str, Any]) -> Optional[np.ndarray]:
@@ -424,16 +493,14 @@ def read_bruker_svs(
         params.get('SFO1', np.atleast_1d(params['PVM_FrqWork'])[0])
     )
 
+    ppm_correction = 0.0
     if reference_ppm is not None:
-        bruker_reference = float(np.atleast_1d(params.get('PVM_FrqRefPpm', reference_ppm))[0])
-        delta_ppm = bruker_reference - reference_ppm
-        metab = apply_ppm_reference_shift(
-            metab, delta_ppm, spectrometer_frequency, dwelltime,
+        water_ppm = float(np.atleast_1d(params.get('PVM_FrqRefPpm', reference_ppm))[0])
+        metab, water_ref, ppm_correction = apply_ppm_reference_shift(
+            metab, water_ref, water_ppm, reference_ppm,
+            spectrometer_frequency, dwelltime,
         )
-        if water_ref is not None:
-            water_ref = apply_ppm_reference_shift(
-                water_ref, delta_ppm, spectrometer_frequency, dwelltime,
-            )
+        logger.debug("%s: applied %+.3f ppm reference correction", scan_dir, ppm_correction)
 
     voxel_size = np.atleast_2d(np.asarray(params['PVM_VoxArrSize'], dtype=float))[0]
     voxel_position = np.atleast_2d(np.asarray(params['PVM_VoxArrPosition'], dtype=float))[0]
@@ -451,6 +518,7 @@ def read_bruker_svs(
         voxel_position=voxel_position,
         voxel_orientation=orientation,
         source=source,
+        ppm_correction=ppm_correction,
         scan_dir=scan_dir,
         params=params,
     )

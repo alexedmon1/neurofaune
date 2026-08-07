@@ -11,12 +11,17 @@ Usage
 -----
     # Inventory only -- what PRESS scans exist, and which would be used
     uv run python scripts/batch_preprocess_mrs.py /mnt/arborea/bruker/cpz \\
-        /path/to/study --config config.yaml --dry-run
+        /mnt/arborea/irl-studies/cuprizone/mrs --config config.yaml --dry-run
 
-    # Process everything, measuring tissue fractions where anat is available
+    # Process everything, measuring tissue fractions from the T2w segmentation
     uv run python scripts/batch_preprocess_mrs.py /mnt/arborea/bruker/cpz \\
-        /path/to/study --config config.yaml \\
+        /mnt/arborea/irl-studies/cuprizone/mrs --config config.yaml \\
+        --derivatives /mnt/arborea/irl-studies/cuprizone/preprocessing/derivatives \\
         --basis /path/to/basis/gamma_press_te20_7t_v1 --n-jobs 4
+
+Outputs are self-contained under the given mrs_root: {sub}/{ses}/ per session,
+qc/{sub}/{ses}/ for reports, logs/ for batch summaries, and
+mrs_metabolites_long.csv for the combined table.
 """
 
 import argparse
@@ -43,19 +48,25 @@ logger = logging.getLogger('batch_mrs')
 
 # Bruker session directory names look like
 #   IRC1200_Cuprizone_CageCPZ1_Rat1Y_2__Cage_CPZ1__Rat_1Y_1_2_20260408_140507
-# from which the subject is 'Rat1Y' and the session '2'. The optional trailing
+# from which the subject is '1Y' and the session '2'. The optional trailing
 # letter marks a repeat scan of the same timepoint (e.g. '1a').
-SESSION_NAME_RE = re.compile(r'_(Rat[0-9]+[A-Za-z])_([0-9]+[a-z]?)__')
+SESSION_NAME_RE = re.compile(r'_Rat([0-9]+[A-Za-z])_([0-9]+[a-z]?)__')
 
 
 def parse_session_name(name: str) -> Optional[Dict[str, str]]:
-    """Extract BIDS-style subject and session labels from a Bruker directory name."""
+    """Extract BIDS-style subject and session labels from a Bruker directory name.
+
+    The labels must match the rest of the study's derivatives (``sub-1Y``, not
+    ``sub-Rat1Y``) or the anatomical segmentation cannot be found.
+    """
     match = SESSION_NAME_RE.search(name)
     if match is None:
         return None
     # Rat IDs are inconsistently cased in the scanner logs ('Rat4y' vs 'Rat4Y').
-    subject = 'Rat' + match.group(1)[3:].upper()
-    return {'subject': f'sub-{subject}', 'session': f'ses-{match.group(2)}'}
+    return {
+        'subject': f'sub-{match.group(1).upper()}',
+        'session': f'ses-{match.group(2)}',
+    }
 
 
 def find_anat_scan(session_dir: Path) -> Optional[str]:
@@ -89,9 +100,9 @@ def find_anat_scan(session_dir: Path) -> Optional[str]:
     return best[1] if best else None
 
 
-def find_tissue_maps(study_root: Path, subject: str, session: str) -> Optional[Dict[str, Path]]:
+def find_tissue_maps(derivatives_root: Path, subject: str, session: str) -> Optional[Dict[str, Path]]:
     """Locate the T2w tissue probability maps written by anatomical preprocessing."""
-    anat_dir = study_root / 'derivatives' / subject / session / 'anat'
+    anat_dir = derivatives_root / subject / session / 'anat'
     maps = {
         label: anat_dir / f'{subject}_{session}_label-{label}_probseg.nii.gz'
         for label in ('GM', 'WM', 'CSF')
@@ -99,17 +110,24 @@ def find_tissue_maps(study_root: Path, subject: str, session: str) -> Optional[D
     return maps if all(path.exists() for path in maps.values()) else None
 
 
-def find_anat_image(study_root: Path, subject: str, session: str) -> Optional[Path]:
-    """Locate the converted T2w the tissue maps are defined on."""
-    anat_dir = study_root / 'derivatives' / subject / session / 'anat'
-    for pattern in (f'{subject}_{session}*_T2w.nii.gz', f'{subject}_{session}*T2w*.nii.gz'):
+def find_anat_image(derivatives_root: Path, subject: str, session: str) -> Optional[Path]:
+    """Locate the T2w the tissue maps are defined on.
+
+    The tissue maps must share this image's grid, so prefer the exact image
+    anatomical preprocessing segmented rather than any T2w in the directory.
+    """
+    anat_dir = derivatives_root / subject / session / 'anat'
+    for pattern in (
+        f'{subject}_{session}_desc-preproc_T2w.nii.gz',
+        f'{subject}_{session}*_T2w.nii.gz',
+    ):
         matches = sorted(anat_dir.glob(pattern))
         if matches:
             return matches[0]
     return None
 
 
-def discover_sessions(bruker_root: Path, study_root: Path) -> List[Dict[str, Any]]:
+def discover_sessions(bruker_root: Path, derivatives_root: Path) -> List[Dict[str, Any]]:
     """Build the work list: one entry per Bruker session holding a PRESS scan."""
     sessions: List[Dict[str, Any]] = []
 
@@ -130,8 +148,8 @@ def discover_sessions(bruker_root: Path, study_root: Path) -> List[Dict[str, Any
         chosen = max(acquisitions, key=lambda r: (r['n_averages'], r['scan_number']))
 
         anat_scan = find_anat_scan(session_dir)
-        tissue_maps = find_tissue_maps(study_root, labels['subject'], labels['session'])
-        anat_image = find_anat_image(study_root, labels['subject'], labels['session'])
+        tissue_maps = find_tissue_maps(derivatives_root, labels['subject'], labels['session'])
+        anat_image = find_anat_image(derivatives_root, labels['subject'], labels['session'])
 
         sessions.append({
             **labels,
@@ -149,7 +167,7 @@ def discover_sessions(bruker_root: Path, study_root: Path) -> List[Dict[str, Any
     return sessions
 
 
-def process_one(entry: Dict[str, Any], config_path: Path, study_root: Path,
+def process_one(entry: Dict[str, Any], config_path: Path, mrs_root: Path,
                 basis: Optional[Path]) -> Dict[str, Any]:
     """Process a single session. Exceptions are captured, not raised."""
     config = load_config(config_path)
@@ -159,7 +177,7 @@ def process_one(entry: Dict[str, Any], config_path: Path, study_root: Path,
             subject=entry['subject'],
             session=entry['session'],
             session_dir=entry['session_dir'],
-            output_dir=study_root,
+            mrs_root=mrs_root,
             basis=basis,
             anat_scan=entry['anat_scan'],
             anat_image=entry['anat_image'],
@@ -180,7 +198,7 @@ def process_one(entry: Dict[str, Any], config_path: Path, study_root: Path,
         logger.error("%s %s failed: %s", entry['subject'], entry['session'], exc)
         # Full tracebacks go to a per-session file: embedding them in the CSV
         # puts newlines and quotes in a cell and makes the table unreadable.
-        log_dir = study_root / 'derivatives' / 'batch_logs' / 'mrs_failures'
+        log_dir = mrs_root / 'logs' / 'failures'
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"{entry['subject']}_{entry['session']}.log"
         log_file.write_text(traceback.format_exc())
@@ -204,13 +222,18 @@ def main() -> int:
     )
     parser.add_argument('bruker_root', type=Path,
                         help='Directory of raw Bruker session directories')
-    parser.add_argument('study_root', type=Path,
-                        help='Study root; outputs go to derivatives/ and qc/')
+    parser.add_argument('mrs_root', type=Path,
+                        help='Spectroscopy output root, e.g. {study}/mrs')
     parser.add_argument('--config', type=Path, required=True, help='Config YAML')
+    parser.add_argument('--derivatives', type=Path, default=None,
+                        help='Anatomical derivatives root to read T2w tissue maps '
+                             'from, e.g. {study}/preprocessing/derivatives. '
+                             'Without it, tissue fractions are assumed rather '
+                             'than measured.')
     parser.add_argument('--basis', type=Path, default=None,
                         help='FSL-MRS basis set (overrides spectroscopy.basis)')
     parser.add_argument('--subjects', nargs='+', default=None,
-                        help='Limit to these subjects (e.g. sub-Rat1Y)')
+                        help='Limit to these subjects (e.g. sub-1Y)')
     parser.add_argument('--n-jobs', type=int, default=1,
                         help='Parallel sessions (each fit uses several cores)')
     parser.add_argument('--dry-run', action='store_true',
@@ -224,7 +247,8 @@ def main() -> int:
     if not args.bruker_root.is_dir():
         parser.error(f"Bruker root not found: {args.bruker_root}")
 
-    sessions = discover_sessions(args.bruker_root, args.study_root)
+    derivatives_root = args.derivatives or (args.mrs_root.parent / 'derivatives')
+    sessions = discover_sessions(args.bruker_root, derivatives_root)
     if args.subjects:
         wanted = set(args.subjects)
         sessions = [s for s in sessions if s['subject'] in wanted]
@@ -252,24 +276,24 @@ def main() -> int:
     if not sessions:
         return 1
 
-    args.study_root.mkdir(parents=True, exist_ok=True)
+    args.mrs_root.mkdir(parents=True, exist_ok=True)
     started = datetime.now()
     results: List[Dict[str, Any]] = []
 
     if args.n_jobs > 1:
         with ProcessPoolExecutor(max_workers=args.n_jobs) as pool:
             futures = {
-                pool.submit(process_one, entry, args.config, args.study_root, args.basis): entry
+                pool.submit(process_one, entry, args.config, args.mrs_root, args.basis): entry
                 for entry in sessions
             }
             for future in as_completed(futures):
                 results.append(future.result())
     else:
         for entry in sessions:
-            results.append(process_one(entry, args.config, args.study_root, args.basis))
+            results.append(process_one(entry, args.config, args.mrs_root, args.basis))
 
     summary = pd.DataFrame(results).sort_values(['subject', 'session'])
-    out_dir = args.study_root / 'derivatives' / 'batch_logs'
+    out_dir = args.mrs_root / 'logs'
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = started.strftime('%Y%m%d_%H%M%S')
     summary.to_csv(out_dir / f'mrs_batch_{stamp}.csv', index=False)
@@ -292,8 +316,7 @@ def main() -> int:
     ]
     if frames:
         combined = pd.concat(frames, ignore_index=True)
-        combined_file = args.study_root / 'network' / 'mrs' / 'mrs_metabolites_long.csv'
-        combined_file.parent.mkdir(parents=True, exist_ok=True)
+        combined_file = args.mrs_root / 'mrs_metabolites_long.csv'
         combined.to_csv(combined_file, index=False)
         print(f"Combined metabolite table: {combined_file}")
 
@@ -302,7 +325,8 @@ def main() -> int:
             'started': started.isoformat(),
             'finished': datetime.now().isoformat(),
             'bruker_root': str(args.bruker_root),
-            'study_root': str(args.study_root),
+            'mrs_root': str(args.mrs_root),
+            'derivatives': str(derivatives_root),
             'config': str(args.config),
             'basis': str(args.basis) if args.basis else None,
             'counts': counts,

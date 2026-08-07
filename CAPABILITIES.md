@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.6.2a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 137 across 9 stages.
+**Entry points:** 145 across 9 stages.
 
 
 ## analysis
@@ -96,6 +96,10 @@ _Generated from the code by `neurofaune capabilities` (v0.6.2a0)._ Do not edit b
 | `compute_meica_kappa_rho` | `neurofaune.preprocess.utils.func.meica_classify` | Compute kappa (TE-dependence) and rho (TE-independence) for MELODIC components. | — |
 | `extract_slice_order_from_json` | `neurofaune.preprocess.utils.func.slice_timing` | Extract slice timing information from BIDS JSON sidecar. | — |
 | `run_slice_timing_correction` | `neurofaune.preprocess.utils.func.slice_timing` | Perform slice timing correction using FSL slicetimer. | — |
+| `build_affine` | `neurofaune.preprocess.utils.mrs.bruker_mrs` | Build the NIfTI affine for the SVS voxel. | — |
+| `convert_session` | `neurofaune.preprocess.utils.mrs.bruker_mrs` | Find, read and convert a session's SVS acquisition in one call. | — |
+| `select_svs_scan` | `neurofaune.preprocess.utils.mrs.bruker_mrs` | Pick the real SVS acquisition from a session's PRESS scans. | — |
+| `compute_tissue_fractions` | `neurofaune.preprocess.utils.mrs.voxel_geometry` | Rasterise the voxel and measure its tissue content in one call. | — |
 | `propagate_anat_image` | `neurofaune.preprocess.utils.registration_utils` | Warp any anat-space image into moving space, reusing an existing registration. | — |
 | `propagate_anat_mask` | `neurofaune.preprocess.utils.registration_utils` | Derive a brain mask by warping the same-session anat mask into moving space. | — |
 | `register_via_anat_composition` | `neurofaune.preprocess.utils.registration_utils` | Register a partial-slab moving reference to template VIA the same-session anat. | — |
@@ -124,6 +128,10 @@ _Generated from the code by `neurofaune capabilities` (v0.6.2a0)._ Do not edit b
 | `run_multiecho_motion_correction` | `neurofaune.preprocess.workflows.func_preprocess` | Motion-correct multi-echo data using middle echo as reference. | — |
 | `run_optimal_combination` | `neurofaune.preprocess.workflows.func_preprocess` | Optimally combine multi-echo data (T2*-weighted) without ICA denoising. | — |
 | `run_tedana` | `neurofaune.preprocess.workflows.func_preprocess` | Run TEDANA multi-echo ICA denoising. | — |
+| `convert_svs` | `neurofaune.preprocess.workflows.mrs_preprocess` | Convert a session's PRESS acquisition to NIfTI-MRS. | — |
+| `run_fsl_mrs_fit` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs`` to fit and quantify the preprocessed spectrum. | `spectroscopy.baseline`, `spectroscopy.combine`, `spectroscopy.free_shift`, `spectroscopy.internal_ref`, `spectroscopy.metab_groups`, `spectroscopy.ppmlim` |
+| `run_fsl_mrs_preproc` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs_preproc``. | `spectroscopy.align_window`, `spectroscopy.remove_outliers`, `spectroscopy.remove_water` |
+| `run_mrs_preprocessing` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run the full SVS pipeline for one subject/session. | `spectroscopy.basis` |
 | `register_msme_to_t2w` | `neurofaune.preprocess.workflows.msme_preprocess` | Register MSME first echo to T2w within the same subject. | — |
 | `register_msme_to_template` | `neurofaune.preprocess.workflows.msme_preprocess` | Register MSME first echo directly to the cohort template. | `msme.registration.z_anchor`, `msme.registration.z_range` |
 | `run_msme_preprocessing` | `neurofaune.preprocess.workflows.msme_preprocess` | Run MSME preprocessing workflow with T2 mapping and MWF calculation. | `msme.geometry.slice_thickness_mm`, `msme.geometry.voxel_scale`, `msme.skull_strip.cog_offset_x`, `msme.skull_strip.cog_offset_y`, `msme.skull_strip.erode_voxels`, `msme.skull_strip.frac_max`, `msme.skull_strip.frac_min`, `msme.skull_strip.frac_step`, `msme.skull_strip.method`, `msme.skull_strip.n_classes`, `msme.skull_strip.target_ratio`, `msme.t2_fitting.T1_ms`, `msme.t2_fitting.epg_n_components`, `msme.t2_fitting.epg_n_workers`, `msme.t2_fitting.intra_extra_cutoff`, `msme.t2_fitting.lambda_reg`, `msme.t2_fitting.myelin_water_cutoff`, `msme.t2_fitting.n_components`, `msme.t2_fitting.stimulated_echo_correction`, `msme.t2_fitting.t2_range` |

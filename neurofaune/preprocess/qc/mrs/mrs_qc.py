@@ -19,7 +19,6 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from neurofaune.preprocess.qc import get_subject_qc_dir
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +219,7 @@ def generate_mrs_qc_report(
     fit_dir: Path,
     preproc_dir: Path,
     metadata: Dict[str, Any],
-    output_dir: Path,
+    qc_dir: Path,
     anat_image: Optional[Path] = None,
     voxel_mask: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -235,8 +234,9 @@ def generate_mrs_qc_report(
         ``fsl_mrs_preproc`` output directory.
     metadata : dict
         The metadata block written by the workflow.
-    output_dir : Path
-        Study root; the report goes to ``qc/subjects/{subject}/{session}/mrs/``.
+    qc_dir : Path
+        Where the report and figures are written, e.g.
+        ``{study}/mrs/qc/{subject}/{session}/``.
     anat_image, voxel_mask : Path, optional
         When both are given, a voxel-placement overlay is included.
 
@@ -246,7 +246,8 @@ def generate_mrs_qc_report(
         Metrics, pass/fail flags and the report path.
     """
     fit_dir = Path(fit_dir)
-    qc_dir = get_subject_qc_dir(Path(output_dir), subject, session, 'mrs')
+    qc_dir = Path(qc_dir)
+    qc_dir.mkdir(parents=True, exist_ok=True)
     figures_dir = qc_dir / 'figures'
 
     quality = pd.read_csv(fit_dir / 'qc.csv', index_col=0)
