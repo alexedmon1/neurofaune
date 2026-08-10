@@ -60,6 +60,22 @@ NIFTI_MRS_VERSION = (0, 9)
 #: converter re-references to match. See :func:`apply_ppm_reference_shift`.
 FSL_MRS_REFERENCE_PPM = 4.65
 
+#: Chemical shifts of the two singlets used to reference the spectrum.
+TCR_PPM = 3.027
+NAA_PPM = 2.008
+
+#: Search windows for those peaks. Deliberately wide: the whole point is to
+#: not depend on the spectrum already being well referenced.
+TCR_SEARCH = (2.7, 3.4)
+NAA_SEARCH = (1.7, 2.3)
+
+#: How far the measured tCr-NAA separation may stray from its true value
+#: before metabolite referencing is rejected as unreliable. Across 52 CPZ
+#: sessions the measured separation was 1.0212 +/- 0.0010, so this is loose
+#: enough to never trip on good data and tight enough to catch a misidentified
+#: peak, which would otherwise bake a large error into the reference.
+SEPARATION_TOLERANCE = 0.05
+
 
 @dataclass
 class BrukerSVS:
@@ -307,9 +323,10 @@ def _frequency_shift(fid: np.ndarray, delta_ppm: float,
     """Move every peak by ``delta_ppm`` along the chemical-shift axis."""
     if delta_ppm == 0.0:
         return fid
-    # The ppm axis runs opposite to the FFT frequency axis, so moving a peak
-    # +delta_ppm needs a -delta_ppm frequency ramp.
-    delta_hz = -delta_ppm * spectrometer_frequency
+    # ppm axis convention, verified against Bruker's own reconstruction (NAA at
+    # 2.01, tCr at 3.03): ppm = fftshift(fftfreq) / f0 + FSL_MRS_REFERENCE_PPM.
+    # Under it, moving a peak up in ppm means moving it up in frequency.
+    delta_hz = delta_ppm * spectrometer_frequency
     time = np.arange(fid.shape[0]) * dwelltime
     ramp = np.exp(2j * np.pi * delta_hz * time)
     return fid * ramp.reshape([-1] + [1] * (fid.ndim - 1))
@@ -337,8 +354,71 @@ def measure_water_ppm_offset(
     spectrum = np.fft.fftshift(np.fft.fft(combined, n_points))
     frequency = np.fft.fftshift(np.fft.fftfreq(n_points, dwelltime))
     peak_hz = frequency[np.abs(spectrum).argmax()]
-    # Frequency and ppm run in opposite directions.
-    return -peak_hz / spectrometer_frequency
+    return peak_hz / spectrometer_frequency
+
+
+def _coil_combined_average(metab: np.ndarray, water_ref: Optional[np.ndarray]) -> np.ndarray:
+    """A single averaged FID, good enough to locate peaks.
+
+    Coils are combined on the water reference's first-point phase where one is
+    available; summing them raw would let them cancel.
+    """
+    flat = metab.reshape(metab.shape[0], metab.shape[1], -1)
+    if water_ref is not None:
+        first = water_ref.reshape(water_ref.shape[0], water_ref.shape[1], -1)[0, :, 0]
+    else:
+        first = flat[0, :, 0]
+    weights = np.conj(first) / np.abs(first).sum()
+    return (flat * weights[None, :, None]).sum(axis=1).mean(axis=1)
+
+
+def measure_metabolite_offset(
+    metab: np.ndarray,
+    water_ref: Optional[np.ndarray],
+    spectrometer_frequency: float,
+    dwelltime: float,
+    zero_fill: int = 4,
+    line_broadening: float = 4.0,
+) -> Optional[float]:
+    """Offset of total creatine from :data:`TCR_PPM`, in ppm.
+
+    Referencing on a metabolite rather than on water is what actually matters
+    downstream: ``fsl_mrs_preproc`` shifts and phases the spectrum on whatever
+    is strongest in a hardcoded 2.9-3.1 ppm window, so tCr needs to be near
+    3.027 before it runs, with margin on both sides.
+
+    Picking a peak out of a wide window could bake in a large error if it
+    picked the wrong one, so the result is cross-checked against NAA: the two
+    singlets are a fixed 1.019 ppm apart. If the separation is wrong the peaks
+    were misidentified and None is returned, leaving the caller on the
+    water-based reference.
+
+    Returns
+    -------
+    float or None
+        ppm to add to move tCr onto :data:`TCR_PPM`, or None if the
+        cross-check failed.
+    """
+    fid = _coil_combined_average(metab, water_ref)
+    decay = np.exp(-np.arange(fid.size) * line_broadening * np.pi * dwelltime)
+    n_points = fid.size * zero_fill
+    spectrum = np.abs(np.fft.fftshift(np.fft.fft(fid * decay, n_points)))
+    ppm = (np.fft.fftshift(np.fft.fftfreq(n_points, dwelltime)) / spectrometer_frequency
+           + FSL_MRS_REFERENCE_PPM)
+
+    def peak(low: float, high: float) -> float:
+        window = (ppm > low) & (ppm < high)
+        return float(ppm[window][spectrum[window].argmax()])
+
+    tcr, naa = peak(*TCR_SEARCH), peak(*NAA_SEARCH)
+    if abs((tcr - naa) - (TCR_PPM - NAA_PPM)) > SEPARATION_TOLERANCE:
+        logger.warning(
+            "tCr/NAA separation %.3f ppm is not the expected %.3f; the peaks "
+            "were probably misidentified, so metabolite referencing is skipped",
+            tcr - naa, TCR_PPM - NAA_PPM,
+        )
+        return None
+    return TCR_PPM - tcr
 
 
 def apply_ppm_reference_shift(
@@ -523,11 +603,25 @@ def read_bruker_svs(
 
     ppm_correction = 0.0
     if reference_ppm is not None:
+        # Coarse: put water at its true shift, from the unsuppressed reference.
         water_ppm = float(np.atleast_1d(params.get('PVM_FrqRefPpm', reference_ppm))[0])
         metab, water_ref, ppm_correction = apply_ppm_reference_shift(
             metab, water_ref, water_ppm, reference_ppm,
             spectrometer_frequency, dwelltime,
         )
+        # Fine: land tCr on 3.027. Water referencing alone left a systematic
+        # -0.088 ppm residual across 52 CPZ sessions, which put the worst
+        # session's tCr 0.019 ppm from falling out of fsl_mrs_preproc's
+        # 2.9-3.1 search window altogether.
+        refinement = measure_metabolite_offset(
+            metab, water_ref, spectrometer_frequency, dwelltime,
+        )
+        if refinement is not None:
+            metab = _frequency_shift(metab, refinement, spectrometer_frequency, dwelltime)
+            if water_ref is not None:
+                water_ref = _frequency_shift(
+                    water_ref, refinement, spectrometer_frequency, dwelltime)
+            ppm_correction += refinement
         logger.debug("%s: applied %+.3f ppm reference correction", scan_dir, ppm_correction)
 
     voxel_size = np.atleast_2d(np.asarray(params['PVM_VoxArrSize'], dtype=float))[0]

@@ -72,11 +72,12 @@ class SpectrumUnquantifiable(RuntimeError):
     """The spectrum preprocessed successfully but no reference peak could be fit.
 
     Distinct from a pipeline failure: the data reached the fitter intact and
-    the fitter declined it. On CPZ data this happens on a minority of sessions
-    where ``fsl_mrs_preproc`` locks its 2.9-3.1 ppm creatine search onto
-    choline instead, displacing the spectrum ~0.15 ppm and inverting its phase.
-    The step is not exposed as a CLI option, so these sessions are reported for
-    review with their preprocessed data left on disk to inspect.
+    the fitter declined it. On CPZ data these sessions come out displaced in
+    ppm and phase-inverted, which is the signature of ``fsl_mrs_preproc``
+    locking its hardcoded 2.9-3.1 ppm creatine search onto the wrong point --
+    it moves whatever it finds there to 3.027 and phases it to zero. That step
+    is not exposed as a CLI option, so the sessions are reported for review
+    with their preprocessed data left on disk to inspect.
     """
 
 

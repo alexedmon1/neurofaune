@@ -167,15 +167,28 @@ Start with `--dry-run` to see which PRESS scan is selected per session (sessions
 typically hold unsuppressed shim prescans alongside the real acquisition) and
 how many sessions have a segmentation available.
 
-**Known limitation.** A minority of sessions come back `unquantifiable`.
-`fsl_mrs_preproc` shifts and phases the spectrum on whatever it finds in a
-hardcoded 2.9–3.1 ppm window, and on low-SNR rodent data it sometimes locks
-onto choline (3.20) rather than total creatine (3.03) — which displaces the
-spectrum ~0.15 ppm and inverts its phase, so no reference peak can be fit. The
-step is not exposed as a CLI option. These sessions are reported separately
-from real failures, with their preprocessed data left on disk; check
-`preproc/mergedReports.html` to tell this apart from a genuinely poor
-acquisition.
+**Frequency referencing.** `fsl_mrs_preproc` shifts and phases the spectrum on
+whatever is strongest in a hardcoded 2.9–3.1 ppm window, so total creatine has
+to already be near 3.027 before it runs. Its own alignment step doesn't provide
+that — it aligns the individual shots to each other, not to an absolute
+chemical shift. So the converter references the spectrum itself, in two stages:
+water to its true shift from the unsuppressed reference, then tCr onto 3.027.
+Across 52 CPZ sessions that moved tCr from 2.939 ± 0.012 (worst case 0.019 ppm
+from falling out of the window) to 3.0269 ± 0.0007.
+
+The tCr search window is deliberately wide (2.7–3.4), which is safe because the
+result is cross-checked against NAA: the two singlets are a fixed 1.019 ppm
+apart, so a misidentified peak is caught and the session falls back to water
+referencing. Measured separation across those sessions was 1.0212 ± 0.0010,
+with no failures.
+
+**Known limitation.** A minority of sessions still come back `unquantifiable`:
+preprocessing succeeds but the fitter finds no reference peak, and the spectrum
+comes out displaced and phase-inverted — the signature of that window search
+having locked onto the wrong point. The step is not exposed as a CLI option.
+These are reported separately from real failures, with their preprocessed data
+left on disk; check `preproc/mergedReports.html` to tell this apart from a
+genuinely poor acquisition.
 
 ### Resting-State Metrics
 

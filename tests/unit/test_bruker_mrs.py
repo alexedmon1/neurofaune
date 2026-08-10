@@ -14,6 +14,7 @@ import pytest
 from neurofaune.preprocess.utils.mrs.bruker_mrs import (
     apply_ppm_reference_shift,
     find_press_scans,
+    measure_metabolite_offset,
     measure_water_ppm_offset,
     read_bruker_svs,
     remove_group_delay,
@@ -289,8 +290,8 @@ class TestPpmReferencing:
         offset_hz = 15.0
         water = make_fid(N_POINTS, [(offset_hz, 1.0)], decay=5.0)[:, None, None]
         measured = measure_water_ppm_offset(water, SPEC_FREQ, DWELLTIME)
-        # ppm runs opposite to frequency.
-        assert measured == pytest.approx(-offset_hz / SPEC_FREQ, abs=0.005)
+        # ppm = fftshift(fftfreq) / f0 + reference, so ppm runs with frequency.
+        assert measured == pytest.approx(offset_hz / SPEC_FREQ, abs=0.005)
 
     def test_correction_moves_water_to_its_true_shift(self):
         offset_hz = 15.0
@@ -301,9 +302,11 @@ class TestPpmReferencing:
             metab, water, water_ppm=4.7, reference_ppm=4.65,
             spectrometer_frequency=SPEC_FREQ, dwelltime=DWELLTIME,
         )
+        # Water ends up at 4.7 on an axis whose carrier reads 4.65, i.e. 0.05
+        # above the carrier.
         residual = measure_water_ppm_offset(shifted, SPEC_FREQ, DWELLTIME)
         assert residual == pytest.approx(4.7 - 4.65, abs=0.01)
-        assert applied == pytest.approx(0.05 + offset_hz / SPEC_FREQ, abs=0.01)
+        assert applied == pytest.approx(0.05 - offset_hz / SPEC_FREQ, abs=0.01)
 
     def test_no_reference_means_no_shift(self):
         metab = make_fid(N_POINTS, [(-500.0, 1.0)])[:, None, None]
@@ -312,6 +315,31 @@ class TestPpmReferencing:
         assert applied == 0.0
         assert ref is None
         assert np.array_equal(out, metab)
+
+    def _two_singlet_fid(self, tcr_ppm, naa_ppm, spec_freq=SPEC_FREQ):
+        """A spectrum with tCr and NAA singlets at the given chemical shifts."""
+        from neurofaune.preprocess.utils.mrs.bruker_mrs import FSL_MRS_REFERENCE_PPM
+
+        peaks = [((ppm - FSL_MRS_REFERENCE_PPM) * spec_freq, amp)
+                 for ppm, amp in ((tcr_ppm, 1.0), (naa_ppm, 1.2))]
+        return make_fid(1024, peaks, decay=8.0)[:, None, None]
+
+    def test_metabolite_offset_measures_the_displacement(self):
+        # tCr sits 0.09 ppm low, as the CPZ data does before referencing.
+        fid = self._two_singlet_fid(3.027 - 0.09, 2.008 - 0.09)
+        offset = measure_metabolite_offset(fid, None, SPEC_FREQ, DWELLTIME)
+        assert offset == pytest.approx(0.09, abs=0.01)
+
+    def test_metabolite_offset_is_zero_when_already_referenced(self):
+        fid = self._two_singlet_fid(3.027, 2.008)
+        offset = measure_metabolite_offset(fid, None, SPEC_FREQ, DWELLTIME)
+        assert offset == pytest.approx(0.0, abs=0.01)
+
+    def test_metabolite_offset_rejects_a_wrong_separation(self):
+        # Peaks the expected distance apart are what makes a wide search window
+        # safe; without that check a misidentified peak would be baked in.
+        fid = self._two_singlet_fid(3.30, 1.75)
+        assert measure_metabolite_offset(fid, None, SPEC_FREQ, DWELLTIME) is None
 
     def test_reader_can_skip_referencing(self, press_scan):
         svs = read_bruker_svs(press_scan, reference_ppm=None)
