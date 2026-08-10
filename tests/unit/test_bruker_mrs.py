@@ -192,6 +192,21 @@ class TestScanSelection:
         shutil.rmtree(press_scan)
         assert select_svs_scan(shim_scan.parent) is None
 
+    def test_skips_an_aborted_scan(self, press_scan):
+        # A later scan aborted at the console keeps its parameter files but has
+        # no data; an earlier complete scan must win rather than be lost.
+        aborted = press_scan.parent / '19'
+        aborted.mkdir()
+        for name in ('method', 'acqp', 'acqus'):
+            (aborted / name).write_text((press_scan / name).read_text())
+
+        assert [s['scan_number'] for s in find_press_scans(press_scan.parent)] == [13, 19]
+        assert select_svs_scan(press_scan.parent) == press_scan
+
+    def test_returns_none_when_every_scan_is_aborted(self, press_scan):
+        (press_scan / 'rawdata.job0').unlink()
+        assert select_svs_scan(press_scan.parent) is None
+
 
 class TestReader:
     def test_shape_and_ordering(self, press_scan):
@@ -215,6 +230,33 @@ class TestReader:
     def test_water_reference_keeps_coils(self, press_scan):
         svs = read_bruker_svs(press_scan)
         assert svs.water_ref.shape[1] == N_COILS
+
+    def test_metabolite_and_reference_stay_the_same_length(self, press_scan):
+        # The group delay must be resolved once and applied to both. Resolving
+        # each separately can round to different integers, leaving the arrays a
+        # point apart -- which fsl_mrs_preproc only discovers at the
+        # eddy-current step, as a broadcast error.
+        svs = read_bruker_svs(press_scan)
+        assert svs.metab.shape[0] == svs.water_ref.shape[0]
+
+    def test_same_length_when_echo_tops_differ(self, press_scan):
+        # Give the water reference a top one sample later than the metabolite
+        # FID, which is what happens on real sessions.
+        water = make_fid(N_POINTS, [(0.0, 50000.0)], decay=10.0,
+                         group_delay=GROUP_DELAY + 1)
+        ref = np.empty((N_COILS, N_POINTS * 2))
+        for coil in range(N_COILS):
+            ref[coil, 0::2] = water.real
+            ref[coil, 1::2] = water.imag
+
+        text = (press_scan / 'method').read_text().split('##$PVM_RefScan=')[0]
+        shape = f'( {N_COILS}, {N_POINTS * 2} )'
+        values = ' '.join(f'{float(v):.17g}' for v in ref.ravel())
+        (press_scan / 'method').write_text(
+            f'{text}##$PVM_RefScan={shape}\n{values}\n##END=\n')
+
+        svs = read_bruker_svs(press_scan)
+        assert svs.metab.shape[0] == svs.water_ref.shape[0]
 
     def test_rejects_a_non_press_scan(self, press_scan):
         text = (press_scan / 'method').read_text().replace(

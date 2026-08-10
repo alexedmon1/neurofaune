@@ -68,6 +68,18 @@ DEFAULT_INTERNAL_REF = ['Cr', 'PCr']
 FALLBACK_INTERNAL_REFS = [['Cr', 'PCr'], ['NAA'], ['Ins']]
 
 
+class SpectrumUnquantifiable(RuntimeError):
+    """The spectrum preprocessed successfully but no reference peak could be fit.
+
+    Distinct from a pipeline failure: the data reached the fitter intact and
+    the fitter declined it. On CPZ data this happens on a minority of sessions
+    where ``fsl_mrs_preproc`` locks its 2.9-3.1 ppm creatine search onto
+    choline instead, displacing the spectrum ~0.15 ppm and inverting its phase.
+    The step is not exposed as a CLI option, so these sessions are reported for
+    review with their preprocessed data left on disk to inspect.
+    """
+
+
 def find_fsl_binary(name: str, config: Optional[Dict[str, Any]] = None) -> str:
     """Locate an FSL executable.
 
@@ -295,9 +307,12 @@ def run_fsl_mrs_fit(
         return {'concentrations': output_dir / 'concentrations.csv',
                 'internal_ref': reference}
 
-    raise RuntimeError(
-        f"fsl_mrs could not quantify against any of {references}. The spectrum "
-        f"is probably unusable; check {output_dir.parent / 'preproc'}."
+    raise SpectrumUnquantifiable(
+        f"No reference peak could be fit (tried "
+        f"{', '.join('+'.join(r) for r in references)}). Inspect "
+        f"{output_dir.parent / 'preproc'}/mergedReports.html -- if the spectrum "
+        f"is inverted and displaced by ~0.15 ppm, fsl_mrs_preproc phased on the "
+        f"wrong peak; otherwise the acquisition itself is poor."
     ) from last_error
 
 

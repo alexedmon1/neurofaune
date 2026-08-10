@@ -42,7 +42,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from neurofaune.config import load_config
 from neurofaune.preprocess.utils.mrs.bruker_mrs import find_press_scans
 from neurofaune.preprocess.utils.mrs.bruker_params import read_scan_params
-from neurofaune.preprocess.workflows.mrs_preprocess import run_mrs_preprocessing
+from neurofaune.preprocess.workflows.mrs_preprocess import (
+    SpectrumUnquantifiable,
+    run_mrs_preprocessing,
+)
 
 logger = logging.getLogger('batch_mrs')
 
@@ -194,6 +197,15 @@ def process_one(entry: Dict[str, Any], config_path: Path, mrs_root: Path,
             'fwhm_hz': result.get('qc', {}).get('metrics', {}).get('fwhm_hz'),
             'qc_pass': result.get('qc', {}).get('metrics', {}).get('overall_pass'),
         }
+    except SpectrumUnquantifiable as exc:
+        # Not a pipeline failure: the data reached the fitter and was declined.
+        logger.warning("%s %s unquantifiable: %s",
+                       entry['subject'], entry['session'], exc)
+        return {
+            **_key(entry),
+            'status': 'unquantifiable',
+            'reason': ' '.join(str(exc).split())[:300],
+        }
     except Exception as exc:
         logger.error("%s %s failed: %s", entry['subject'], entry['session'], exc)
         # Full tracebacks go to a per-session file: embedding them in the CSV
@@ -301,11 +313,14 @@ def main() -> int:
     counts = summary['status'].value_counts().to_dict()
     print(f"\n{'=' * 60}")
     print(f"MRS batch finished in {datetime.now() - started}")
-    for status in ('ok', 'skipped', 'failed'):
+    for status in ('ok', 'unquantifiable', 'skipped', 'failed'):
         print(f"  {status:8s}: {counts.get(status, 0)}")
-    if counts.get('failed'):
-        print("\nFailures:")
-        for _, row in summary[summary['status'] == 'failed'].iterrows():
+    for status, heading in (('failed', 'Failures'),
+                            ('unquantifiable', 'Unquantifiable (review)')):
+        if not counts.get(status):
+            continue
+        print(f"\n{heading}:")
+        for _, row in summary[summary['status'] == status].iterrows():
             print(f"  {row['subject']} {row['session']}: {row['reason']}")
     print(f"\nSummary: {out_dir / f'mrs_batch_{stamp}.csv'}")
 

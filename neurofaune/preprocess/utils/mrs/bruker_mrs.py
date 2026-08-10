@@ -160,6 +160,10 @@ def find_press_scans(session_dir: Path) -> List[Dict[str, Any]]:
         records.append({
             'scan_dir': scan_dir,
             'scan_number': int(scan_dir.name),
+            # An aborted acquisition leaves its parameter files behind with no
+            # data, so having a method file is not enough to be usable.
+            'has_data': ((scan_dir / 'rawdata.job0').exists()
+                         or (scan_dir / 'pdata' / '1' / 'fid_proc.64').exists()),
             'protocol': str(params.get('ACQ_scan_name', params.get('ACQ_protocol_name', ''))),
             'water_suppressed': str(params.get('PVM_WsOnOff', 'Off')).lower() == 'on',
             'suppression_mode': str(params.get('PVM_WsMode', 'NO_SUPPRESSION')),
@@ -181,14 +185,24 @@ def select_svs_scan(session_dir: Path) -> Optional[Path]:
     water-suppressed acquisition. Selection therefore requires water
     suppression to be on, and breaks ties on the average count.
 
+    Scans that hold no data are passed over: an acquisition aborted at the
+    console still leaves its parameter files on disk, and picking one of those
+    over an earlier complete scan would lose the session.
+
     Returns
     -------
     Path or None
-        The chosen scan directory, or None when the session has no
+        The chosen scan directory, or None when the session has no usable
         water-suppressed PRESS scan.
     """
-    candidates = [r for r in find_press_scans(session_dir) if r['water_suppressed']]
+    suppressed = [r for r in find_press_scans(session_dir) if r['water_suppressed']]
+    candidates = [r for r in suppressed if r['has_data']]
     if not candidates:
+        if suppressed:
+            logger.warning(
+                "%s: %d water-suppressed PRESS scan(s) but none hold data "
+                "(aborted acquisition?)", session_dir, len(suppressed),
+            )
         return None
     best = max(candidates, key=lambda r: (r['n_averages'], r['scan_number']))
     return best['scan_dir']
@@ -243,7 +257,11 @@ def resolve_group_delay(fid: np.ndarray, group_delay: float) -> float:
     return integer_part + (group_delay - np.floor(group_delay))
 
 
-def remove_group_delay(fid: np.ndarray, group_delay: float) -> np.ndarray:
+def remove_group_delay(
+    fid: np.ndarray,
+    group_delay: float,
+    resolve: bool = True,
+) -> np.ndarray:
     """Advance FIDs by a (possibly fractional) digital-filter group delay.
 
     The shift is applied as a linear phase ramp in the frequency domain so the
@@ -255,15 +273,19 @@ def remove_group_delay(fid: np.ndarray, group_delay: float) -> np.ndarray:
     fid : np.ndarray
         Complex FIDs with the point axis first.
     group_delay : float
-        Delay in points, as reported by ``GRPDLY``. The integer part is
-        re-derived from the data -- see :func:`resolve_group_delay`.
+        Delay in points, as reported by ``GRPDLY``.
+    resolve : bool
+        Re-derive the integer part from the data -- see
+        :func:`resolve_group_delay`. Pass False when ``group_delay`` has
+        already been resolved, so that several arrays can be corrected by
+        exactly the same amount and stay the same length.
 
     Returns
     -------
     np.ndarray
         FIDs shortened by the applied delay, rounded up.
     """
-    delay = resolve_group_delay(fid, group_delay)
+    delay = resolve_group_delay(fid, group_delay) if resolve else group_delay
     if delay <= 0:
         return fid
 
@@ -479,10 +501,16 @@ def read_bruker_svs(
 
     water_ref = _read_reference(scan_dir, params)
 
+    # Resolve the delay once and apply it to both arrays. It is a property of
+    # the receive filter, so it is the same for the metabolite and reference
+    # FIDs -- and resolving each separately can round to different integers,
+    # leaving the two arrays one point apart in length, which later breaks
+    # eddy-current correction with a broadcast error.
     group_delay = _read_group_delay(scan_dir)
-    metab = remove_group_delay(metab, group_delay)
+    delay = resolve_group_delay(water_ref if water_ref is not None else metab, group_delay)
+    metab = remove_group_delay(metab, delay, resolve=False)
     if water_ref is not None:
-        water_ref = remove_group_delay(water_ref, group_delay)
+        water_ref = remove_group_delay(water_ref, delay, resolve=False)
         # Coil counts must agree for FSL-MRS to use the reference in coil
         # combination; drop to the common count if Bruker stored fewer.
         if water_ref.shape[1] != metab.shape[1] and water_ref.shape[1] == 1:

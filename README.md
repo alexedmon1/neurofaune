@@ -126,6 +126,57 @@ Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartm
 uv run python scripts/batch_preprocess_msme.py /path/to/bids /path/to/study
 ```
 
+### MR Spectroscopy (single-voxel PRESS)
+
+Bruker PRESS to quantified metabolite concentrations via FSL-MRS: conversion,
+coil combination and shot alignment, basis-set fitting, water-scaled
+quantification, and QC.
+
+```bash
+uv run python scripts/batch_preprocess_mrs.py \
+    /path/to/bruker /path/to/study/mrs \
+    --config config.yaml \
+    --derivatives /path/to/study/preprocessing/derivatives \
+    --basis /path/to/basis/gamma_press_te20_7t_v1 --n-jobs 4
+```
+
+Spectroscopy reads the **raw Bruker tree**, not BIDS — `spec2nii` cannot read
+ParaVision 360.3 SVS data, so it is never converted during BIDS-ification and
+neurofaune ships its own reader. Outputs are likewise self-contained under the
+given root rather than under `derivatives/`:
+
+```
+{study}/mrs/{sub}/{ses}/        NIfTI-MRS, voxel mask, preproc/, fit/, metabolites CSV
+{study}/mrs/qc/{sub}/{ses}/     QC report, voxel-placement overlay, CRLB chart
+{study}/mrs/logs/               batch summaries and failure tracebacks
+{study}/mrs/mrs_metabolites_long.csv    combined table for group analysis
+```
+
+No conda environment is needed: FSL 6.0.7+ bundles `fsl_mrs` and the workflow
+shells out to it, as the other modalities do for BET and ANTs. Point
+`spectroscopy.fsl_bin` at another directory to use a different build.
+
+`--derivatives` supplies the T2w segmentation used to measure the voxel's
+GM/WM/CSF content for absolute quantification. Without it the workflow falls
+back to assumed fractions, which affects water-scaled concentrations but not
+ratios to creatine. Always check the voxel-placement overlay in the QC report —
+the voxel is positioned from Bruker geometry parameters, because the converted
+anatomical NIfTI carries a scaled-identity affine with no scanner geometry.
+
+Start with `--dry-run` to see which PRESS scan is selected per session (sessions
+typically hold unsuppressed shim prescans alongside the real acquisition) and
+how many sessions have a segmentation available.
+
+**Known limitation.** A minority of sessions come back `unquantifiable`.
+`fsl_mrs_preproc` shifts and phases the spectrum on whatever it finds in a
+hardcoded 2.9–3.1 ppm window, and on low-SNR rodent data it sometimes locks
+onto choline (3.20) rather than total creatine (3.03) — which displaces the
+spectrum ~0.15 ppm and inverts its phase, so no reference peak can be fit. The
+step is not exposed as a CLI option. These sessions are reported separately
+from real failures, with their preprocessed data left on disk; check
+`preproc/mergedReports.html` to tell this apart from a genuinely poor
+acquisition.
+
 ### Resting-State Metrics
 
 Individual scripts for each resting-state metric (run after functional preprocessing):
