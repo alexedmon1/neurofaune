@@ -425,7 +425,18 @@ spectroscopy:
   # combination, shot alignment and outlier rejection.
   prefer_raw: true
 
-  # Preprocessing (fsl_mrs_preproc)
+  # Preprocessing chain:
+  #   internal        - coil combination, alignment, outlier removal, averaging
+  #                     and eddy-current correction, but NOT fsl_mrs_preproc's
+  #                     final shift_to_reference/phase_correct. Those search a
+  #                     hardcoded 2.9-3.1 ppm window and, when they pick the
+  #                     wrong point, displace and invert the spectrum so no
+  #                     metabolite can be fit. The converter already references
+  #                     the spectrum on tCr, so they are redundant here.
+  #   fsl_mrs_preproc - the stock FSL pipeline, for comparison.
+  preproc: "internal"
+
+  # Preprocessing parameters (shared by both chains)
   # Align averages in windows of this many shots. Single rodent averages are
   # too noisy for per-shot alignment: on CPZ test data the default per-shot
   # alignment gave NAA SNR 6.0 against 28.7 with a 32-shot window. Set to 0 to

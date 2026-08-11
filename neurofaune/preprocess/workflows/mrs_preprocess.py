@@ -180,6 +180,41 @@ def measure_tissue_fractions(
     )
 
 
+def run_internal_preproc(
+    metab_file: Path,
+    wref_file: Path,
+    output_dir: Path,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Path]:
+    """Run the preprocessing chain directly, skipping the shift/phase steps.
+
+    Same sequence as ``fsl_mrs_preproc`` (coil combination, windowed alignment,
+    outlier removal, averaging, eddy-current correction) but without its final
+    ``shift_to_reference`` and ``phase_correct``, which search a hardcoded
+    2.9-3.1 ppm window and displace and invert the spectrum when they pick the
+    wrong point. See :mod:`neurofaune.preprocess.utils.mrs._fsl_preproc`.
+
+    Runs under FSL's own interpreter, since ``fsl_mrs`` is not importable from
+    neurofaune's environment.
+    """
+    config = config or {}
+    script = Path(__file__).parent.parent / 'utils' / 'mrs' / '_fsl_preproc.py'
+    command = [
+        find_fsl_binary('python', config), str(script),
+        '--data', str(metab_file),
+        '--reference', str(wref_file),
+        '--output', str(output_dir),
+        '--align-window', str(int(get_config_value(config, 'spectroscopy.align_window', default=32))),
+    ]
+    if not bool(get_config_value(config, 'spectroscopy.remove_outliers', default=True)):
+        command.append('--no-removal')
+    if bool(get_config_value(config, 'spectroscopy.remove_water', default=False)):
+        command.append('--remove-water')
+
+    _run(command, 'SVS preprocessing')
+    return {'metab': output_dir / 'metab.nii.gz', 'wref': output_dir / 'wref.nii.gz'}
+
+
 def run_fsl_mrs_preproc(
     metab_file: Path,
     wref_file: Path,
@@ -448,9 +483,18 @@ def run_mrs_preprocessing(
 
     # --- preprocess and fit ----------------------------------------------
     preproc_dir = mrs_dir / 'preproc'
-    preprocessed = run_fsl_mrs_preproc(
-        converted['svs'], converted['wref'], preproc_dir, config,
-    )
+    method = str(get_config_value(config, 'spectroscopy.preproc', default='internal'))
+    if method == 'internal':
+        preprocessed = run_internal_preproc(
+            converted['svs'], converted['wref'], preproc_dir, config)
+    elif method == 'fsl_mrs_preproc':
+        preprocessed = run_fsl_mrs_preproc(
+            converted['svs'], converted['wref'], preproc_dir, config)
+    else:
+        raise ValueError(
+            f"spectroscopy.preproc must be 'internal' or 'fsl_mrs_preproc', "
+            f"got {method!r}"
+        )
 
     basis_path = Path(basis) if basis else Path(get_config_value(config, 'spectroscopy.basis', default=''))
     if not basis_path or not basis_path.exists():

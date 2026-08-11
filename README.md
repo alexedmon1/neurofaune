@@ -182,13 +182,25 @@ apart, so a misidentified peak is caught and the session falls back to water
 referencing. Measured separation across those sessions was 1.0212 ± 0.0010,
 with no failures.
 
-**Known limitation.** A minority of sessions still come back `unquantifiable`:
-preprocessing succeeds but the fitter finds no reference peak, and the spectrum
-comes out displaced and phase-inverted — the signature of that window search
-having locked onto the wrong point. The step is not exposed as a CLI option.
-These are reported separately from real failures, with their preprocessed data
-left on disk; check `preproc/mergedReports.html` to tell this apart from a
-genuinely poor acquisition.
+**Preprocessing chain.** `spectroscopy.preproc` selects between:
+
+- `internal` (default) — coil combination, windowed alignment, outlier removal,
+  averaging and eddy-current correction, driven step by step through
+  `nifti_mrs_proc`.
+- `fsl_mrs_preproc` — the stock FSL pipeline, for comparison.
+
+They run the same steps except that the stock pipeline finishes with
+`shift_to_reference` and `phase_correct`, both of which take
+`argmax(|spectrum|)` in that same hardcoded 2.9–3.1 ppm window and move it to
+3.027. When the wrong point wins, the spectrum is displaced in ppm and given an
+arbitrary global phase, and no metabolite can be fit afterwards. On cuprizone
+data that cost 6–7 of 53 sessions, and the window is not adjustable from the
+command line. Skipping both is safe because the converter has already
+referenced the spectrum on tCr more robustly, and `fsl_mrs` fits the zero-order
+phase itself.
+
+Sessions the fitter still declines are reported as `unquantifiable` rather than
+counted as failures, with their preprocessed data left on disk to inspect.
 
 ### Resting-State Metrics
 

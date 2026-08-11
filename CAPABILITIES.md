@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.6.2a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 145 across 9 stages.
+**Entry points:** 146 across 9 stages.
 
 
 ## analysis
@@ -131,7 +131,8 @@ _Generated from the code by `neurofaune capabilities` (v0.6.2a0)._ Do not edit b
 | `convert_svs` | `neurofaune.preprocess.workflows.mrs_preprocess` | Convert a session's PRESS acquisition to NIfTI-MRS. | — |
 | `run_fsl_mrs_fit` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs`` to fit and quantify the preprocessed spectrum. | `spectroscopy.baseline`, `spectroscopy.combine`, `spectroscopy.free_shift`, `spectroscopy.internal_ref`, `spectroscopy.metab_groups`, `spectroscopy.ppmlim` |
 | `run_fsl_mrs_preproc` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs_preproc``. | `spectroscopy.align_window`, `spectroscopy.remove_outliers`, `spectroscopy.remove_water` |
-| `run_mrs_preprocessing` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run the full SVS pipeline for one subject/session. | `spectroscopy.basis` |
+| `run_internal_preproc` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run the preprocessing chain directly, skipping the shift/phase steps. | `spectroscopy.align_window`, `spectroscopy.remove_outliers`, `spectroscopy.remove_water` |
+| `run_mrs_preprocessing` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run the full SVS pipeline for one subject/session. | `spectroscopy.basis`, `spectroscopy.preproc` |
 | `register_msme_to_t2w` | `neurofaune.preprocess.workflows.msme_preprocess` | Register MSME first echo to T2w within the same subject. | — |
 | `register_msme_to_template` | `neurofaune.preprocess.workflows.msme_preprocess` | Register MSME first echo directly to the cohort template. | `msme.registration.z_anchor`, `msme.registration.z_range` |
 | `run_msme_preprocessing` | `neurofaune.preprocess.workflows.msme_preprocess` | Run MSME preprocessing workflow with T2 mapping and MWF calculation. | `msme.geometry.slice_thickness_mm`, `msme.geometry.voxel_scale`, `msme.skull_strip.cog_offset_x`, `msme.skull_strip.cog_offset_y`, `msme.skull_strip.erode_voxels`, `msme.skull_strip.frac_max`, `msme.skull_strip.frac_min`, `msme.skull_strip.frac_step`, `msme.skull_strip.method`, `msme.skull_strip.n_classes`, `msme.skull_strip.target_ratio`, `msme.t2_fitting.T1_ms`, `msme.t2_fitting.epg_n_components`, `msme.t2_fitting.epg_n_workers`, `msme.t2_fitting.intra_extra_cutoff`, `msme.t2_fitting.lambda_reg`, `msme.t2_fitting.myelin_water_cutoff`, `msme.t2_fitting.n_components`, `msme.t2_fitting.stimulated_echo_correction`, `msme.t2_fitting.t2_range` |
