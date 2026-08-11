@@ -352,6 +352,78 @@ def run_fsl_mrs_fit(
     ) from last_error
 
 
+def run_lcmodel_fit(
+    metab_file: Path,
+    wref_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fit with LCModel instead of ``fsl_mrs``.
+
+    Needs ``spectroscopy.lcmodel.basis`` -- an LCModel ``.basis`` file, not the
+    FSL-MRS JSON directory ``spectroscopy.basis`` points at. The two fitters
+    take different formats of the same basis.
+    """
+    from neurofaune.preprocess.utils.mrs.lcmodel import fit_with_lcmodel
+
+    config = config or {}
+    basis = get_config_value(config, 'spectroscopy.lcmodel.basis', default=None)
+    if not basis or not Path(basis).exists():
+        raise FileNotFoundError(
+            f"LCModel basis not found: {basis!s}. Set "
+            f"'spectroscopy.lcmodel.basis' to a .basis file (not the FSL-MRS "
+            f"JSON directory used by spectroscopy.basis)."
+        )
+    ppm_range = get_config_value(config, 'spectroscopy.ppmlim', default=[0.2, 4.2])
+
+    return fit_with_lcmodel(
+        metab_file=metab_file,
+        wref_file=wref_file,
+        basis_file=Path(basis),
+        output_dir=output_dir,
+        identifier=f'{subject}_{session}',
+        ppm_range=(min(ppm_range), max(ppm_range)),
+        binary=get_config_value(config, 'spectroscopy.lcmodel.bin', default=None),
+        license_file=get_config_value(config, 'spectroscopy.lcmodel.license', default=None),
+    )
+
+
+def _tidy_lcmodel_results(
+    table: pd.DataFrame,
+    subject: str,
+    session: str,
+    tissue_fractions: Dict[str, float],
+    svs: BrukerSVS,
+) -> pd.DataFrame:
+    """Put LCModel's table into the same shape as the fsl_mrs summary.
+
+    LCModel reports concentrations in institutional units plus a ratio to
+    total creatine, so ``internal`` maps to that ratio and ``raw`` to the
+    concentration. There is no direct equivalent of fsl_mrs' molality/molarity
+    columns, and CRLB replaces the per-metabolite SNR.
+    """
+    rows = []
+    for _, entry in table.iterrows():
+        rows.append({
+            'subject': subject,
+            'session': session,
+            'metabolite': entry['metabolite'],
+            'echo_time_s': svs.echo_time,
+            'repetition_time_s': svs.repetition_time,
+            'n_averages': svs.n_averages,
+            'source': svs.source,
+            'raw': entry['concentration'],
+            'internal': entry['ratio_to_cr'],
+            'crlb_percent': entry['crlb_percent'],
+            'internal_ref': 'Cr+PCr',
+            **{f'frac_{k}': v for k, v in tissue_fractions.items()
+               if k in ('GM', 'WM', 'CSF')},
+        })
+    return pd.DataFrame(rows)
+
+
 def _tidy_results(
     fit_dir: Path,
     subject: str,
@@ -505,14 +577,24 @@ def run_mrs_preprocessing(
         )
 
     fit_dir = mrs_dir / 'fit'
-    fit = run_fsl_mrs_fit(
-        preprocessed['metab'], preprocessed['wref'], basis_path, fit_dir,
-        echo_time=svs.echo_time, repetition_time=svs.repetition_time,
-        tissue_fractions=fractions, config=config,
-    )
-
-    results = _tidy_results(fit_dir, subject, session, fractions, svs)
-    results['internal_ref'] = '+'.join(fit['internal_ref'])
+    fitter = str(get_config_value(config, 'spectroscopy.fitter', default='fsl_mrs'))
+    if fitter == 'fsl_mrs':
+        fit = run_fsl_mrs_fit(
+            preprocessed['metab'], preprocessed['wref'], basis_path, fit_dir,
+            echo_time=svs.echo_time, repetition_time=svs.repetition_time,
+            tissue_fractions=fractions, config=config,
+        )
+        results = _tidy_results(fit_dir, subject, session, fractions, svs)
+        results['internal_ref'] = '+'.join(fit['internal_ref'])
+    elif fitter == 'lcmodel':
+        fit = run_lcmodel_fit(
+            preprocessed['metab'], preprocessed['wref'], fit_dir,
+            subject=subject, session=session, config=config,
+        )
+        results = _tidy_lcmodel_results(fit['results'], subject, session, fractions, svs)
+    else:
+        raise ValueError(
+            f"spectroscopy.fitter must be 'fsl_mrs' or 'lcmodel', got {fitter!r}")
     summary_file = mrs_dir / f'{subject}_{session}_metabolites.csv'
     results.to_csv(summary_file, index=False)
 
@@ -530,7 +612,8 @@ def run_mrs_preprocessing(
         'voxel_position_mm': svs.voxel_position.tolist(),
         'voxel_volume_ul': float(np.prod(svs.voxel_size)),
         'basis': str(basis_path),
-        'internal_ref': fit['internal_ref'],
+        'fitter': fitter,
+        'internal_ref': fit.get('internal_ref', DEFAULT_INTERNAL_REF),
         'tissue_fractions': {k: v for k, v in fractions.items() if k != 'mask'},
     }
     with open(mrs_dir / f'{subject}_{session}_mrs.json', 'w') as handle:
@@ -547,7 +630,33 @@ def run_mrs_preprocessing(
         'voxel_mask': fractions.get('mask'),
     }
 
-    if generate_qc:
+    if generate_qc and fitter == 'lcmodel':
+        # LCModel writes its own report (lcmodel.ps) and reports CRLB rather
+        # than the per-metabolite SNR/FWHM the fsl_mrs QC is built around, so
+        # only the parts that generalise are produced here.
+        from neurofaune.preprocess.qc.mrs import plot_metabolite_crlb, plot_voxel_overlay
+
+        qc_dir = mrs_root / 'qc' / subject / session
+        figures_dir = qc_dir / 'figures'
+        crlb = results.set_index('metabolite')['crlb_percent']
+        qc_files = [plot_metabolite_crlb(
+            crlb, figures_dir / f'{subject}_{session}_crlb.png', subject, session)]
+        if anat_image and fractions.get('mask'):
+            qc_files.append(plot_voxel_overlay(
+                Path(anat_image), Path(fractions['mask']),
+                figures_dir / f'{subject}_{session}_voxel-placement.png',
+                subject, session))
+        reliable = int((crlb <= 20).sum())
+        metrics = {'fitter': 'lcmodel', 'n_metabolites': int(len(crlb)),
+                   'n_metabolites_reliable': reliable,
+                   'overall_pass': bool(reliable >= 5)}
+        qc_dir.mkdir(parents=True, exist_ok=True)
+        with open(qc_dir / f'{subject}_{session}_mrs-qc.json', 'w') as handle:
+            json.dump(metrics, handle, indent=2)
+        outputs['qc'] = {'metrics': metrics, 'figures': qc_files}
+        logger.info("MRS QC %s %s (LCModel): %d/%d metabolites within CRLB 20%%",
+                    subject, session, reliable, len(crlb))
+    elif generate_qc:
         from neurofaune.preprocess.qc.mrs import generate_mrs_qc_report
 
         outputs['qc'] = generate_mrs_qc_report(

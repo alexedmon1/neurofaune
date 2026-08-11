@@ -9,7 +9,7 @@ property while still giving step-level control.
 
 Why not just call ``fsl_mrs_preproc``
 -------------------------------------
-It runs the same chain and then finishes with two steps this one omits:
+It runs the same chain and then finishes with:
 
     shift_to_reference(data, 3.027, (2.9, 3.1))
     phase_correct(data, (2.9, 3.1))
@@ -20,13 +20,16 @@ to 3.027 and phase it to zero. When the wrong point wins -- which happened on
 given an arbitrary global phase, and no reference metabolite can be fit
 afterwards. The window is not adjustable from the command line.
 
-Skipping both is safe here because the converter already references the
-spectrum on tCr, more robustly: a wide search window cross-checked against
-NAA, rather than a 0.2 ppm window with no validation (see
-``bruker_mrs.measure_metabolite_offset``). Zero-order phase is left to
-``fsl_mrs``, which fits it as a free parameter. On the three sessions tested
-that ``fsl_mrs_preproc`` could not produce a fittable spectrum for, this chain
-yields clean upright spectra with NAA SNR 13.0-13.2.
+This chain drops ``shift_to_reference`` entirely: the converter has already
+referenced the spectrum on tCr, and more robustly, over a wide search window
+cross-checked against NAA rather than a 0.2 ppm window with no validation (see
+``bruker_mrs.measure_metabolite_offset``).
+
+Phasing is kept, because leaving it to ``fsl_mrs`` as a free parameter costs
+about 30% of the fitted SNR. It is safe here for the reason the stock version
+isn't: with tCr already at 3.027 +/- 0.001, the peak the search lands on is the
+one intended, rather than whatever is tallest in a window the spectrum may have
+drifted out of.
 """
 
 import argparse
@@ -44,6 +47,8 @@ def main() -> int:
                         help='Keep averages unlike the rest')
     parser.add_argument('--remove-water', action='store_true',
                         help='HLSVD residual water removal')
+    parser.add_argument('--no-phase', action='store_true',
+                        help='Skip zero-order phasing and leave it to fsl_mrs')
     args = parser.parse_args()
 
     from pathlib import Path
@@ -84,7 +89,16 @@ def main() -> int:
     if args.remove_water:
         supp = proc.remove_peaks(supp, [-0.25, 0.25], limit_units='ppm')
 
-    # No shift_to_reference or phase_correct here -- see the module docstring.
+    # Zero-order phasing on tCr. This is the same fsl_mrs_preproc step that
+    # causes the trouble, but it is safe here for a reason it isn't there: the
+    # converter has already put tCr at 3.027 +/- 0.001, so the peak the search
+    # finds is the peak we mean, rather than whatever happens to be tallest in
+    # a window the spectrum may have drifted out of. Leaving the phase to
+    # fsl_mrs instead costs about 30% of the fitted SNR.
+    if not args.no_phase:
+        supp = proc.phase_correct(supp, (2.95, 3.10))
+
+    # Still no shift_to_reference -- see the module docstring.
     supp.save(str(output / 'metab.nii.gz'))
     ref.save(str(output / 'wref.nii.gz'))
     return 0

@@ -199,8 +199,25 @@ command line. Skipping both is safe because the converter has already
 referenced the spectrum on tCr more robustly, and `fsl_mrs` fits the zero-order
 phase itself.
 
+Zero-order phasing is kept — dropping it costs about 30% of the fitted SNR —
+but anchored on the referencing above rather than on a blind search.
+
 Sessions the fitter still declines are reported as `unquantifiable` rather than
 counted as failures, with their preprocessed data left on disk to inspect.
+
+**Fitter.** `spectroscopy.fitter` selects `fsl_mrs` (default) or `lcmodel`.
+LCModel needs `spectroscopy.lcmodel.basis` — an LCModel `.basis` file, not the
+JSON directory `spectroscopy.basis` points at; the two fitters take different
+formats of the same basis.
+
+LCModel is worth running as an independent check: same basis, same preprocessed
+FID, different implementation, so agreement validates the whole chain rather
+than just the fit. On CPZ sessions the two agreed closely on the major
+metabolite ratios (NAA+NAAG 1.25 vs 1.28, Glu 1.25 vs 1.26, GPC+PCh 0.188 vs
+0.188 against tCr) while LCModel reported much lower CRLBs (2–6% against
+10–30%) and fit sessions `fsl_mrs` could not. It models the macromolecule
+baseline internally, which the JSON basis conversion loses — the same
+limitation noted in `mrs/basis/README.md`.
 
 ### Resting-State Metrics
 

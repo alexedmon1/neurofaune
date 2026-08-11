@@ -445,6 +445,17 @@ spectroscopy:
   remove_outliers: true          # Drop averages unlike the rest (motion)
   remove_water: false            # HLSVD residual water removal
 
+  # Fitter: 'fsl_mrs' or 'lcmodel'. LCModel is a useful independent check --
+  # same basis, same preprocessed FID, different implementation -- and models
+  # the macromolecule baseline internally, which the FSL-MRS JSON basis
+  # conversion loses. On CPZ test sessions it agreed with fsl_mrs on the major
+  # metabolite ratios while reporting much lower CRLBs (2-6% against 10-30%).
+  fitter: "fsl_mrs"
+  lcmodel:
+    basis: null                  # An LCModel .basis file, NOT the JSON dir above
+    bin: null                    # Directory holding the lcmodel binary
+    license: null                # Defaults to /srv/.lcmodel/license then ~/.lcmodel/license
+
   # Fitting (fsl_mrs)
   ppmlim: [0.2, 4.2]             # Fit range
   baseline: "poly,4"             # Higher order compensates for basis sets
