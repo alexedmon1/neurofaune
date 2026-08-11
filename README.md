@@ -183,6 +183,7 @@ given root rather than under `derivatives/`:
 
 ```
 {study}/mrs/{sub}/{ses}/        NIfTI-MRS, voxel mask, preproc/, fit/, metabolites CSV
+                                plus *_fit-curves.csv and *_fit-metabolites.csv
 {study}/mrs/qc/{sub}/{ses}/     QC report, voxel-placement overlay, CRLB chart
 {study}/mrs/logs/               batch summaries and failure tracebacks
 {study}/mrs/mrs_metabolites_long.csv    combined table for group analysis
@@ -253,6 +254,18 @@ behaviour.
 
 Sessions the fitter still declines are reported as `unquantifiable` rather than
 counted as failures, with their preprocessed data left on disk to inspect.
+
+**Figures.** `fsl_mrs` writes an interactive HTML report and a summary PNG but
+no fit curves as data, so building a custom or group-level figure would mean
+scraping the HTML. `spectroscopy.export_curves` (on by default) additionally
+writes per session:
+
+```
+{sub}_{ses}_fit-curves.csv       ppm, data, fit, baseline, residual
+{sub}_{ses}_fit-metabolites.csv  ppm plus one column per basis metabolite
+```
+
+Real-valued spectra over the fit range, ready to plot directly.
 
 **Fitter.** `spectroscopy.fitter` selects `fsl_mrs` (default) or `lcmodel`.
 LCModel needs `spectroscopy.lcmodel.basis` — an LCModel `.basis` file, not the

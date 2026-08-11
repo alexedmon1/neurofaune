@@ -466,6 +466,11 @@ spectroscopy:
   # -- because a single-point estimate inherits that point's noise.
   phase_method: "search"
 
+  # Export the fit as CSV curves (ppm, data, fit, baseline, residual, and one
+  # column per metabolite) alongside fsl_mrs' HTML report, which contains no
+  # plottable data. fsl_mrs only.
+  export_curves: true
+
   # Fitting (fsl_mrs)
   ppmlim: [0.2, 4.2]             # Fit range
   baseline: "poly,4"             # Higher order compensates for basis sets

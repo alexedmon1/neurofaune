@@ -355,6 +355,43 @@ def run_fsl_mrs_fit(
     ) from last_error
 
 
+def export_fit_curves(
+    metab_file: Path,
+    basis: Path,
+    output_prefix: Path,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Path]:
+    """Write the fit as plain CSV curves, for figure-making.
+
+    ``fsl_mrs`` writes an interactive HTML report and a summary PNG but no
+    curves as data, so a custom or group-level figure would otherwise mean
+    scraping the HTML. See
+    :mod:`neurofaune.preprocess.utils.mrs._fsl_curves`.
+    """
+    config = config or {}
+    script = Path(__file__).parent.parent / 'utils' / 'mrs' / '_fsl_curves.py'
+    ppm_range = get_config_value(config, 'spectroscopy.ppmlim', default=[0.2, 4.2])
+    command = [
+        find_fsl_binary('python', config), str(script),
+        '--data', str(metab_file),
+        '--basis', str(basis),
+        '--output-prefix', str(output_prefix),
+        '--ppmlim', str(min(ppm_range)), str(max(ppm_range)),
+        '--baseline', str(get_config_value(config, 'spectroscopy.baseline', default='poly,4')),
+    ]
+    groups = get_config_value(config, 'spectroscopy.metab_groups', default=['NAA'])
+    if groups:
+        command += ['--metab-groups'] + [str(g) for g in groups]
+    if bool(get_config_value(config, 'spectroscopy.free_shift', default=True)):
+        command.append('--free-shift')
+
+    _run(command, 'fit curve export')
+    return {
+        'curves': Path(f'{output_prefix}_fit-curves.csv'),
+        'metabolite_curves': Path(f'{output_prefix}_fit-metabolites.csv'),
+    }
+
+
 def run_lcmodel_fit(
     metab_file: Path,
     wref_file: Path,
@@ -629,6 +666,19 @@ def run_mrs_preprocessing(
     summary_file = mrs_dir / f'{subject}_{session}_metabolites.csv'
     results.to_csv(summary_file, index=False)
 
+    curve_files: Dict[str, Path] = {}
+    if fitter == 'fsl_mrs' and bool(
+            get_config_value(config, 'spectroscopy.export_curves', default=True)):
+        try:
+            curve_files = export_fit_curves(
+                preprocessed['metab'], basis_path,
+                mrs_dir / f'{subject}_{session}', config)
+        except RuntimeError as exc:
+            # Plotting data is a convenience; losing it should not cost the
+            # session's concentrations.
+            logger.warning("%s %s: could not export fit curves (%s)",
+                           subject, session, exc)
+
     metadata = {
         'subject': subject,
         'session': session,
@@ -658,6 +708,7 @@ def run_mrs_preprocessing(
         'fit_dir': fit_dir,
         'summary': summary_file,
         'metadata': metadata,
+        **curve_files,
         'results': results,
         'voxel_mask': fractions.get('mask'),
     }
