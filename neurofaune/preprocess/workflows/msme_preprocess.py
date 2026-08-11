@@ -23,6 +23,7 @@ from neurofaune.preprocess.utils.registration_utils import (
     propagate_anat_mask,
 )
 from neurofaune.preprocess.utils.skull_strip import skull_strip
+from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
 from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foreground_mask
 
 

@@ -21,13 +21,14 @@ Note on ``spec2nii``: it cannot read ParaVision 360.3 spectroscopy, which is
 why step 1 uses neurofaune's own reader. See ``bruker_mrs`` for the details.
 """
 
+import copy
 import json
 import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -555,18 +556,20 @@ def run_mrs_preprocessing(
 
     # --- preprocess and fit ----------------------------------------------
     preproc_dir = mrs_dir / 'preproc'
-    method = str(get_config_value(config, 'spectroscopy.preproc', default='internal'))
-    if method == 'internal':
-        preprocessed = run_internal_preproc(
-            converted['svs'], converted['wref'], preproc_dir, config)
-    elif method == 'fsl_mrs_preproc':
-        preprocessed = run_fsl_mrs_preproc(
-            converted['svs'], converted['wref'], preproc_dir, config)
-    else:
+    def _preprocess(cfg: Dict[str, Any]) -> Dict[str, Path]:
+        method = str(get_config_value(cfg, 'spectroscopy.preproc', default='internal'))
+        if method == 'internal':
+            return run_internal_preproc(
+                converted['svs'], converted['wref'], preproc_dir, cfg)
+        if method == 'fsl_mrs_preproc':
+            return run_fsl_mrs_preproc(
+                converted['svs'], converted['wref'], preproc_dir, cfg)
         raise ValueError(
             f"spectroscopy.preproc must be 'internal' or 'fsl_mrs_preproc', "
             f"got {method!r}"
         )
+
+    preprocessed = _preprocess(config)
 
     basis_path = Path(basis) if basis else Path(get_config_value(config, 'spectroscopy.basis', default=''))
     if not basis_path or not basis_path.exists():
@@ -578,23 +581,49 @@ def run_mrs_preprocessing(
 
     fit_dir = mrs_dir / 'fit'
     fitter = str(get_config_value(config, 'spectroscopy.fitter', default='fsl_mrs'))
-    if fitter == 'fsl_mrs':
-        fit = run_fsl_mrs_fit(
-            preprocessed['metab'], preprocessed['wref'], basis_path, fit_dir,
-            echo_time=svs.echo_time, repetition_time=svs.repetition_time,
-            tissue_fractions=fractions, config=config,
+
+    def _fit() -> Tuple[Dict[str, Any], pd.DataFrame]:
+        if fitter == 'fsl_mrs':
+            outcome = run_fsl_mrs_fit(
+                preprocessed['metab'], preprocessed['wref'], basis_path, fit_dir,
+                echo_time=svs.echo_time, repetition_time=svs.repetition_time,
+                tissue_fractions=fractions, config=config,
+            )
+            table = _tidy_results(fit_dir, subject, session, fractions, svs)
+            table['internal_ref'] = '+'.join(outcome['internal_ref'])
+        elif fitter == 'lcmodel':
+            outcome = run_lcmodel_fit(
+                preprocessed['metab'], preprocessed['wref'], fit_dir,
+                subject=subject, session=session, config=config,
+            )
+            table = _tidy_lcmodel_results(outcome['results'], subject, session,
+                                          fractions, svs)
+        else:
+            raise ValueError(
+                f"spectroscopy.fitter must be 'fsl_mrs' or 'lcmodel', got {fitter!r}")
+        return outcome, table
+
+    try:
+        fit, results = _fit()
+        water_removed = bool(get_config_value(config, 'spectroscopy.remove_water', default=False))
+    except SpectrumUnquantifiable:
+        # Retry with HLSVD water removal. It is not the default because it
+        # costs SNR on sessions that do not need it (one CPZ session went
+        # 16.6 -> 11.6), but it rescues sessions whose residual water peak
+        # leaks into the fit range -- the one remaining CPZ failure had a
+        # water residual four times its neighbours' and fit cleanly once it
+        # was removed.
+        if bool(get_config_value(config, 'spectroscopy.remove_water', default=False)):
+            raise
+        logger.warning(
+            "%s %s: unquantifiable; retrying with HLSVD water removal",
+            subject, session,
         )
-        results = _tidy_results(fit_dir, subject, session, fractions, svs)
-        results['internal_ref'] = '+'.join(fit['internal_ref'])
-    elif fitter == 'lcmodel':
-        fit = run_lcmodel_fit(
-            preprocessed['metab'], preprocessed['wref'], fit_dir,
-            subject=subject, session=session, config=config,
-        )
-        results = _tidy_lcmodel_results(fit['results'], subject, session, fractions, svs)
-    else:
-        raise ValueError(
-            f"spectroscopy.fitter must be 'fsl_mrs' or 'lcmodel', got {fitter!r}")
+        retry_config = copy.deepcopy(config)
+        retry_config.setdefault('spectroscopy', {})['remove_water'] = True
+        preprocessed = _preprocess(retry_config)
+        fit, results = _fit()
+        water_removed = True
     summary_file = mrs_dir / f'{subject}_{session}_metabolites.csv'
     results.to_csv(summary_file, index=False)
 
@@ -613,6 +642,7 @@ def run_mrs_preprocessing(
         'voxel_volume_ul': float(np.prod(svs.voxel_size)),
         'basis': str(basis_path),
         'fitter': fitter,
+        'water_removed': water_removed,
         'internal_ref': fit.get('internal_ref', DEFAULT_INTERNAL_REF),
         'tissue_fractions': {k: v for k, v in fractions.items() if k != 'mask'},
     }

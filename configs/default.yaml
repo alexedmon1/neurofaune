@@ -443,7 +443,10 @@ spectroscopy:
   # skip alignment entirely.
   align_window: 32
   remove_outliers: true          # Drop averages unlike the rest (motion)
-  remove_water: false            # HLSVD residual water removal
+  remove_water: false            # HLSVD residual water removal. Off by default:
+                                 # it costs SNR on sessions that do not need it,
+                                 # so it is applied automatically as a retry when
+                                 # a fit comes back unquantifiable.
 
   # Fitter: 'fsl_mrs' or 'lcmodel'. LCModel is a useful independent check --
   # same basis, same preprocessed FID, different implementation -- and models

@@ -15,6 +15,29 @@ cd neurofaune
 uv pip install -e ".[dev]"
 ```
 
+## Developer Gate
+
+Two tiers, both defined in the `Makefile`:
+
+```bash
+make check        # BLOCKING — unit + regression tests. Must pass before commit/tag.
+make advisory     # INFORMATIONAL — ruff + mypy. Never blocks.
+make integration  # SLOW — real ANTs/FSL end-to-end. Run before a release tag.
+```
+
+`make check` includes a gate test that fails if `CAPABILITIES.md` is stale.
+Regenerate and commit it in the same change whenever you add or rename an entry
+point **or a config key**:
+
+```bash
+make capabilities   # rewrites CAPABILITIES.md
+```
+
+`make advisory` currently reports several thousand ruff findings and ~1,180 mypy
+errors, nearly all stylistic (`UP006`/`UP045` typing modernization) or `nibabel`
+stub gaps. It is advisory by design — a clean run is not a precondition for
+anything.
+
 ## Workflow Overview
 
 Processing follows a strict order. Anatomical preprocessing must complete first to build age-cohort templates; all modalities then register directly to template before warping to SIGMA atlas space.
@@ -85,12 +108,19 @@ All preprocessing scripts live in `scripts/` and use library code from `neurofau
 Age-specific templates are built from a subset of subjects and used for group-level normalization:
 
 ```bash
-# Select and preprocess template subjects
-uv run python scripts/batch_preprocess_for_templates.py \
-    --bids-root /path/to/bids --output-root /path/to/study --cohorts p30 p60 p90
+# Select and preprocess template subjects.
+# NOTE: takes no arguments — it reads paths from configs/bpa_rat_example.yaml,
+# which no longer ships with the repo, and hardcodes cohorts p30/p60/p90 and a
+# sub-Rat* subject glob. Point it at your own config before use.
+uv run python scripts/batch_preprocess_for_templates.py
 
-# Build ANTs templates
-uv run python scripts/build_templates.py --config config.yaml --cohorts p30 p60 p90
+# Build ANTs templates — both --cohort (singular) and --modality are REQUIRED.
+uv run python scripts/build_templates.py \
+    --config config.yaml --cohort p60 --modality anat
+
+# ...or every cohort in one invocation:
+uv run python scripts/build_templates.py \
+    --config config.yaml --cohort all --modality anat
 ```
 
 ### Anatomical (T2w)
@@ -98,7 +128,9 @@ uv run python scripts/build_templates.py --config config.yaml --cohorts p30 p60 
 N4 bias correction, two-pass Atropos+BET skull stripping, tissue segmentation (GM/WM/CSF), optional 3D-to-2D resampling, registration to age-matched template (ANTs SyN). 3D isotropic acquisitions are automatically detected and resampled to standard 2D geometry.
 
 ```bash
-uv run python scripts/batch_preprocess_anat.py --config config.yaml
+# bids_dir and output_dir are POSITIONAL and required, even with --config.
+uv run python scripts/batch_preprocess_anat.py \
+    /path/to/bids /path/to/study --config config.yaml
 ```
 
 ### Diffusion (DTI)
@@ -115,7 +147,9 @@ uv run python scripts/batch_preprocess_dwi.py --config config.yaml \
 Volume discarding, adaptive skull stripping, motion correction (MCFLIRT), ICA denoising (MELODIC), spatial smoothing, temporal bandpass filtering, confound extraction (24 motion + aCompCor), BOLD-to-T2w registration.
 
 ```bash
-uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/study
+# Takes no positional arguments — paths are given as flags.
+uv run python scripts/batch_preprocess_func.py \
+    --bids-root /path/to/bids --output-root /path/to/study --config config.yaml
 ```
 
 ### MSME T2 Mapping
@@ -123,7 +157,9 @@ uv run python scripts/batch_preprocess_func.py /path/to/bids /path/to/study
 Skull stripping, NNLS-based T2 fitting, Myelin Water Fraction (MWF) and compartment analysis, MSME-to-T2w registration.
 
 ```bash
-uv run python scripts/batch_preprocess_msme.py /path/to/bids /path/to/study
+# Takes no positional arguments — paths are given as flags.
+uv run python scripts/batch_preprocess_msme.py \
+    --bids-root /path/to/bids --output-root /path/to/study --config config.yaml
 ```
 
 ### MR Spectroscopy (single-voxel PRESS)
@@ -189,18 +225,31 @@ with no failures.
   `nifti_mrs_proc`.
 - `fsl_mrs_preproc` — the stock FSL pipeline, for comparison.
 
-They run the same steps except that the stock pipeline finishes with
-`shift_to_reference` and `phase_correct`, both of which take
+They run the same steps and differ only in how they finish. The stock pipeline
+ends with `shift_to_reference` and `phase_correct`, both of which take
 `argmax(|spectrum|)` in that same hardcoded 2.9–3.1 ppm window and move it to
 3.027. When the wrong point wins, the spectrum is displaced in ppm and given an
 arbitrary global phase, and no metabolite can be fit afterwards. On cuprizone
 data that cost 6–7 of 53 sessions, and the window is not adjustable from the
-command line. Skipping both is safe because the converter has already
-referenced the spectrum on tCr more robustly, and `fsl_mrs` fits the zero-order
-phase itself.
+command line.
 
-Zero-order phasing is kept — dropping it costs about 30% of the fitted SNR —
-but anchored on the referencing above rather than on a blind search.
+The `internal` chain drops `shift_to_reference` entirely — the converter has
+already referenced the spectrum on tCr, over a wide window cross-checked against
+NAA rather than a 0.2 ppm window with no validation. It **keeps** zero-order
+phasing, over a 2.95–3.10 ppm window: leaving the phase to `fsl_mrs` as a free
+parameter costs about 30% of the fitted SNR. The search is safe here for the
+reason the stock version isn't — with tCr already at 3.027 ± 0.001, the peak it
+lands on is the one intended, rather than whatever is tallest in a window the
+spectrum may have drifted out of. On a 13-session subset:
+
+| chain | sessions fit | median SNR |
+|---|---|---|
+| stock `fsl_mrs_preproc` | 7/13 | 18.6 |
+| `internal`, no phasing | 13/13 | 13.2 |
+| `internal` + tCr phasing | 13/13 | 15.6 |
+
+Pass `--no-phase` to `_fsl_preproc` to restore the leave-it-to-`fsl_mrs`
+behaviour.
 
 Sessions the fitter still declines are reported as `unquantifiable` rather than
 counted as failures, with their preprocessed data left on disk to inspect.
@@ -238,22 +287,29 @@ All support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and `--ski
 Standalone registration scripts for individual modality-to-template steps:
 
 ```bash
-uv run python scripts/batch_register_fa_to_t2w.py --config config.yaml
-uv run python scripts/batch_register_fa_to_template.py --config config.yaml
-uv run python scripts/batch_register_bold_to_t2w.py --config config.yaml
-uv run python scripts/batch_register_bold_to_template.py --config config.yaml
-uv run python scripts/batch_register_msme.py --config config.yaml
-uv run python scripts/batch_warp_bold_to_sigma.py --config config.yaml
+# These take --study-root (not --config) and derive the rest from the study tree.
+# All support --dry-run and --force; all but the last also take --n-cores.
+uv run python scripts/batch_register_fa_to_t2w.py        --study-root /path/to/study
+uv run python scripts/batch_register_fa_to_template.py   --study-root /path/to/study
+uv run python scripts/batch_register_bold_to_t2w.py      --study-root /path/to/study
+uv run python scripts/batch_register_bold_to_template.py --study-root /path/to/study
+uv run python scripts/batch_register_msme.py             --study-root /path/to/study
+uv run python scripts/batch_warp_bold_to_sigma.py        --study-root /path/to/study
 ```
 
 ### Quality Control
 
 ```bash
-# Batch QC summary with outlier detection
-uv run python scripts/generate_batch_qc.py --study-root /path/to/study --modalities anat dwi func
+# Batch QC summary with outlier detection.
+# study_root is POSITIONAL; --modality takes ONE of {dwi,anat,func,msme,all}.
+uv run python scripts/generate_batch_qc.py /path/to/study --modality all
 
-# Skull stripping QC montages
-uv run python scripts/batch_skull_strip_qc.py --config config.yaml
+# Restrict to specific subjects, or change the outlier threshold:
+uv run python scripts/generate_batch_qc.py /path/to/study \
+    --modality dwi --subjects sub-Rat49 sub-Rat50 --z-threshold 3.0
+
+# Skull stripping QC montages (study_root also positional)
+uv run python scripts/batch_skull_strip_qc.py /path/to/study --modality anat
 ```
 
 ---
@@ -408,7 +464,7 @@ uv run python scripts/run_mcca_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/mcca \
     --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
-    --feature-set bilateral \
+    --feature-sets bilateral \
     --n-components 5 \
     --regs lw \
     --n-permutations 5000 --seed 42
@@ -418,7 +474,7 @@ uv run python scripts/run_mcca_analysis.py \
     --roi-dir /path/to/network/roi \
     --output-dir /path/to/network/mcca_auc \
     --views dwi:FA,MD,AD,RD msme:MWF,IWF,CSFF,T2 func:fALFF,ReHo,ALFF \
-    --feature-set bilateral --target auc \
+    --feature-sets bilateral --target auc \
     --n-components 5 --regs lw --n-permutations 5000
 ```
 
@@ -497,16 +553,15 @@ uv run python scripts/run_voxelwise_fmri_analysis.py \
 Voxel-wise analysis of tissue density (GM, WM, CSF) using FSL randomise. Design scripts support both ordinal dose and continuous AUC targets:
 
 ```bash
+# Designs are written to {vbm-dir}/designs — there is no --output-dir.
 uv run python scripts/prepare_vbm_designs.py \
     --study-tracker /path/to/tracker.csv \
-    --vbm-dir /path/to/analysis/vbm \
-    --output-dir /path/to/analysis/vbm/designs
+    --vbm-dir /path/to/analysis/vbm
 
 # AUC designs
 uv run python scripts/prepare_vbm_designs.py \
     --study-tracker /path/to/tracker.csv \
     --vbm-dir /path/to/analysis/vbm \
-    --output-dir /path/to/analysis/vbm/designs \
     --target auc --auc-csv /path/to/auc_lookup.csv
 
 uv run python scripts/run_vbm_analysis.py \
@@ -520,8 +575,10 @@ uv run python scripts/run_vbm_analysis.py \
 Whole-brain decoding and searchlight mapping. Supports both categorical group designs and continuous regression targets (ordinal dose or AUC):
 
 ```bash
+# Paths come from --config, or individually via --derivatives-dir /
+# --design-dir / --output-dir. There is no --study-root.
 uv run python scripts/run_mvpa_analysis.py \
-    --study-root /path/to/study \
+    --config config.yaml \
     --output-dir /path/to/analysis/mvpa \
     --metrics FA --n-permutations 1000
 
@@ -690,7 +747,9 @@ functional:
     fd_threshold: 0.5
 ```
 
-See `configs/default.yaml` for all parameters and `configs/bpa_rat_example.yaml` for a complete study example.
+See `configs/default.yaml` for all parameters. A study-specific `config.yaml` is
+generated in your study root by `scripts/init_study.py` and overrides these
+defaults; `configs/` ships defaults only, with no per-study example.
 
 ### Config Validation
 
@@ -800,6 +859,33 @@ uv run pytest --cov=neurofaune --cov-report=term-missing  # Coverage
 ```
 
 Tests use synthetic data generation (no external data required). Integration tests (`@pytest.mark.integration`) require FSL/ANTs.
+
+## Script Status
+
+`scripts/` holds **example CLI wrappers**, not the supported interface — the
+library under `neurofaune/` is. Scripts vary in maturity:
+
+| Tier | Scripts | Notes |
+|---|---|---|
+| Documented | the invocations shown above | verified against `--help` |
+| Undocumented | ~25 others, incl. `prepare_vbm.py`, `run_covnet_nbs.py`, `run_melodic_clean.py`, `fit_multishell_models.py` | working, but no README coverage — run `--help` |
+| Ad-hoc | `test_anat_registration.py`, `test_msme_multi_subject.py`, `test_msme_adaptive_skull_strip.py` | developer scratch scripts with absolute paths hardcoded to one machine; **not** part of the pytest suite despite the `test_` prefix |
+
+Several scripts hardcode `/mnt/arborea/...` paths. Check the source before
+running one that is not documented above.
+
+### TBSS entry points
+
+There are four overlapping TBSS drivers. The active pair is:
+
+```bash
+scripts/run_template_tbss_prepare.py   # called by run_template_tbss_pipeline.sh
+scripts/run_tbss_analysis.py           # end-to-end driver
+```
+
+`run_tbss_prepare.py` and `run_tbss_stats.py` are thin wrappers that may be
+superseded by `run_tbss_analysis.py` (see `docs/CLEANUP_TODO.md`). Prefer
+`run_tbss_analysis.py` for new work.
 
 ## Acknowledgments
 
