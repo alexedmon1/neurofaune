@@ -211,6 +211,8 @@ def run_internal_preproc(
         command.append('--no-removal')
     if bool(get_config_value(config, 'spectroscopy.remove_water', default=False)):
         command.append('--remove-water')
+    command += ['--phase-method',
+                str(get_config_value(config, 'spectroscopy.phase_method', default='search'))]
 
     _run(command, 'SVS preprocessing')
     return {'metab': output_dir / 'metab.nii.gz', 'wref': output_dir / 'wref.nii.gz'}

@@ -36,6 +36,49 @@ import argparse
 import sys
 
 
+def search_phase(data, ppmlim=(0.5, 4.2), penalty=2.0, coarse_step=1.0):
+    """Zero-order phase by searching for the most absorptive spectrum.
+
+    Phasing on a single peak uses one point of a noisy spectrum and inherits
+    that point's noise. This instead scores the whole metabolite region: a
+    correctly phased spectrum is predominantly positive there, so the score
+    rewards positive real signal and penalises the negative lobes that a wrong
+    phase produces.
+
+    The search covers the full circle, which is the point of it. fsl_mrs fits
+    phase by local descent from zero with concentrations bounded non-negative,
+    so a spectrum near 180 degrees out cannot be recovered by the fit -- the
+    metabolites simply go to zero. LCModel avoids that trap differently, by
+    learning how wide to make its phase prior rather than assuming the
+    correction is small (its manual singles out Bruker data as a case where
+    "the zero-order phase correction is often not small"). Since fsl_mrs'
+    optimiser cannot be changed, the equivalent is done here instead.
+    """
+    import numpy as np
+    from fsl_mrs.utils.preproc import nifti_mrs_proc as proc
+
+    fid = np.asanyarray(data[:]).squeeze()
+    spectrum = np.fft.fftshift(np.fft.fft(fid))
+    frequency = np.fft.fftshift(np.fft.fftfreq(spectrum.size, data.dwelltime))
+    # Same ppm convention as the converter, verified against Bruker's own
+    # reconstruction (NAA at 2.01, tCr at 3.03).
+    ppm = frequency / data.spectrometer_frequency[0] + 4.65
+    band = (ppm > min(ppmlim)) & (ppm < max(ppmlim))
+    in_band = spectrum[band]
+
+    def score(angle_deg):
+        rotated = (in_band * np.exp(1j * np.deg2rad(angle_deg))).real
+        return rotated.sum() - penalty * np.abs(np.minimum(rotated, 0.0)).sum()
+
+    coarse = np.arange(-180.0, 180.0, coarse_step)
+    best = float(coarse[int(np.argmax([score(a) for a in coarse]))])
+    fine = np.arange(best - coarse_step, best + coarse_step, 0.05)
+    best = float(fine[int(np.argmax([score(a) for a in fine]))])
+
+    print(f'... zero-order phase search: {best:+.2f} deg')
+    return proc.apply_fixed_phase(data, best)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data', required=True, help='Water-suppressed NIfTI-MRS')
@@ -49,6 +92,10 @@ def main() -> int:
                         help='HLSVD residual water removal')
     parser.add_argument('--no-phase', action='store_true',
                         help='Skip zero-order phasing and leave it to fsl_mrs')
+    parser.add_argument('--phase-method', choices=('search', 'tcr'), default='search',
+                        help="'search' scans zero-order phase for the most "
+                             "absorptive spectrum; 'tcr' phases on the creatine "
+                             "peak alone")
     args = parser.parse_args()
 
     from pathlib import Path
@@ -89,14 +136,13 @@ def main() -> int:
     if args.remove_water:
         supp = proc.remove_peaks(supp, [-0.25, 0.25], limit_units='ppm')
 
-    # Zero-order phasing on tCr. This is the same fsl_mrs_preproc step that
-    # causes the trouble, but it is safe here for a reason it isn't there: the
-    # converter has already put tCr at 3.027 +/- 0.001, so the peak the search
-    # finds is the peak we mean, rather than whatever happens to be tallest in
-    # a window the spectrum may have drifted out of. Leaving the phase to
-    # fsl_mrs instead costs about 30% of the fitted SNR.
     if not args.no_phase:
-        supp = proc.phase_correct(supp, (2.95, 3.10))
+        if args.phase_method == 'tcr':
+            # Phase on the creatine peak alone. Safe here only because the
+            # converter has already put tCr at 3.027 +/- 0.001.
+            supp = proc.phase_correct(supp, (2.95, 3.10))
+        else:
+            supp = search_phase(supp)
 
     # Still no shift_to_reference -- see the module docstring.
     supp.save(str(output / 'metab.nii.gz'))
