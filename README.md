@@ -297,7 +297,8 @@ metabolite ratios (NAA+NAAG 1.25 vs 1.28, Glu 1.25 vs 1.26, GPC+PCh 0.188 vs
 0.188 against tCr) while LCModel reported much lower CRLBs (2–6% against
 10–30%) and fit sessions `fsl_mrs` could not. It models the macromolecule
 baseline internally, which the JSON basis conversion loses — the same
-limitation noted in `mrs/basis/README.md`.
+limitation noted in `mrs/basis/README.md` in the study tree (that path is
+outside this repo).
 
 ### Resting-State Metrics
 

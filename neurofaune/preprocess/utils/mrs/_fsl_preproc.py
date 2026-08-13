@@ -26,10 +26,20 @@ cross-checked against NAA rather than a 0.2 ppm window with no validation (see
 ``bruker_mrs.measure_metabolite_offset``).
 
 Phasing is kept, because leaving it to ``fsl_mrs`` as a free parameter costs
-about 30% of the fitted SNR. It is safe here for the reason the stock version
-isn't: with tCr already at 3.027 +/- 0.001, the peak the search lands on is the
-one intended, rather than whatever is tallest in a window the spectrum may have
-drifted out of.
+about 30% of the fitted SNR. ``--phase-method`` selects how:
+
+``search`` (default)
+    Scan zero-order phase over the full circle, scoring the whole metabolite
+    band for absorptive character. See :func:`search_phase` for why the band
+    and the full circle both matter.
+
+``tcr``
+    ``phase_correct`` on the creatine peak alone, over 2.95-3.10 ppm. Safe here
+    for the reason the stock version isn't: with tCr already at 3.027 +/- 0.001
+    the peak it lands on is the one intended, rather than whatever is tallest
+    in a window the spectrum may have drifted out of.
+
+``--no-phase`` skips the step entirely and leaves the phase to ``fsl_mrs``.
 """
 
 import argparse

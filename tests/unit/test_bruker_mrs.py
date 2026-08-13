@@ -17,6 +17,7 @@ from neurofaune.preprocess.utils.mrs.bruker_mrs import (
     measure_metabolite_offset,
     measure_water_ppm_offset,
     read_bruker_svs,
+    read_voxel_geometry,
     remove_group_delay,
     resolve_group_delay,
     select_svs_scan,
@@ -107,6 +108,7 @@ def press_scan(tmp_path):
         'PVM_VoxArrSize': np.array([[7.5, 2.0, 2.0]]),
         'PVM_VoxArrPosition': np.array([[0.0, 5.0, 0.0]]),
         'PVM_VoxArrGradOrient': np.eye(3).reshape(1, 3, 3),
+        'PVM_VoxelGeoCub': '(((1 0 0 0 1 0 0 0 1, 0 5 0, 0 0 0), 7.5 2 2), 1)',
         'PVM_RefScan': ref,
     })
     write_jcampdx(scan_dir / 'acqp', {'SFO1': SPEC_FREQ, 'ACQ_scan_name': '<PRESS_test>'})
@@ -283,6 +285,43 @@ class TestReader:
         (press_scan / 'rawdata.job0').unlink()
         with pytest.raises(ValueError, match='No usable FID data'):
             read_bruker_svs(press_scan)
+
+
+class TestVoxelGeometry:
+    """PVM_VoxArrPosition is in the voxel's rotated frame, not magnet coords."""
+
+    def _geocub(self, angle_deg, position):
+        a = np.deg2rad(angle_deg)
+        rotation = [np.cos(a), np.sin(a), 0, -np.sin(a), np.cos(a), 0, 0, 0, 1]
+        nums = ' '.join(f'{v:.10f}' for v in rotation)
+        pos = ' '.join(f'{v:.10f}' for v in position)
+        return {'PVM_VoxelGeoCub': f'((({nums}, {pos}, 0 0 0), 7.5 2 2), 1)'}
+
+    def test_reads_rotation_and_position(self):
+        rotation, position = read_voxel_geometry(self._geocub(10.0, (-1.1, 8.0, 1.4)))
+        assert position == pytest.approx([-1.1, 8.0, 1.4])
+        assert np.linalg.det(rotation) == pytest.approx(1.0)
+        assert np.degrees(np.arctan2(rotation[0, 1], rotation[0, 0])) == pytest.approx(10.0)
+
+    def test_position_differs_from_the_rotated_field(self):
+        # The regression this guards: R @ geocub_position is what Bruker
+        # reports as PVM_VoxArrPosition, so using that field directly
+        # misplaces the voxel in proportion to the rotation -- 1.7 mm at the
+        # 12 degrees of the most angled cuprizone session, and nothing at 0.
+        for angle, expected_error in ((0.0, 0.0), (10.0, 1.4)):
+            rotation, position = read_voxel_geometry(self._geocub(angle, (-1.1, 8.0, 1.4)))
+            rotated = rotation @ position
+            assert np.linalg.norm(rotated - position) == pytest.approx(
+                expected_error, abs=0.15)
+
+    def test_missing_geometry_object_is_an_error(self):
+        # There is no safe fallback: the alternative field is in the wrong frame.
+        with pytest.raises(KeyError, match='PVM_VoxelGeoCub'):
+            read_voxel_geometry({'PVM_VoxArrPosition': np.array([[0.0, 5.0, 0.0]])})
+
+    def test_unparseable_geometry_object_is_an_error(self):
+        with pytest.raises(ValueError, match='PVM_VoxelGeoCub'):
+            read_voxel_geometry({'PVM_VoxelGeoCub': '(((1 0 0)))'})
 
 
 class TestPpmReferencing:

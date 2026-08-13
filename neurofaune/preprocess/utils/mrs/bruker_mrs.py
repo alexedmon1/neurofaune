@@ -28,6 +28,7 @@ combination, per-shot frequency/phase alignment and bad-average rejection.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -311,6 +312,49 @@ def remove_group_delay(
     shape = [n_points] + [1] * (fid.ndim - 1)
     shifted = np.fft.ifft(np.fft.fft(fid, axis=0) * ramp.reshape(shape), axis=0)
     return shifted[: n_points - int(np.ceil(delay))]
+
+
+def read_voxel_geometry(params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    """Voxel rotation and centre in magnet coordinates.
+
+    ``PVM_VoxArrPosition`` is NOT in magnet coordinates: it is the centre
+    expressed in the voxel's own rotated frame. Bruker states the magnet-frame
+    position in the geometry object ``PVM_VoxelGeoCub`` instead, and the two
+    are related by the voxel rotation -- ``R @ geocub_position`` reproduces
+    ``PVM_VoxArrPosition`` exactly in all 52 cuprizone sessions.
+
+    Using ``PVM_VoxArrPosition`` directly therefore misplaces the voxel by an
+    amount proportional to how far it was rotated: nothing at 0 degrees, but
+    1.7 mm at the 12 degrees of the most angled session here. That is why the
+    error showed up first on the sessions whose voxel was tilted to follow the
+    hippocampus.
+
+    Returns
+    -------
+    (rotation, position)
+        ``rotation`` rows are the voxel's own axes in magnet coordinates, in
+        the same order as ``PVM_VoxArrSize``; ``position`` is the centre in mm.
+
+    Raises
+    ------
+    KeyError
+        If ``PVM_VoxelGeoCub`` is absent -- there is no safe fallback, since
+        the alternative field is in the wrong frame.
+    """
+    text = params.get('PVM_VoxelGeoCub')
+    if not text:
+        raise KeyError(
+            "PVM_VoxelGeoCub is missing; PVM_VoxArrPosition cannot be used in "
+            "its place because it is expressed in the voxel's rotated frame"
+        )
+    values = [float(v) for v in
+              re.findall(r'-?\d+\.?\d*(?:[eE][+-]?\d+)?', str(text).replace('\n', ' '))]
+    if len(values) < 12:
+        raise ValueError(f"Could not parse a rotation and position from "
+                         f"PVM_VoxelGeoCub: {str(text)[:120]!r}")
+    rotation = np.array(values[:9], dtype=float).reshape(3, 3)
+    position = np.array(values[9:12], dtype=float)
+    return rotation, position
 
 
 def _deinterleave(raw: np.ndarray) -> np.ndarray:
@@ -625,8 +669,7 @@ def read_bruker_svs(
         logger.debug("%s: applied %+.3f ppm reference correction", scan_dir, ppm_correction)
 
     voxel_size = np.atleast_2d(np.asarray(params['PVM_VoxArrSize'], dtype=float))[0]
-    voxel_position = np.atleast_2d(np.asarray(params['PVM_VoxArrPosition'], dtype=float))[0]
-    orientation = np.asarray(params['PVM_VoxArrGradOrient'], dtype=float).reshape(-1, 3, 3)[0]
+    orientation, voxel_position = read_voxel_geometry(params)
 
     return BrukerSVS(
         metab=metab,
