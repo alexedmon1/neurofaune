@@ -106,15 +106,37 @@ class TestAxisMapping:
         offset = magnet_to_index(make_geometry(transposition=1), point)[0] - centre
         assert offset[1] < 0
 
+    def test_slice_axis_is_reversed_when_transposed(self):
+        # Regression: this sign was wrong, and because it only shows on
+        # sessions whose voxel is prescribed away from isocentre it survived a
+        # visual check on one session whose slice offset was 0.26 mm. It
+        # displaced 36 of 52 cuprizone sessions by more than two slices.
+        point = np.array([[0.0, 0.0, 4.0]])  # +4 mm along slice
+        centre = np.array([MATRIX, MATRIX, N_SLICES]) / 2.0 - 0.5
+        offset = magnet_to_index(make_geometry(transposition=1), point)[0] - centre
+        assert offset[2] < 0
+
+    def test_a_sign_error_doubles_the_displacement(self):
+        # Why a near-isocentre session cannot validate the convention: the
+        # error is proportional to the offset, so it vanishes at zero.
+        centre = np.array([MATRIX, MATRIX, N_SLICES]) / 2.0 - 0.5
+        geometry = make_geometry(transposition=1)
+        near = magnet_to_index(geometry, np.array([[0.0, 0.0, 0.2]]))[0] - centre
+        far = magnet_to_index(geometry, np.array([[0.0, 0.0, 4.0]]))[0] - centre
+        assert abs(near[2]) < 0.5           # invisible near isocentre
+        assert abs(far[2]) > 4.0            # obvious away from it
+
     def test_unsupported_transposition_is_rejected(self):
         with pytest.raises(ValueError, match='RECO_transposition'):
             _ = make_geometry(transposition=3).shape
 
     def test_slice_offset_shifts_the_package(self):
-        # A 1.6 mm slice offset is two slices at 0.8 mm spacing.
+        # A 1.6 mm slice offset is two slices at 0.8 mm spacing. The direction
+        # follows the verified slice sign: shifting the package one way moves
+        # magnet isocentre the other way within the array.
         geometry = make_geometry(centre_offsets=(0.0, 0.0, 1.6))
         index = magnet_to_index(geometry, np.zeros((1, 3)))[0]
-        assert index[2] == pytest.approx(N_SLICES / 2.0 - 0.5 - 2.0)
+        assert index[2] == pytest.approx(N_SLICES / 2.0 - 0.5 + 2.0)
 
 
 class TestVoxelCorners:

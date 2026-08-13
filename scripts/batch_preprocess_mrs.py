@@ -335,6 +335,20 @@ def main() -> int:
         combined.to_csv(combined_file, index=False)
         print(f"Combined metabolite table: {combined_file}")
 
+    # Study-level QC index, regenerated from whatever is on disk so it stays
+    # correct after a partial or repeated run.
+    try:
+        from neurofaune.preprocess.qc.mrs import generate_mrs_index
+
+        index = generate_mrs_index(
+            args.mrs_root,
+            study_name=str(load_config(args.config).get('study', {}).get('name', '')) or None,
+        )
+        if index:
+            print(f"QC index: {index}")
+    except Exception as exc:
+        logger.warning("Could not write the QC index: %s", exc)
+
     with open(out_dir / f'mrs_batch_{stamp}.json', 'w') as handle:
         json.dump({
             'started': started.isoformat(),

@@ -45,16 +45,26 @@ logger = logging.getLogger(__name__)
 #: in ``RECO_transposition`` in ``pdata/1/reco``. Each entry gives, per array
 #: axis, which rps component it takes and with what sign.
 #:
-#: The ``1`` case is validated against data: with a transposition of 1, the
-#: whole-brain PRESS shim box of a CPZ session lands tightly around the brain
-#: and the hippocampal SVS voxel lands on the bilateral dorsal hippocampus,
-#: while the untransposed mapping puts both in the neck musculature. The ``0``
-#: case is the straightforward reading of the same convention. Any other value
-#: is rejected rather than guessed at -- a silently misplaced voxel would
-#: produce plausible-looking but wrong tissue fractions.
+#: The ``1`` mapping was established by regressing the position of each
+#: session's whole-brain PRESS shim box against the centre of mass of that
+#: session's brain mask, over 47 cuprizone sessions -- the shim box is placed
+#: on the brain by the operator, so the two must track. All three axes were
+#: scored against every (component, sign) candidate; phase/+1, read/-1 and
+#: slice/-1 won their axes.
+#:
+#: An earlier version had slice/+1, taken from a single session by eye. That
+#: session's slice offset was 0.26 mm, so the sign was unobservable in it, and
+#: the error only showed on sessions where the voxel was moved further from
+#: centre -- displacing them by twice their offset along the rostrocaudal axis.
+#: A one-session visual check cannot establish this; it needs the spread of
+#: prescriptions across a study.
+#:
+#: The ``0`` case is the straightforward reading of the same convention and is
+#: NOT verified against data. Any other value is rejected rather than guessed
+#: at: a misplaced voxel yields plausible-looking but wrong tissue fractions.
 _RECO_AXIS_MAP = {
-    0: ((0, 1.0), (1, 1.0), (2, 1.0)),   # array (read, phase, slice)
-    1: ((1, 1.0), (0, -1.0), (2, 1.0)),  # array (phase, -read, slice)
+    0: ((0, 1.0), (1, 1.0), (2, 1.0)),    # array (read, phase, slice)
+    1: ((1, 1.0), (0, -1.0), (2, -1.0)),  # array (phase, -read, -slice)
 }
 
 

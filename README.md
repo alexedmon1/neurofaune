@@ -236,21 +236,39 @@ command line.
 
 The `internal` chain drops `shift_to_reference` entirely — the converter has
 already referenced the spectrum on tCr, over a wide window cross-checked against
-NAA rather than a 0.2 ppm window with no validation. It **keeps** zero-order
-phasing, over a 2.95–3.10 ppm window: leaving the phase to `fsl_mrs` as a free
-parameter costs about 30% of the fitted SNR. The search is safe here for the
-reason the stock version isn't — with tCr already at 3.027 ± 0.001, the peak it
-lands on is the one intended, rather than whatever is tallest in a window the
-spectrum may have drifted out of. On a 13-session subset:
+NAA rather than a 0.2 ppm window with no validation.
+
+It **keeps** zero-order phasing, because leaving the phase to `fsl_mrs` as a
+free parameter costs about 30% of the fitted SNR. `spectroscopy.phase_method`
+selects how:
+
+- `search` (default) — scans zero-order phase over the full ±180° circle and
+  scores the whole 0.5–4.2 ppm region for absorptive character: positive real
+  signal, with a penalty on the negative lobes a wrong phase produces (coarse
+  1° pass, then 0.05°). Scoring the band rather than one peak avoids inheriting
+  that peak's noise. Covering the full circle is the point — `fsl_mrs` fits
+  phase by local descent from zero with concentrations bounded non-negative, so
+  a spectrum near 180° out cannot be recovered by the fit; the metabolites just
+  go to zero.
+- `tcr` — phases on the creatine peak alone, over a 2.95–3.10 ppm window. Safe
+  here for the reason the stock version isn't: with tCr already at 3.027 ±
+  0.001, the peak it lands on is the one intended, rather than whatever is
+  tallest in a window the spectrum may have drifted out of.
+
+Set `spectroscopy.phase_method: tcr` to choose the latter, or pass `--no-phase`
+to `_fsl_preproc` to skip phasing entirely and leave it to `fsl_mrs`.
+
+On a 13-session subset, comparing the stock chain against `internal` with
+phasing off and with `tcr`:
 
 | chain | sessions fit | median SNR |
 |---|---|---|
 | stock `fsl_mrs_preproc` | 7/13 | 18.6 |
-| `internal`, no phasing | 13/13 | 13.2 |
-| `internal` + tCr phasing | 13/13 | 15.6 |
+| `internal`, `--no-phase` | 13/13 | 13.2 |
+| `internal`, `phase_method: tcr` | 13/13 | 15.6 |
 
-Pass `--no-phase` to `_fsl_preproc` to restore the leave-it-to-`fsl_mrs`
-behaviour.
+`search` was added after this benchmark and is not represented in it; it is the
+default because it does not depend on any single peak being correctly placed.
 
 Sessions the fitter still declines are reported as `unquantifiable` rather than
 counted as failures, with their preprocessed data left on disk to inspect.
