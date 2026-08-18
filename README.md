@@ -340,10 +340,23 @@ FID, different implementation, so agreement validates the whole chain rather
 than just the fit. On CPZ sessions the two agreed closely on the major
 metabolite ratios (NAA+NAAG 1.25 vs 1.28, Glu 1.25 vs 1.26, GPC+PCh 0.188 vs
 0.188 against tCr) while LCModel reported much lower CRLBs (2–6% against
-10–30%) and fit sessions `fsl_mrs` could not. It models the macromolecule
-baseline internally, which the JSON basis conversion loses — the same
-limitation noted in `mrs/basis/README.md` in the study tree (that path is
-outside this repo).
+10–30%) and fit sessions `fsl_mrs` could not.
+
+The two are **not interchangeable within an analysis**, because they treat
+macromolecules differently. LCModel simulates 13 MM/lipid components at
+analysis time (`NSIMUL`) with priors on their shifts, widths and concentration
+ratios — these are never in the `.basis` file, so this is not something the
+JSON conversion loses. On cuprizone data it fits MM09 at 1.17 relative to tCr,
+comparable to NAA. FSL-MRS has no equivalent and pushes that signal into the
+polynomial baseline instead.
+
+Both adding FSL-MRS's default MM peaks and transcribing LCModel's `CHSIMU`
+parameters were tested and rejected — the first made agreement slightly worse,
+the second produced degenerate fits, because in LCModel the peaks only work
+alongside constraint machinery FSL-MRS cannot express. A correct MM basis has
+to be *measured*, with a metabolite-nulled acquisition; it cannot be simulated,
+since MM is not a spin system. The evidence is written up in
+`mrs/basis/README.md` in the study tree (outside this repo).
 
 ### Resting-State Metrics
 
