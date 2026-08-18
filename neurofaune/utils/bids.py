@@ -365,7 +365,8 @@ def _get(d: Dict, key: str):
 # --------------------------------------------------------------------------- #
 SCANS_TSV_COLS = ["filename", "scan_number", "method", "modality", "suffix", "status",
                   "n_slices", "matrix", "n_volumes", "n_repetitions", "n_echoes",
-                  "echo_times", "max_bvalue", "fov_mm", "voxel_size_mm", "shape", "zooms_mm"]
+                  "echo_times", "max_bvalue", "fov_mm", "voxel_size_mm", "shape", "zooms_mm",
+                  "source_session_dir"]
 
 
 def _fmt(v) -> str:
@@ -454,7 +455,25 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
             "shape": shape, "zooms_mm": zooms,
         })
 
+    # Record WHICH raw session produced this one. Anything that has to go back
+    # to the scanner parameters needs it -- spectroscopy reads its voxel and
+    # slice-package geometry from the raw method files, because the converter
+    # writes a scaled-identity affine and the NIfTI carries no scanner position.
+    #
+    # Re-deriving the directory from the session label is not safe: session
+    # relabelling is many-to-one. On this study 'Rat1Z_1a' maps to ses-1 while
+    # 'Rat1Z_1' -- an aborted acquisition -- still sits beside it on disk, so a
+    # label-based lookup finds the aborted scan and reads a real FID from the
+    # wrong session. Record it instead of recomputing it.
+    for r in rows:
+        r["source_session_dir"] = str(session_dir)
+
     ses_dir.mkdir(parents=True, exist_ok=True)
+    (ses_dir / f"sub-{sub}_ses-{ses}_source.json").write_text(json.dumps({
+        "SourceSessionDir": str(session_dir),
+        "Subject": f"sub-{sub}",
+        "Session": f"ses-{ses}",
+    }, indent=2))
     tsv = ses_dir / f"sub-{sub}_ses-{ses}_scans.tsv"
     with open(tsv, "w", newline="") as f:
         w = csv.writer(f, delimiter="\t")
