@@ -47,6 +47,7 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 2. Bruker → BIDS           → convert raw scanner data to standard format
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
 4. Other Modalities        → DTI, fMRI, MSME (each registers directly to template)
+   MR Spectroscopy         → reads raw Bruker, not BIDS; self-contained under mrs/
 5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo), MVPA
 6. Network (ROI-based)     → ROI extraction, CovNet, classification, regression, MCCA
 7. Reporting               → Unified dashboard across all analysis types
@@ -164,11 +165,15 @@ uv run python scripts/batch_preprocess_msme.py \
 
 ### MR Spectroscopy (single-voxel PRESS)
 
-Bruker PRESS to quantified metabolite concentrations via FSL-MRS: conversion,
-coil combination and shot alignment, basis-set fitting, water-scaled
-quantification, and QC.
+Bruker PRESS to quantified metabolite concentrations: conversion, coil
+combination, shot alignment, eddy-current correction, basis-set fitting,
+water-scaled quantification with measured tissue fractions, and QC.
 
 ```bash
+# see which PRESS scan is selected per session, and what anatomy is available
+uv run python scripts/batch_preprocess_mrs.py \
+    /path/to/bruker /path/to/study/mrs --config config.yaml --dry-run
+
 uv run python scripts/batch_preprocess_mrs.py \
     /path/to/bruker /path/to/study/mrs \
     --config config.yaml \
@@ -176,187 +181,172 @@ uv run python scripts/batch_preprocess_mrs.py \
     --basis /path/to/basis/gamma_press_te20_7t_v1 --n-jobs 4
 ```
 
-Spectroscopy reads the **raw Bruker tree**, not BIDS — `spec2nii` cannot read
-ParaVision 360.3 SVS data, so it is never converted during BIDS-ification and
-neurofaune ships its own reader. Outputs are likewise self-contained under the
-given root rather than under `derivatives/`:
+Two things differ from the other modalities. It reads the **raw Bruker tree
+rather than BIDS**, because `spec2nii` cannot read ParaVision 360.3 SVS data —
+PV-360 no longer writes the TopSpin-style `fid`, and `brukerapi` rejects the
+`rawdata.job0` that replaced it — so spectroscopy is never converted during
+BIDS-ification and neurofaune ships its own reader. And its outputs are
+**self-contained** rather than living under `derivatives/`:
 
 ```
-{study}/mrs/{sub}/{ses}/        NIfTI-MRS, voxel mask, preproc/, fit/, metabolites CSV
-                                plus *_fit-curves.csv and *_fit-metabolites.csv
-{study}/mrs/qc/{sub}/{ses}/     QC report, voxel-placement overlay, CRLB chart
-{study}/mrs/logs/               batch summaries and failure tracebacks
+{study}/mrs/{sub}/{ses}/      NIfTI-MRS, voxel mask, tissue fractions, preproc/, fit/
+                              {sub}_{ses}_metabolites.csv    tidy per-session results
+                              {sub}_{ses}_fit-curves.csv      ppm, data, fit, baseline, residual
+                              {sub}_{ses}_fit-metabolites.csv ppm + one column per metabolite
+{study}/mrs/qc/{sub}/{ses}/   QC report, voxel-placement overlay, CRLB chart
+{study}/mrs/logs/             batch summaries, failure tracebacks
+{study}/mrs/index.html        study QC index: sortable, links every report
 {study}/mrs/mrs_metabolites_long.csv    combined table for group analysis
 ```
 
-No conda environment is needed: FSL 6.0.7+ bundles `fsl_mrs` and the workflow
-shells out to it, as the other modalities do for BET and ANTs. Point
-`spectroscopy.fsl_bin` at another directory to use a different build.
+No conda environment is needed — FSL 6.0.7+ bundles `fsl_mrs`, and the workflow
+shells out to it as the other modalities do for BET and ANTs. Point
+`spectroscopy.fsl_bin` elsewhere to use a different build.
 
 `--derivatives` supplies the T2w segmentation used to measure the voxel's
-GM/WM/CSF content for absolute quantification. Without it the workflow falls
-back to assumed fractions, which affects water-scaled concentrations but not
-ratios to creatine.
+GM/WM/CSF content. Without it the workflow assumes fractions, which affects
+water-scaled concentrations but not ratios to creatine.
 
-**Voxel localisation, and why it is checked automatically.** The voxel is
-positioned from Bruker geometry parameters rather than from the NIfTI affine,
-because the converter writes a scaled-identity affine with no scanner geometry.
-Every axis assignment and sign in that reconstruction is a convention, and
-three of them were initially wrong. All three failed the same way: the error is
-proportional to some offset that is zero on most sessions, so the majority
-looked right and the minority looked like operator error.
+#### Configuration
 
-| Sign error | Invisible when | Sessions affected |
+| key | default | |
 |---|---|---|
-| `PVM_VoxArrPosition` is in the voxel's rotated frame, not magnet coords | the voxel is not rotated | up to 1.7 mm on the most angled |
-| slice-axis direction | the voxel sits at isocentre | 36 of 52, by >2 slices |
-| `PVM_SPackArrSliceOffset` sign | the slice package is not offset | 12 of 53, by up to 5 mm |
+| `basis` | — | FSL-MRS basis directory (required) |
+| `fsl_bin` | `$FSLDIR/bin` | where to find `fsl_mrs` |
+| `prefer_raw` | `true` | read `rawdata.job0`, keeping coils and averages |
+| `preproc` | `internal` | or `fsl_mrs_preproc` for the stock chain |
+| `align_window` | `32` | shots per alignment window; `0` disables |
+| `remove_outliers` | `true` | drop averages unlike the rest |
+| `remove_water` | `false` | HLSVD; also applied automatically as a retry |
+| `phase_method` | `search` | or `tcr` |
+| `fitter` | `fsl_mrs` | or `lcmodel` |
+| `lcmodel.basis` / `.bin` / `.license` | — | LCModel `.basis` file, binary, licence |
+| `export_curves` | `true` | write plottable CSVs alongside the HTML report |
+| `ppmlim` | `[0.2, 4.2]` | fit range |
+| `baseline` | `poly,4` | higher order compensates for a basis without MM |
+| `metab_groups` | `["NAA"]` | separate lineshape groups |
+| `free_shift` | `true` | let the fit find peak positions |
+| `internal_ref` | `["Cr","PCr"]` | falls back to NAA if it fits to zero |
+| `combine` | NAA+NAAG etc. | metabolites reported as sums |
+| `target_structure` | `null` | e.g. `hippocamp` — enables the placement check |
+| `atlas_labels` | SIGMA labels CSV | label table for that check |
 
-The systematic fix is to stop reconstructing the mapping at all. Bruker writes
-the DICOM-equivalent geometry in `pdata/*/visu_pars` — `VisuCoreOrientation`,
-`VisuCorePosition`, `VisuCoreExtent` — which defines the index-to-world affine
-outright, signs and axis order included. Locating the voxel is then affine
-composition, exactly as in human MRS. That is now the default path, and it is
-both more principled and slightly better: 71.4% mean hippocampal overlap with
-50 of 50 sessions on target, against 70.8% and 49 of 50 for the reconstructed
-mapping, which remains only as a fallback when `visu_pars` is unusable.
+#### Preprocessing
+
+`spectroscopy.preproc` selects `internal` (default) or `fsl_mrs_preproc`. Both
+do coil combination, windowed alignment, outlier removal, averaging and
+eddy-current correction; they differ in how they finish.
+
+The stock pipeline ends with `shift_to_reference` and `phase_correct`, which
+both take `argmax(|spectrum|)` in a hardcoded 2.9–3.1 ppm window and move that
+point to 3.027 ppm. When the wrong point wins, the spectrum is displaced and
+arbitrarily phased and nothing can be fit. On cuprizone data that cost 6–7 of
+53 sessions, and the window is not adjustable from the command line.
+
+The `internal` chain drops `shift_to_reference` — the converter has already
+referenced the spectrum (below) — but **keeps** zero-order phasing, since
+leaving phase to `fsl_mrs` as a free parameter costs about 30% of the fitted
+SNR. `phase_method` selects how:
+
+- `search` (default) scans the full ±180° circle, scoring the whole 0.5–4.2 ppm
+  band for absorptive character. Covering the whole circle matters: `fsl_mrs`
+  fits phase by local descent from zero with concentrations bounded
+  non-negative, so a spectrum near 180° out cannot be recovered — the
+  metabolites simply go to zero. Against phasing on tCr alone it was equal or
+  better on all 53 sessions, six improved by 16–107%.
+- `tcr` phases on the creatine peak over 2.95–3.10 ppm.
+
+A session the fitter declines is retried with HLSVD water removal, then
+reported as `unquantifiable` rather than counted as a failure, with its
+preprocessed data left on disk. HLSVD is not the default because it costs SNR
+on sessions that do not need it.
+
+#### Frequency referencing
+
+`fsl_mrs_preproc`'s window search assumes tCr is already near 3.027 ppm, and
+nothing upstream guarantees that — its alignment step aligns the shots to each
+other, not to an absolute chemical shift. So the converter references the
+spectrum itself: water to its true shift from the unsuppressed reference, then
+tCr onto 3.027. Across 52 sessions that moved tCr from 2.939 ± 0.012 — worst
+case 0.019 ppm from falling out of the window — to 3.0269 ± 0.0007.
+
+The tCr search window is deliberately wide (2.7–3.4 ppm), which is safe because
+the result is cross-checked against NAA: the two singlets are a fixed 1.019 ppm
+apart, so a misidentified peak is caught and the session falls back to water
+referencing. Measured separation was 1.0212 ± 0.0010 with no failures.
+
+#### Voxel localisation
+
+Locating the voxel on the T2w is affine composition, as in human MRS. Bruker
+writes the DICOM-equivalent geometry in `pdata/*/visu_pars`
+(`VisuCoreOrientation`, `VisuCorePosition`, `VisuCoreExtent`), which defines
+the index-to-world affine outright — signs and axis order included. A
+parameter-reconstructed mapping survives only as a fallback when `visu_pars` is
+unusable.
 
 One piece is irreducible. A PRESS scan's `visu_pars` has `VisuCoreDim = 1` and
 no spatial fields, so the voxel exists only in gradient coordinates while
 images are in subject coordinates. The two differ by a signed permutation set
-by `VisuSubjectPosition`, and that cannot be recovered from the files: with a
-square FOV and the package at isocentre — 47 of 50 sessions here — every
-candidate reproduces the geometry equally well. It is therefore calibrated once
-per subject position and validated (`Head_Supine` → `diag(1, -1, -1)`, 71.2%
-against 32.7% for the next best), cross-checked per scan by requiring the
-gradient axes to align with the image axes, and an unknown subject position
-raises rather than guesses. One constant tied to a documented parameter, rather
-than three scattered sign choices.
+by `VisuSubjectPosition`, and it cannot be recovered from the files: with a
+square FOV and the slice package at isocentre — 47 of 50 cuprizone sessions —
+every candidate rotation reproduces the geometry equally well. It is therefore
+calibrated once per subject position and validated (`Head_Supine` →
+`diag(1,-1,-1)`, 71.2% mean hippocampal overlap against 32.7% for the next best
+candidate), cross-checked per scan by requiring the gradient axes to align with
+the image axes, and an unknown subject position raises rather than guesses.
 
-So the pipeline no longer relies on anyone eyeballing an overlay. Set
-`spectroscopy.target_structure` (a substring matched against the atlas label
-table, e.g. `hippocamp`) and every session is scored against the structure the
-voxel was aimed at, with QC flagging anything below
-`min_target_overlap`. On the cuprizone study that runs at 66–81% per session.
+**Check placement automatically.** Set `spectroscopy.target_structure` (a
+substring matched against the atlas label table, e.g. `hippocamp`) and every
+session is scored against the structure the voxel was aimed at, using the
+parcellation anatomical preprocessing warps into subject space. The score lands
+in the QC metrics, gates `overall_pass`, and gets a column in the study index.
 
-`read_anat_geometry` additionally warns when an acquisition departs from what
-has been validated — non-axial slices, 3D acquisitions, multiple slice
-packages, a non-zero phase offset, or an unvalidated `RECO_transposition`.
-Those are unproven rather than known-wrong, but they mean the placement should
-be verified against anatomy before the tissue fractions are trusted.
+This is worth enabling on every study, because a wrong geometry convention is
+otherwise silent: the spectrum still fits and the concentrations still look
+physiological — only the tissue fractions are wrong. Three sign errors were
+found this way during development, each invisible on the majority of sessions
+because the error was proportional to an offset that is zero for most
+acquisitions (an unrotated voxel, a voxel at isocentre, an un-offset slice
+package). A spot check on one session cannot find those; a score across a study
+can. `read_anat_geometry` additionally warns on acquisitions outside what has
+been validated — non-axial slices, 3D acquisitions, multiple slice packages, a
+non-zero phase offset, or an unvalidated `RECO_transposition`.
 
-Start with `--dry-run` to see which PRESS scan is selected per session (sessions
-typically hold unsuppressed shim prescans alongside the real acquisition) and
-how many sessions have a segmentation available.
+#### Fitting, figures, and the macromolecule caveat
 
-**Frequency referencing.** `fsl_mrs_preproc` shifts and phases the spectrum on
-whatever is strongest in a hardcoded 2.9–3.1 ppm window, so total creatine has
-to already be near 3.027 before it runs. Its own alignment step doesn't provide
-that — it aligns the individual shots to each other, not to an absolute
-chemical shift. So the converter references the spectrum itself, in two stages:
-water to its true shift from the unsuppressed reference, then tCr onto 3.027.
-Across 52 CPZ sessions that moved tCr from 2.939 ± 0.012 (worst case 0.019 ppm
-from falling out of the window) to 3.0269 ± 0.0007.
+`spectroscopy.fitter` selects `fsl_mrs` (default) or `lcmodel`. LCModel needs
+`spectroscopy.lcmodel.basis` — a `.basis` file, not the JSON directory
+`spectroscopy.basis` points at.
 
-The tCr search window is deliberately wide (2.7–3.4), which is safe because the
-result is cross-checked against NAA: the two singlets are a fixed 1.019 ppm
-apart, so a misidentified peak is caught and the session falls back to water
-referencing. Measured separation across those sessions was 1.0212 ± 0.0010,
-with no failures.
+`fsl_mrs` writes an interactive HTML report and a summary PNG but no fit curves
+as data, so `export_curves` additionally writes `*_fit-curves.csv` and
+`*_fit-metabolites.csv`: real-valued spectra over the fit range, so a figure
+with the fit, baseline, residual and individual metabolite traces is a plain
+matplotlib call over two CSVs.
 
-**Preprocessing chain.** `spectroscopy.preproc` selects between:
+LCModel is worth running as an independent check — same basis, same
+preprocessed FID, different implementation, so agreement validates the whole
+chain rather than just the fit. On cuprizone data the two agreed closely on the
+major ratios (NAA+NAAG 1.25 vs 1.28, Glu 1.25 vs 1.26, GPC+PCh 0.188 vs 0.188
+against tCr) while LCModel reported lower CRLBs and fit sessions `fsl_mrs`
+could not.
 
-- `internal` (default) — coil combination, windowed alignment, outlier removal,
-  averaging and eddy-current correction, driven step by step through
-  `nifti_mrs_proc`.
-- `fsl_mrs_preproc` — the stock FSL pipeline, for comparison.
-
-They run the same steps and differ only in how they finish. The stock pipeline
-ends with `shift_to_reference` and `phase_correct`, both of which take
-`argmax(|spectrum|)` in that same hardcoded 2.9–3.1 ppm window and move it to
-3.027. When the wrong point wins, the spectrum is displaced in ppm and given an
-arbitrary global phase, and no metabolite can be fit afterwards. On cuprizone
-data that cost 6–7 of 53 sessions, and the window is not adjustable from the
-command line.
-
-The `internal` chain drops `shift_to_reference` entirely — the converter has
-already referenced the spectrum on tCr, over a wide window cross-checked against
-NAA rather than a 0.2 ppm window with no validation.
-
-It **keeps** zero-order phasing, because leaving the phase to `fsl_mrs` as a
-free parameter costs about 30% of the fitted SNR. `spectroscopy.phase_method`
-selects how:
-
-- `search` (default) — scans zero-order phase over the full ±180° circle and
-  scores the whole 0.5–4.2 ppm region for absorptive character: positive real
-  signal, with a penalty on the negative lobes a wrong phase produces (coarse
-  1° pass, then 0.05°). Scoring the band rather than one peak avoids inheriting
-  that peak's noise. Covering the full circle is the point — `fsl_mrs` fits
-  phase by local descent from zero with concentrations bounded non-negative, so
-  a spectrum near 180° out cannot be recovered by the fit; the metabolites just
-  go to zero.
-- `tcr` — phases on the creatine peak alone, over a 2.95–3.10 ppm window. Safe
-  here for the reason the stock version isn't: with tCr already at 3.027 ±
-  0.001, the peak it lands on is the one intended, rather than whatever is
-  tallest in a window the spectrum may have drifted out of.
-
-Set `spectroscopy.phase_method: tcr` to choose the latter, or pass `--no-phase`
-to `_fsl_preproc` to skip phasing entirely and leave it to `fsl_mrs`.
-
-On a 13-session subset, comparing the stock chain against `internal` with
-phasing off and with `tcr`:
-
-| chain | sessions fit | median SNR |
-|---|---|---|
-| stock `fsl_mrs_preproc` | 7/13 | 18.6 |
-| `internal`, `--no-phase` | 13/13 | 13.2 |
-| `internal`, `phase_method: tcr` | 13/13 | 15.6 |
-
-`search` was added after this benchmark and is not represented in it; it is the
-default because it does not depend on any single peak being correctly placed.
-
-Sessions the fitter still declines are reported as `unquantifiable` rather than
-counted as failures, with their preprocessed data left on disk to inspect.
-
-**Figures.** `fsl_mrs` writes an interactive HTML report and a summary PNG but
-no fit curves as data, so building a custom or group-level figure would mean
-scraping the HTML. `spectroscopy.export_curves` (on by default) additionally
-writes per session:
-
-```
-{sub}_{ses}_fit-curves.csv       ppm, data, fit, baseline, residual
-{sub}_{ses}_fit-metabolites.csv  ppm plus one column per basis metabolite
-```
-
-Real-valued spectra over the fit range, ready to plot directly.
-
-**Fitter.** `spectroscopy.fitter` selects `fsl_mrs` (default) or `lcmodel`.
-LCModel needs `spectroscopy.lcmodel.basis` — an LCModel `.basis` file, not the
-JSON directory `spectroscopy.basis` points at; the two fitters take different
-formats of the same basis.
-
-LCModel is worth running as an independent check: same basis, same preprocessed
-FID, different implementation, so agreement validates the whole chain rather
-than just the fit. On CPZ sessions the two agreed closely on the major
-metabolite ratios (NAA+NAAG 1.25 vs 1.28, Glu 1.25 vs 1.26, GPC+PCh 0.188 vs
-0.188 against tCr) while LCModel reported much lower CRLBs (2–6% against
-10–30%) and fit sessions `fsl_mrs` could not.
-
-The two are **not interchangeable within an analysis**, because they treat
-macromolecules differently. LCModel simulates 13 MM/lipid components at
-analysis time (`NSIMUL`) with priors on their shifts, widths and concentration
-ratios — these are never in the `.basis` file, so this is not something the
-JSON conversion loses. On cuprizone data it fits MM09 at 1.17 relative to tCr,
+They are **not interchangeable within an analysis**, because they treat
+macromolecules differently. LCModel simulates 13 MM/lipid components at analysis
+time (`NSIMUL`) with priors on their shifts, widths and concentration ratios;
+these are never in the `.basis` file, so this is not something the JSON
+conversion loses. On cuprizone data it fits MM09 at 1.17 relative to tCr,
 comparable to NAA. FSL-MRS has no equivalent and pushes that signal into the
-polynomial baseline instead.
+polynomial baseline.
 
 Both adding FSL-MRS's default MM peaks and transcribing LCModel's `CHSIMU`
 parameters were tested and rejected — the first made agreement slightly worse,
 the second produced degenerate fits, because in LCModel the peaks only work
 alongside constraint machinery FSL-MRS cannot express. A correct MM basis has
 to be *measured*, with a metabolite-nulled acquisition; it cannot be simulated,
-since MM is not a spin system. The evidence is written up in
-`mrs/basis/README.md` in the study tree (outside this repo).
+since MM is not a spin system. Until then, treat metabolites under the MM
+resonances with more caution than NAA, tCr, Glu and Ins. The evidence is written
+up in `mrs/basis/README.md` in the study tree (outside this repo).
 
 ### Resting-State Metrics
 
