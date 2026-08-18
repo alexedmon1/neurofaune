@@ -196,9 +196,33 @@ shells out to it, as the other modalities do for BET and ANTs. Point
 `--derivatives` supplies the T2w segmentation used to measure the voxel's
 GM/WM/CSF content for absolute quantification. Without it the workflow falls
 back to assumed fractions, which affects water-scaled concentrations but not
-ratios to creatine. Always check the voxel-placement overlay in the QC report —
-the voxel is positioned from Bruker geometry parameters, because the converted
-anatomical NIfTI carries a scaled-identity affine with no scanner geometry.
+ratios to creatine.
+
+**Voxel localisation, and why it is checked automatically.** The voxel is
+positioned from Bruker geometry parameters rather than from the NIfTI affine,
+because the converter writes a scaled-identity affine with no scanner geometry.
+Every axis assignment and sign in that reconstruction is a convention, and
+three of them were initially wrong. All three failed the same way: the error is
+proportional to some offset that is zero on most sessions, so the majority
+looked right and the minority looked like operator error.
+
+| Sign error | Invisible when | Sessions affected |
+|---|---|---|
+| `PVM_VoxArrPosition` is in the voxel's rotated frame, not magnet coords | the voxel is not rotated | up to 1.7 mm on the most angled |
+| slice-axis direction | the voxel sits at isocentre | 36 of 52, by >2 slices |
+| `PVM_SPackArrSliceOffset` sign | the slice package is not offset | 12 of 53, by up to 5 mm |
+
+So the pipeline no longer relies on anyone eyeballing an overlay. Set
+`spectroscopy.target_structure` (a substring matched against the atlas label
+table, e.g. `hippocamp`) and every session is scored against the structure the
+voxel was aimed at, with QC flagging anything below
+`min_target_overlap`. On the cuprizone study that runs at 66–81% per session.
+
+`read_anat_geometry` additionally warns when an acquisition departs from what
+has been validated — non-axial slices, 3D acquisitions, multiple slice
+packages, a non-zero phase offset, or an unvalidated `RECO_transposition`.
+Those are unproven rather than known-wrong, but they mean the placement should
+be verified against anatomy before the tissue fractions are trusted.
 
 Start with `--dry-run` to see which PRESS scan is selected per session (sessions
 typically hold unsuppressed shim prescans alongside the real acquisition) and

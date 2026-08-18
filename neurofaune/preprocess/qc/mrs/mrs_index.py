@@ -32,6 +32,7 @@ _COLUMNS: List[Tuple[str, str, str]] = [
     ('snr', 'SNR', 'low'),
     ('fwhm_hz', 'Linewidth (Hz)', 'high'),
     ('voxel_coverage', 'Voxel coverage', 'low'),
+    ('target_overlap', 'On target', 'low'),
 ]
 
 
@@ -117,6 +118,9 @@ def _summary(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
         'n_water_removed': sum(1 for s in sessions if s.get('water_removed')),
         'snr': spread('snr'),
         'fwhm_hz': spread('fwhm_hz'),
+        'target_overlap': spread('target_overlap'),
+        'n_on_target': sum(1 for s in sessions
+                           if s.get('placement_pass') is not False),
     }
 
 
@@ -128,10 +132,12 @@ def _cell(record: Dict[str, Any], key: str, direction: str,
         return '<td class="none">-</td>'
 
     limit = thresholds.get({'snr': 'min_snr', 'fwhm_hz': 'max_fwhm_hz',
-                            'voxel_coverage': 'min_voxel_coverage'}[key])
+                            'voxel_coverage': 'min_voxel_coverage',
+                            'target_overlap': 'min_target_overlap'}[key])
     bad = limit is not None and (
         (value < limit) if direction == 'low' else (value > limit))
-    shown = f'{value * 100:.0f}%' if key == 'voxel_coverage' else f'{value:.1f}'
+    shown = (f'{value * 100:.0f}%'
+             if key in ('voxel_coverage', 'target_overlap') else f'{value:.1f}')
     css = ' class="flag"' if bad else ''
     return f'<td data-v="{value}"{css}>{shown}</td>'
 
@@ -183,6 +189,8 @@ def generate_mrs_index(
             flags.append('HLSVD retry')
         if record.get('source') == 'bruker_averaged':
             flags.append('pre-averaged data')
+        if record.get('placement_pass') is False:
+            flags.append('voxel off target -- check the geometry')
         note = f'<span class="warn">{"; ".join(flags)}</span>' if flags else ''
         status = ('<span class="ok">PASS</span>' if record.get('overall_pass')
                   else '<span class="flag">REVIEW</span>')
@@ -236,6 +244,9 @@ def generate_mrs_index(
  <div class="card"><h3>Passing QC</h3><div class="big">{stats['n_pass']}/{stats['n_sessions']}</div></div>
  <div class="card"><h3>SNR</h3><div class="big">{spread_text('snr')}</div></div>
  <div class="card"><h3>Linewidth</h3><div class="big">{spread_text('fwhm_hz', ' Hz')}</div></div>
+ <div class="card"><h3>Voxel on target</h3>
+  <div class="big">{stats['n_on_target']}/{stats['n_sessions']}</div>
+  <div class="sub">overlap with the intended structure</div></div>
  <div class="card"><h3>Measured tissue fractions</h3>
   <div class="big">{stats['n_measured_fractions']}/{stats['n_sessions']}</div>
   <div class="sub">rest use assumed values</div></div>

@@ -36,13 +36,14 @@ import logging
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import nibabel as nib
 import numpy as np
 
 from neurofaune.preprocess.utils.mrs.bruker_mrs import BrukerSVS
 from neurofaune.preprocess.utils.mrs.bruker_params import read_scan_params
+from neurofaune.preprocess.utils.mrs.geometry_support import log_geometry_support
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,11 @@ def read_anat_geometry(scan_dir: Path) -> AnatGeometry:
         params.get('PVM_SPackArrSliceDistance', params.get('PVM_SliceThick', 1.0))
     )[0])
 
+    transposition = _read_transposition(scan_dir)
+    # Warn loudly rather than silently extrapolating to acquisition geometry
+    # that has never been checked against anatomy.
+    log_geometry_support(params, transposition, scan=str(scan_dir))
+
     return AnatGeometry(
         grad_orient=grad_orient,
         centre=centre,
@@ -177,8 +183,85 @@ def read_anat_geometry(scan_dir: Path) -> AnatGeometry:
         matrix=matrix,
         n_slices=n_slices,
         slice_distance=slice_distance,
-        transposition=_read_transposition(scan_dir),
+        transposition=transposition,
     )
+
+
+def target_overlap(
+    mask: np.ndarray,
+    parcellation: Path,
+    labels: Sequence[int],
+) -> Dict[str, float]:
+    """Fraction of the SVS voxel falling in a set of parcellation labels.
+
+    This is the check that makes a misplaced voxel visible. Every geometry
+    convention here is reconstructed from Bruker parameters by hand, and three
+    signs in that reconstruction were wrong at various points without any
+    downstream symptom -- the spectra fit, the concentrations looked
+    physiological, and only the tissue fractions were quietly wrong. Scoring
+    the mask against the structure the voxel was aimed at turns that into a
+    number that can be thresholded.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Fractional voxel mask on the anatomical grid.
+    parcellation : Path
+        An atlas parcellation resampled into the same space, e.g. the
+        ``atlas-SIGMA_dseg`` written by anatomical preprocessing.
+    labels : sequence of int
+        Label values making up the target structure.
+
+    Returns
+    -------
+    dict
+        ``overlap`` -- share of the voxel inside the target, and
+        ``target_captured`` -- share of the target inside the voxel, which
+        distinguishes "voxel is off the structure" from "structure is much
+        larger than the voxel".
+
+    Raises
+    ------
+    ValueError
+        If the parcellation does not match the mask's grid.
+    """
+    seg = np.round(nib.load(str(parcellation)).get_fdata()).astype(int)
+    if seg.shape != mask.shape:
+        raise ValueError(
+            f'{parcellation} has shape {seg.shape}, expected {mask.shape}; the '
+            f'parcellation must be in the same space as the anatomical image'
+        )
+    target = np.isin(seg, list(labels))
+    weights = np.asarray(mask, dtype=float)
+    total = weights.sum()
+    if total <= 0 or not target.any():
+        return {'overlap': 0.0, 'target_captured': 0.0}
+    return {
+        'overlap': float((weights * target).sum() / total),
+        'target_captured': float((weights * target).sum() / target.sum()),
+    }
+
+
+def labels_for_structure(labels_csv: Path, pattern: str) -> List[int]:
+    """Atlas label values whose description matches ``pattern``.
+
+    Matched case-insensitively against every descriptive column, so
+    ``'hippocamp'`` finds the SIGMA "Hippocampus Fomation" system regardless of
+    which column it lives in -- or its spelling.
+    """
+    import csv
+
+    matches: List[int] = []
+    with open(labels_csv, newline='') as handle:
+        for row in csv.DictReader(handle):
+            haystack = ' '.join(str(v) for k, v in row.items()
+                                if k and k.lower() != 'labels')
+            if pattern.lower() in haystack.lower():
+                try:
+                    matches.append(int(row['Labels']))
+                except (KeyError, TypeError, ValueError):
+                    continue
+    return matches
 
 
 def _read_transposition(scan_dir: Path) -> int:

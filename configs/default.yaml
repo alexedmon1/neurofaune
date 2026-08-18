@@ -487,6 +487,15 @@ spectroscopy:
     - ["GPC", "PCh"]
     - ["Glu", "Gln"]
 
+  # Automatic placement check. The voxel is located from Bruker geometry
+  # parameters, and a wrong convention there is silent -- the spectrum still
+  # fits and the concentrations still look physiological, only the tissue
+  # fractions are wrong. Scoring the voxel against the structure it was aimed
+  # at makes that visible. target_structure is matched as a substring against
+  # the atlas label table; leave null to skip the check.
+  target_structure: null         # e.g. "hippocamp"
+  atlas_labels: "${atlas.base_path}/SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
+
   # QC settings
   run_qc: true
 

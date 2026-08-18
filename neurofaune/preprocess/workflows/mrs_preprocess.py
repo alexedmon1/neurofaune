@@ -159,6 +159,50 @@ def convert_svs(
     return outputs
 
 
+def check_voxel_placement(
+    mask_file: Optional[Path],
+    parcellation: Optional[Path],
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Score the voxel against the structure it was aimed at.
+
+    Placement is reconstructed from Bruker geometry parameters, and a wrong
+    convention there produces a plausible-looking result: the spectrum still
+    fits and the concentrations still look physiological, only the tissue
+    fractions are quietly wrong. Measuring overlap with the intended structure
+    turns that into a number QC can flag.
+
+    Needs ``spectroscopy.target_structure`` (a substring matched against the
+    atlas label table, e.g. ``hippocamp``) and a parcellation in the
+    anatomical's space. Returns an empty dict when either is unavailable, since
+    this is a check rather than a requirement.
+    """
+    config = config or {}
+    pattern = get_config_value(config, 'spectroscopy.target_structure', default=None)
+    labels_csv = get_config_value(config, 'spectroscopy.atlas_labels', default=None)
+    if not (pattern and labels_csv and mask_file and parcellation):
+        return {}
+    if not (Path(labels_csv).exists() and Path(parcellation).exists()):
+        return {}
+
+    from neurofaune.preprocess.utils.mrs.voxel_geometry import (
+        labels_for_structure,
+        target_overlap,
+    )
+
+    labels = labels_for_structure(Path(labels_csv), str(pattern))
+    if not labels:
+        logger.warning("No atlas labels matched %r in %s", pattern, labels_csv)
+        return {}
+
+    import nibabel as nib
+
+    mask = nib.load(str(mask_file)).get_fdata()
+    result = target_overlap(mask, Path(parcellation), labels)
+    result['target_structure'] = str(pattern)
+    return result
+
+
 def measure_tissue_fractions(
     svs: BrukerSVS,
     session_dir: Path,
@@ -591,6 +635,18 @@ def run_mrs_preprocessing(
     else:
         logger.info("No anatomical segmentation supplied; using default tissue fractions")
 
+    placement = check_voxel_placement(
+        fractions.get('mask'),
+        (Path(anat_image).parent / f'{subject}_{session}_atlas-SIGMA_dseg.nii.gz')
+        if anat_image else None,
+        config,
+    )
+    if placement:
+        logger.info(
+            "Voxel placement: %.0f%% of the voxel is in %s",
+            100 * placement['overlap'], placement['target_structure'],
+        )
+
     write_tissue_fraction_json(fractions, mrs_dir / f'{subject}_{session}_tissue-frac.json')
 
     # --- preprocess and fit ----------------------------------------------
@@ -697,6 +753,7 @@ def run_mrs_preprocessing(
         'water_removed': water_removed,
         'internal_ref': fit.get('internal_ref', DEFAULT_INTERNAL_REF),
         'tissue_fractions': {k: v for k, v in fractions.items() if k != 'mask'},
+        'placement': placement,
     }
     with open(mrs_dir / f'{subject}_{session}_mrs.json', 'w') as handle:
         json.dump(metadata, handle, indent=2, default=str)

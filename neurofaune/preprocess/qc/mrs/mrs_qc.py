@@ -30,6 +30,12 @@ QC_THRESHOLDS = {
     'max_fwhm_hz': 20.0,
     'max_crlb_percent': 20.0,
     'min_voxel_coverage': 0.9,
+    # Share of the voxel that must fall inside the structure it was aimed at.
+    # Not a tight bound -- a 7.5x2x2 mm box over a thin curved structure like
+    # hippocampus reaches about 70% at best -- but low enough to sit well clear
+    # of that and high enough to catch a voxel placed on the wrong structure,
+    # which is what a wrong geometry convention produces.
+    'min_target_overlap': 0.35,
 }
 
 #: Metabolites whose concentrations are usually reported, used for the
@@ -154,6 +160,14 @@ def _html_report(
     fractions = metadata.get('tissue_fractions', {})
     measured = 'measured from T2w' if fractions.get('measured') else 'assumed'
 
+    placement_row = ''
+    if 'target_overlap' in metrics:
+        placement_row = (
+            f"<tr><td>Voxel on target ({metrics.get('target_structure', '')})</td>"
+            f"<td>{metrics['target_overlap'] * 100:.0f}%</td>"
+            f"<td>&ge; {QC_THRESHOLDS['min_target_overlap'] * 100:.0f}%</td>"
+            f"<td>{_flag(metrics['placement_pass'])}</td></tr>")
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MRS QC - {subject} {session}</title>
 <style>
@@ -182,6 +196,7 @@ def _html_report(
  <tr><td>Metabolites with CRLB &le; {QC_THRESHOLDS['max_crlb_percent']:.0f}%</td>
      <td>{metrics['n_metabolites_reliable']} / {metrics['n_metabolites']}</td>
      <td>-</td><td>-</td></tr>
+ {placement_row}
  <tr><td>Voxel coverage by anatomical slab</td>
      <td>{metrics['voxel_coverage'] * 100:.0f}%</td>
      <td>&ge; {QC_THRESHOLDS['min_voxel_coverage'] * 100:.0f}%</td>
@@ -257,6 +272,13 @@ def generate_mrs_qc_report(
     metrics: Dict[str, Any] = _reference_metrics(quality)
     reliable = crlb.dropna() <= QC_THRESHOLDS['max_crlb_percent']
     coverage = float(metadata.get('tissue_fractions', {}).get('voxel_volume_ratio', 1.0))
+    placement = metadata.get('placement') or {}
+    if placement:
+        metrics['target_structure'] = placement.get('target_structure', '')
+        metrics['target_overlap'] = float(placement.get('overlap', 0.0))
+        metrics['placement_pass'] = bool(
+            metrics['target_overlap'] >= QC_THRESHOLDS['min_target_overlap'])
+
     metrics.update({
         'n_metabolites': int(len(crlb.dropna())),
         'n_metabolites_reliable': int(reliable.sum()),
@@ -267,6 +289,7 @@ def generate_mrs_qc_report(
     })
     metrics['overall_pass'] = bool(
         metrics['snr_pass'] and metrics['fwhm_pass'] and metrics['coverage_pass']
+        and metrics.get('placement_pass', True)
     )
 
     figures: List[Optional[Path]] = []
