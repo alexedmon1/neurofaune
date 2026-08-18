@@ -17,10 +17,19 @@ Bruker geometry conventions used here
 -------------------------------------
 ``PVM_SPackArrGradOrient`` is a 3x3 whose rows are the read, phase and slice
 unit vectors expressed in magnet coordinates. The slice-package centre in
-magnet coordinates is the read/phase/slice offsets projected back through it
-(verified against the redundant position field inside ``PVM_SliceGeo``).
-``PVM_VoxArrGradOrient`` plays the same role for the spectroscopy voxel, and
-``PVM_VoxArrPosition`` gives its centre directly in magnet coordinates.
+magnet coordinates is the read/phase/slice offsets projected back through it,
+with the slice offset negated -- see :func:`read_anat_geometry`.
+
+For the spectroscopy voxel, do NOT use ``PVM_VoxArrPosition``: it is the centre
+in the voxel's own rotated frame, not in magnet coordinates. The magnet-frame
+position and rotation come from the geometry object ``PVM_VoxelGeoCub``
+instead; see :func:`neurofaune.preprocess.utils.mrs.bruker_mrs.read_voxel_geometry`.
+
+Every sign in this module was established by scoring candidates against the
+SIGMA parcellation warped into subject space across 50 sessions, not by
+inspecting one session. Three separate sign errors survived visual checks here
+because each is invisible on sessions whose corresponding offset is near zero,
+and most sessions are.
 """
 
 import logging
@@ -138,10 +147,18 @@ def read_anat_geometry(scan_dir: Path) -> AnatGeometry:
     params = read_scan_params(scan_dir)
 
     grad_orient = np.asarray(params['PVM_SPackArrGradOrient'], dtype=float).reshape(-1, 3, 3)[0]
+    # The slice offset carries the opposite sign to the in-plane ones: the
+    # slice index runs against the direction PVM_SPackArrSliceOffset is
+    # measured in. Measured against the SIGMA parcellation over 50 sessions,
+    # negating it takes mean hippocampal overlap from 57.4% to 70.8% and the
+    # count of sessions above 40% from 39 to 49; negating the in-plane offsets
+    # too makes things worse, breaking the two sessions that have a read
+    # offset. Only 15 of 50 sessions here have a non-zero slice offset, which
+    # is why this stayed hidden -- the other 35 are unaffected by definition.
     offsets = np.array([
         float(np.atleast_1d(params.get('PVM_SPackArrReadOffset', 0.0))[0]),
         float(np.atleast_1d(params.get('PVM_SPackArrPhase1Offset', 0.0))[0]),
-        float(np.atleast_1d(params.get('PVM_SPackArrSliceOffset', 0.0))[0]),
+        -float(np.atleast_1d(params.get('PVM_SPackArrSliceOffset', 0.0))[0]),
     ])
     # Offsets are along read/phase/slice; project back into magnet coordinates.
     centre = grad_orient.T @ offsets

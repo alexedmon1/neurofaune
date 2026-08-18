@@ -139,6 +139,39 @@ class TestAxisMapping:
         assert index[2] == pytest.approx(N_SLICES / 2.0 - 0.5 + 2.0)
 
 
+class TestSliceOffsetSign:
+    """PVM_SPackArrSliceOffset is negated; the in-plane offsets are not."""
+
+    def _geometry(self, read=0.0, phase=0.0, slice_=0.0, tmp_path=None):
+        from neurofaune.preprocess.utils.mrs.voxel_geometry import read_anat_geometry
+        scan = tmp_path / '5'
+        (scan / 'pdata' / '1').mkdir(parents=True)
+        (scan / 'method').write_text(
+            '##$PVM_SPackArrGradOrient=( 1, 3, 3 )\n0 1 0 1 0 0 0 0 1\n'
+            f'##$PVM_SPackArrReadOffset=( 1 )\n{read}\n'
+            f'##$PVM_SPackArrPhase1Offset=( 1 )\n{phase}\n'
+            f'##$PVM_SPackArrSliceOffset=( 1 )\n{slice_}\n'
+            '##$PVM_Fov=( 2 )\n32 32\n##$PVM_Matrix=( 2 )\n64 64\n'
+            '##$PVM_SPackArrNSlices=( 1 )\n20\n'
+            '##$PVM_SPackArrSliceDistance=( 1 )\n0.8\n##END=\n')
+        (scan / 'pdata' / '1' / 'reco').write_text(
+            '##$RECO_transposition=( 20 )\n@20*(1)\n##END=\n')
+        return read_anat_geometry(scan)
+
+    def test_slice_offset_is_negated(self, tmp_path):
+        # Regression: this sign error displaced every session with a non-zero
+        # slice offset -- 15 of 50 here, by up to 2.5 mm -- while leaving the
+        # other 35 untouched, so it hid behind the majority that were fine.
+        g = self._geometry(slice_=2.0, tmp_path=tmp_path)
+        assert g.centre[2] == pytest.approx(-2.0)
+
+    def test_in_plane_offsets_are_not_negated(self, tmp_path):
+        # Flipping these too breaks the sessions that carry a read offset.
+        g = self._geometry(read=-1.0, tmp_path=tmp_path)
+        # grad_orient row 0 (read) is +y, so a -1 mm read offset lands at y=-1.
+        assert g.centre[1] == pytest.approx(-1.0)
+
+
 class TestVoxelCorners:
     def test_eight_corners_span_the_voxel(self):
         svs = make_svs(size=(7.5, 2.0, 2.0), position=(1.0, 2.0, 3.0))
