@@ -325,10 +325,15 @@ def main() -> int:
     print(f"\nSummary: {out_dir / f'mrs_batch_{stamp}.csv'}")
 
     # A single tidy table across sessions is what group analysis actually needs.
-    frames = [
-        pd.read_csv(row['summary'])
-        for _, row in summary[summary['status'] == 'ok'].iterrows()
-    ]
+    # Read defensively: one unreadable per-session file must not discard a
+    # batch that has already taken the better part of an hour.
+    frames = []
+    for _, row in summary[summary['status'] == 'ok'].iterrows():
+        path = Path(row['summary'])
+        try:
+            frames.append(pd.read_csv(path))
+        except (OSError, pd.errors.ParserError) as exc:
+            logger.warning('Could not read %s for the combined table: %s', path, exc)
     if frames:
         combined = pd.concat(frames, ignore_index=True)
         combined_file = args.mrs_root / 'mrs_metabolites_long.csv'
