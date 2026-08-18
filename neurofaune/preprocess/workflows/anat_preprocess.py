@@ -24,6 +24,7 @@ from neurofaune.config import get_config_value
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.qc import get_subject_qc_dir
+from neurofaune.provenance import write_provenance, write_dataset_description
 
 
 def _is_3d_acquisition(t2w_file: Path, img_shape, voxel_sizes) -> bool:
@@ -1450,6 +1451,12 @@ def run_anatomical_preprocessing(
     print(f"  GM/WM/CSF probabilities: {derivatives_dir}")
     print("\nNOTE: Registration to study template and SIGMA will be done separately.")
     print("="*80 + "\n")
+
+    # Record which neurofaune and which settings produced these outputs. A
+    # derivative that cannot name its code cannot be reproduced, and the
+    # question always arrives later than the run does.
+    write_provenance(derivatives_dir, subject, session, 'anat', config=config)
+    write_dataset_description(output_dir / 'derivatives', config=config)
 
     return {
         'brain': final_brain,

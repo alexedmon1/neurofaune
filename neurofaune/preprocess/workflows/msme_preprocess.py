@@ -25,6 +25,7 @@ from neurofaune.preprocess.utils.registration_utils import (
 from neurofaune.preprocess.utils.skull_strip import skull_strip
 from neurofaune.preprocess.utils.func.skull_strip_adaptive import skull_strip_adaptive
 from neurofaune.preprocess.utils.foreground import estimate_noise_floor, foreground_mask
+from neurofaune.provenance import write_provenance, write_dataset_description
 
 
 def register_msme_to_template(
@@ -1051,6 +1052,12 @@ def run_msme_preprocessing(
             'affine_transform': registration_results['affine_transform'],
             'warped_msme': registration_results.get('warped_msme'),
         }
+
+    # Record which neurofaune and which settings produced these outputs. A
+    # derivative that cannot name its code cannot be reproduced, and the
+    # question always arrives later than the run does.
+    write_provenance(derivatives_dir, subject, session, 'msme', config=config)
+    write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results
 

@@ -40,6 +40,7 @@ from neurofaune.atlas.manager import AtlasManager
 from neurofaune.utils.transforms import TransformRegistry
 from neurofaune.preprocess.qc.dwi import generate_eddy_qc_report, generate_dti_qc_report
 from neurofaune.preprocess.qc import get_subject_qc_dir
+from neurofaune.provenance import write_provenance, write_dataset_description
 
 
 def register_fa_to_template(
@@ -1097,6 +1098,12 @@ def run_dwi_preprocessing(
     if sigma_outputs:
         for metric, path in sigma_outputs.items():
             results[f'sigma_{metric.lower()}'] = path
+
+    # Record which neurofaune and which settings produced these outputs. A
+    # derivative that cannot name its code cannot be reproduced, and the
+    # question always arrives later than the run does.
+    write_provenance(derivatives_dir, subject, session, 'dwi', config=config)
+    write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results
 

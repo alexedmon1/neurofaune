@@ -50,6 +50,7 @@ from neurofaune.preprocess.utils.func.slice_timing import (
     detect_slice_order
 )
 from neurofaune.preprocess.utils.registration_utils import find_z_offset_ncc
+from neurofaune.provenance import write_provenance, write_dataset_description
 
 from typing import Union
 
@@ -2796,5 +2797,11 @@ def run_functional_preprocessing(
                 print(f"\n  SIGMA warping failed: {e}")
 
     print("="*80)
+
+    # Record which neurofaune and which settings produced these outputs. A
+    # derivative that cannot name its code cannot be reproduced, and the
+    # question always arrives later than the run does.
+    write_provenance(derivatives_dir, subject, session, 'func', config=config)
+    write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results
