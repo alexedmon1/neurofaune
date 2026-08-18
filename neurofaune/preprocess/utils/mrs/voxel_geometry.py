@@ -43,6 +43,12 @@ import numpy as np
 
 from neurofaune.preprocess.utils.mrs.bruker_mrs import BrukerSVS
 from neurofaune.preprocess.utils.mrs.bruker_params import read_scan_params
+from neurofaune.preprocess.utils.mrs.bruker_affine import (
+    affine_from_visu,
+    index_to_world,
+    pvm_to_world,
+    world_to_index,
+)
 from neurofaune.preprocess.utils.mrs.geometry_support import log_geometry_support
 
 logger = logging.getLogger(__name__)
@@ -333,6 +339,7 @@ def make_voxel_mask(
     output_file: Optional[Path] = None,
     supersample: int = 3,
     geometry: Optional[AnatGeometry] = None,
+    use_affine: bool = True,
 ) -> Tuple[np.ndarray, Optional[Path]]:
     """Rasterise the SVS voxel onto the anatomical image grid.
 
@@ -369,6 +376,20 @@ def make_voxel_mask(
         If the anatomical NIfTI's shape disagrees with its Bruker geometry,
         which would mean the two are not the same acquisition.
     """
+    # Preferred path: build the image's affine from its own visu_pars geometry
+    # and compose, exactly as human SVS tooling does. Falls back to the
+    # parameter-reconstructed mapping only when visu_pars is unusable.
+    affine = None
+    if use_affine and anat_scan_dir is not None:
+        try:
+            affine = affine_from_visu(anat_scan_dir)
+            rotation = pvm_to_world(anat_scan_dir)
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            logger.warning(
+                'Falling back to parameter-reconstructed geometry for %s: %s',
+                anat_scan_dir, exc)
+            affine = None
+
     if geometry is None:
         geometry = read_anat_geometry(anat_scan_dir)
     anat = nib.load(str(anat_image))
@@ -383,7 +404,11 @@ def make_voxel_mask(
     # Restrict the rasterisation to the voxel's index-space bounding box; the
     # SVS voxel is a tiny part of a 256x256x41 volume and sub-sampling the
     # whole grid would be wasteful.
-    corners = magnet_to_index(geometry, voxel_corners(svs))
+    if affine is not None:
+        corners = world_to_index(
+            affine, (rotation[:3, :3] @ voxel_corners(svs).T).T)
+    else:
+        corners = magnet_to_index(geometry, voxel_corners(svs))
     lower = np.maximum(np.floor(corners.min(axis=0)).astype(int) - 1, 0)
     upper = np.minimum(np.ceil(corners.max(axis=0)).astype(int) + 2, shape)
 
@@ -403,8 +428,13 @@ def make_voxel_mask(
 
     half = svs.voxel_size / 2.0
     counts = np.zeros(grid.shape[0], dtype=np.float64)
+    inverse_rotation = np.linalg.inv(rotation[:3, :3]) if affine is not None else None
     for offset in sub:
-        magnet = index_to_magnet(geometry, grid + offset)
+        if affine is not None:
+            world = index_to_world(affine, grid + offset)
+            magnet = (inverse_rotation @ world.T).T
+        else:
+            magnet = index_to_magnet(geometry, grid + offset)
         local = (magnet - svs.voxel_position) @ svs.voxel_orientation.T
         counts += np.all(np.abs(local) <= half, axis=1)
 

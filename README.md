@@ -212,6 +212,27 @@ looked right and the minority looked like operator error.
 | slice-axis direction | the voxel sits at isocentre | 36 of 52, by >2 slices |
 | `PVM_SPackArrSliceOffset` sign | the slice package is not offset | 12 of 53, by up to 5 mm |
 
+The systematic fix is to stop reconstructing the mapping at all. Bruker writes
+the DICOM-equivalent geometry in `pdata/*/visu_pars` — `VisuCoreOrientation`,
+`VisuCorePosition`, `VisuCoreExtent` — which defines the index-to-world affine
+outright, signs and axis order included. Locating the voxel is then affine
+composition, exactly as in human MRS. That is now the default path, and it is
+both more principled and slightly better: 71.4% mean hippocampal overlap with
+50 of 50 sessions on target, against 70.8% and 49 of 50 for the reconstructed
+mapping, which remains only as a fallback when `visu_pars` is unusable.
+
+One piece is irreducible. A PRESS scan's `visu_pars` has `VisuCoreDim = 1` and
+no spatial fields, so the voxel exists only in gradient coordinates while
+images are in subject coordinates. The two differ by a signed permutation set
+by `VisuSubjectPosition`, and that cannot be recovered from the files: with a
+square FOV and the package at isocentre — 47 of 50 sessions here — every
+candidate reproduces the geometry equally well. It is therefore calibrated once
+per subject position and validated (`Head_Supine` → `diag(1, -1, -1)`, 71.2%
+against 32.7% for the next best), cross-checked per scan by requiring the
+gradient axes to align with the image axes, and an unknown subject position
+raises rather than guesses. One constant tied to a documented parameter, rather
+than three scattered sign choices.
+
 So the pipeline no longer relies on anyone eyeballing an overlay. Set
 `spectroscopy.target_structure` (a substring matched against the atlas label
 table, e.g. `hippocamp`) and every session is scored against the structure the
