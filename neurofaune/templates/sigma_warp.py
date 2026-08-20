@@ -62,16 +62,41 @@ def resolve_tpl_to_sigma(
         ``affine``, ``warp`` (None if the registration was affine-only),
         ``found`` (bool), ``searched`` (list of directories tried).
     """
+    search: List[Path] = [Path(d) for d in (candidate_dirs or [])]
+    if template_file:
+        template_file = Path(template_file)
+        # transforms/ beside the template, and the template's OWN directory.
+        # ANTs writes its outputs next to the moving image by default, so a
+        # study that registers template->SIGMA with a plain output prefix ends
+        # up with them there. Requiring the transforms/ subdirectory meant the
+        # cuprizone study bridged the gap with hand-made symlinks, which nobody
+        # scripted -- so a from-scratch rebuild silently lost them and every DWI
+        # session failed its SIGMA warp.
+        search += [template_file.parent / "transforms", template_file.parent]
+
     tried: List[Path] = []
-    for d in list(candidate_dirs or []) + (
-            [template_file.parent / "transforms"] if template_file else []):
-        d = Path(d)
+    for d in search:
         tried.append(d)
+        if not d.is_dir():
+            continue
+        # Exact canonical name first, then any *_to-SIGMA_ prefix. ANTs derives
+        # the prefix from the template name (tpl-CPZp60_to-SIGMA_...), so
+        # insisting on one spelling rejects the file the tool actually produced.
         affine = d / TPL_TO_SIGMA_AFFINE
-        if affine.exists():
+        if not affine.exists():
+            hits = sorted(d.glob("*to-SIGMA_0GenericAffine.mat"))
+            affine = hits[0] if hits else None
+        if affine is None:
+            continue
+
+        # Pair the warp to the affine by prefix so two registrations sitting in
+        # one directory cannot be mixed.
+        prefix = affine.name[: -len("0GenericAffine.mat")]
+        warp = d / f"{prefix}1Warp.nii.gz"
+        if not warp.exists():
             warp = d / TPL_TO_SIGMA_WARP
-            return {"affine": affine, "warp": warp if warp.exists() else None,
-                    "found": True, "searched": tried}
+        return {"affine": affine, "warp": warp if warp.exists() else None,
+                "found": True, "searched": tried}
     return {"affine": None, "warp": None, "found": False, "searched": tried}
 
 

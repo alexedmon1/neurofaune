@@ -67,7 +67,9 @@ def test_resolver_reports_failure_and_what_it_tried(tmp_path):
                                candidate_dirs=[tmp_path / "nowhere"])
     assert not got["found"]
     assert got["affine"] is None
-    assert len(got["searched"]) == 2      # candidate + beside-template
+    # candidate dirs, then transforms/ beside the template, then the template's
+    # own directory — ANTs writes its output there by default
+    assert len(got["searched"]) == 3
 
 
 # ------------------------------------------------------------ metric sets ---
@@ -266,3 +268,59 @@ def test_silent_nonzero_exit_is_reported_as_a_kill(tmp_path, monkeypatch, capsys
     assert got == {}
     msg = capsys.readouterr().out
     assert "-9" in msg and "OOM" in msg
+
+
+# ------------------------------------ resolving the template->SIGMA chain ---
+# Every arm's SIGMA warp depends on finding these two files. The cuprizone
+# study registered template->SIGMA with a plain ANTs output prefix, which put
+# tpl-CPZp60_to-SIGMA_0GenericAffine.mat NEXT TO the template rather than in a
+# transforms/ subdirectory, and under a name derived from the template. The gap
+# was bridged by hand-made symlinks that nobody scripted, so a from-scratch
+# rebuild lost them and all 92 DWI sessions failed their SIGMA warp.
+
+def test_resolver_accepts_ants_default_output_beside_the_template(tmp_path):
+    """ANTs writes next to the moving image, under a template-derived prefix."""
+    tpl_dir = tmp_path / "templates" / "p60"
+    tpl = _nii(tpl_dir / "tpl-CPZp60_T2w_template0.nii.gz")
+    (tpl_dir / "tpl-CPZp60_to-SIGMA_0GenericAffine.mat").touch()
+    _nii(tpl_dir / "tpl-CPZp60_to-SIGMA_1Warp.nii.gz")
+
+    got = resolve_tpl_to_sigma(template_file=tpl)
+    assert got["found"]
+    assert got["affine"].name == "tpl-CPZp60_to-SIGMA_0GenericAffine.mat"
+    assert got["warp"].name == "tpl-CPZp60_to-SIGMA_1Warp.nii.gz"
+
+
+def test_resolver_still_prefers_the_canonical_transforms_dir(tmp_path):
+    """The documented layout must keep winning when both are present."""
+    tpl_dir = tmp_path / "templates" / "p60"
+    tpl = _nii(tpl_dir / "tpl-CPZp60_T2w_template0.nii.gz")
+    (tpl_dir / "tpl-CPZp60_to-SIGMA_0GenericAffine.mat").touch()
+    (tpl_dir / "transforms").mkdir()
+    (tpl_dir / "transforms" / "tpl-to-SIGMA_0GenericAffine.mat").touch()
+
+    got = resolve_tpl_to_sigma(template_file=tpl)
+    assert got["affine"].parent.name == "transforms"
+
+
+def test_resolver_pairs_the_warp_to_its_own_affine(tmp_path):
+    """Two registrations in one directory must not be mixed."""
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "tpl-CPZp90_to-SIGMA_0GenericAffine.mat").touch()
+    _nii(d / "tpl-CPZp90_to-SIGMA_1Warp.nii.gz")
+    _nii(d / "somethingelse_to-SIGMA_1Warp.nii.gz")
+
+    got = resolve_tpl_to_sigma(candidate_dirs=[d])
+    assert got["warp"].name == "tpl-CPZp90_to-SIGMA_1Warp.nii.gz"
+
+
+def test_resolver_reports_every_directory_it_tried(tmp_path):
+    """A silent miss is how a cohort ends up with no SIGMA outputs at all."""
+    tpl = _nii(tmp_path / "templates" / "p60" / "tpl-CPZp60_T2w_template0.nii.gz")
+    got = resolve_tpl_to_sigma(template_file=tpl, candidate_dirs=[tmp_path / "nope"])
+    assert not got["found"]
+    names = [str(p) for p in got["searched"]]
+    assert any("nope" in n for n in names)
+    assert any(n.endswith("transforms") for n in names)
+    assert any(n.endswith("p60") for n in names)
