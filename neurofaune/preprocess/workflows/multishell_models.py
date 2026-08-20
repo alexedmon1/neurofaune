@@ -443,6 +443,7 @@ def run_multishell_fitting(
     do_noddi: bool = True,
     work_dir: Optional[Path] = None,
     force: bool = False,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run DKI and/or NODDI fitting on preprocessed multi-shell DWI data.
 
@@ -576,4 +577,76 @@ def run_multishell_fitting(
     logger.info(f"  NODDI: {'done' if results['noddi'] else 'skipped'}")
     logger.info(f"  QC:    {'done' if results['qc'] else 'skipped'}")
 
+    # ----------------------------------------------------------------- SIGMA
+    # Warp what we just fitted into SIGMA space.
+    #
+    # run_dwi_preprocessing warps to SIGMA too, but it runs BEFORE this
+    # function, when only the tensor metrics exist -- it prints "not yet
+    # fitted, skipping" for the seven DKI/NODDI maps and moves on. Nothing then
+    # warped them, so a normal cohort run produced 4 of the 11 space-SIGMA maps
+    # and required backfill_sigma_warps.py afterwards, every time, or the
+    # analysis stage simply found no kurtosis or NODDI maps.
+    #
+    # The transform is recoverable without threading it through: the FA
+    # registration sidecar records both it and the template it went to.
+    results["sigma"] = _warp_multishell_to_sigma(
+        deriv_dir, output_dir, subject, session, config, results)
+
     return results
+
+
+def _warp_multishell_to_sigma(deriv_dir, output_dir, subject, session,
+                              config, results) -> Dict[str, Any]:
+    """Warp the DKI/NODDI maps into SIGMA space. Never raises."""
+    import json as _json
+
+    if config is None:
+        logger.info("  SIGMA: skipped (no config passed to run_multishell_fitting)")
+        return {}
+    if not (results.get("dki") or results.get("noddi")):
+        return {}
+
+    from neurofaune.templates.sigma_warp import (
+        MULTISHELL_SIGMA_METRICS, build_metric_files, sigma_targets_from_config,
+        warp_maps_to_sigma,
+    )
+
+    prefix = f"{subject}_{session}"
+    sidecar = deriv_dir / f"{prefix}_FA_to_template_registration.json"
+    if not sidecar.exists():
+        logger.warning("  SIGMA: no %s — cannot place the multishell maps; "
+                       "the analysis stage reads space-SIGMA_* only",
+                       sidecar.name)
+        return {}
+    meta = _json.loads(sidecar.read_text())
+
+    cohort = session.split("-")[1] if "-" in session else None
+    targets = sigma_targets_from_config(
+        config, session=session, cohort=cohort, study_root=output_dir,
+        template_file=Path(meta["template_file"]))
+    if not targets["ready"]:
+        logger.warning("  SIGMA: not resolvable — %s", targets["reason"])
+        return {}
+
+    metric_files = build_metric_files(deriv_dir, prefix, MULTISHELL_SIGMA_METRICS)
+    absent = sorted(set(MULTISHELL_SIGMA_METRICS) - set(metric_files))
+    if absent:
+        logger.info("  SIGMA: not fitted, skipping: %s", ", ".join(absent))
+    if not metric_files:
+        return {}
+
+    try:
+        out = warp_maps_to_sigma(
+            metric_files=metric_files,
+            moving_to_template=Path(meta["affine_transform"]),
+            sigma_template=targets["sigma_template"],
+            output_dir=deriv_dir, subject=subject, session=session,
+            tpl_to_sigma_affine=targets["affine"],
+            tpl_to_sigma_warp=targets["warp"],
+            force=True,
+        )
+        logger.info("  SIGMA: wrote %d multishell maps", len(out))
+        return out
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning("  SIGMA: warping the multishell maps failed: %s", e)
+        return {}

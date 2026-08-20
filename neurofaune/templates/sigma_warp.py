@@ -305,6 +305,20 @@ DWI_SIGMA_METRICS: Dict[str, str] = {
     "FISO": "{prefix}_model-NODDI_FISO.nii.gz",
 }
 
+#: The subset fitted AFTER run_dwi_preprocessing, by run_multishell_fitting.
+#:
+#: The DWI workflow warps to SIGMA before these exist and reports them as "not
+#: yet fitted"; nothing warped them afterwards, so a normal cohort run produced
+#: 4 of the 11 space-SIGMA maps and every run needed backfill_sigma_warps.py or
+#: the analysis stage found no kurtosis and no NODDI at all.
+#:
+#: Derived from DWI_SIGMA_METRICS rather than written out again, so adding a
+#: kurtosis or NODDI metric in one place cannot leave it unwarped in the other.
+MULTISHELL_SIGMA_METRICS: Dict[str, str] = {
+    name: pattern for name, pattern in DWI_SIGMA_METRICS.items()
+    if "model-" in pattern
+}
+
 MSME_SIGMA_METRICS: Dict[str, str] = {
     "T2": "{prefix}_T2.nii.gz",
     "MWF": "{prefix}_MWF.nii.gz",
