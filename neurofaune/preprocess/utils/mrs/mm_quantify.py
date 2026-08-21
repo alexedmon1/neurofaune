@@ -46,6 +46,22 @@ session's area positive.
 The consequence is a stated convention: areas are relative to the 1.55-1.80 ppm
 level, so MM17 is zero by construction and is not reported.
 
+A trough that constrains the bands
+----------------------------------
+Plotting the envelope showed a systematic negative excursion at 0.95-1.10 ppm
+in every session, immediately downfield of the MM09 peak. It is in the acquired
+data, not introduced here: the raw spectrum averages -0.10 to -0.21 there
+(about 3 standard errors below zero) while the fitted polynomial is smooth and
+positive across the same window, and the metabolite model has almost no
+amplitude there to over-subtract. A zero-order phase error was tested and ruled
+out -- the rotation that best flattens the trough varies from 18 to 53 degrees
+between sessions and removes only about a quarter of it, where a dispersion
+artifact would rotate away almost entirely. The cause is unresolved.
+
+Its practical consequence is that band edges cannot be placed conventionally:
+the usual 0.70-1.10 MM09 window integrates straight through the trough and
+subtracts real signal. The bands below stop at the zero-crossing instead.
+
 What is measurable here, and what is not
 ----------------------------------------
 On this study's data, tested across baseline orders:
@@ -53,7 +69,7 @@ On this study's data, tested across baseline orders:
 ===== ============ ======= ==========================================
 band  mean /tCr    CV      verdict
 ===== ============ ======= ==========================================
-MM09  0.40         7.6%    measurable -- as stable as the metabolites
+MM09  0.56         5.2%    measurable -- better than NAA (9.1%)
 MM12  0.14         44%     provisional -- reported, do not rely on it
 MM14  -0.04        88%     not measurable; negative in 3 of 4 sessions
 ===== ============ ======= ==========================================
@@ -92,8 +108,16 @@ DEFAULT_FLANKS: Tuple[Tuple[float, float], ...] = ((0.25, 0.60), (1.55, 1.80))
 #: test (CV 88%, negative in most sessions). Adding them back would produce
 #: numbers that look like measurements and are not.
 MM_BANDS: Dict[str, Tuple[float, float]] = {
-    'MM09': (0.70, 1.10),   # MM09 / Lip09 methyl -- the reliable one
-    'MM12': (1.10, 1.40),   # MM12 + Lip13 methylene, unresolved -- provisional
+    # MM09 / Lip09 methyl -- the reliable one. Stops at 0.95, not the
+    # conventional 1.10: the preprocessed spectra carry a real negative trough
+    # at 0.95-1.10 ppm (see the module docstring), and integrating through it
+    # subtracted signal. Ending at the zero-crossing took the baseline-order CV
+    # from 7.6% to 5.2% and the area from 0.40 to 0.56 /tCr.
+    'MM09': (0.70, 0.95),
+    # MM12 + Lip13 methylene, unresolved from each other -- provisional. Unlike
+    # MM09 this is noise-limited rather than trough-limited: narrowing it makes
+    # it worse (44% -> 60% -> 88% CV), so the conventional window is kept.
+    'MM12': (1.10, 1.40),
 }
 
 #: Bands whose stability was not established on validation data. Reported with

@@ -865,6 +865,8 @@ def run_mrs_preprocessing(
             qc_dir=mrs_root / 'qc' / subject / session,
             anat_image=Path(anat_image) if anat_image else None,
             voxel_mask=fractions.get('mask'),
+            mm_areas=curve_files.get('mm_areas'),
+            mm_envelope=curve_files.get('mm_envelope'),
         )
 
     return outputs

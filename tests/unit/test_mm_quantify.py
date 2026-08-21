@@ -166,10 +166,25 @@ class TestIntegrationAndScaling:
 
 class TestQuantifyMM:
     def test_recovers_a_known_mm_area(self):
+        # The MM09 band stops at 0.95 to stay clear of the trough at 0.95-1.10,
+        # so it captures the part of the synthetic peak (centre 0.90, width
+        # 0.09) between -2.22 and +0.56 sigma, not all of it.
+        from scipy.special import erf
+        low, high = MM_BANDS['MM09']
         curves = make_curves(mm_height=1.0, pedestal=-0.15)
         summary, _ = quantify_mm(curves, make_metabolites(curves['ppm'].to_numpy()))
         mm09 = summary.set_index('band').loc['MM09', 'area']
-        assert mm09 == pytest.approx(1.0 * 0.09 * np.sqrt(2 * np.pi), rel=0.10)
+        captured = 0.5 * (erf((high - 0.90) / (0.09 * np.sqrt(2)))
+                          - erf((low - 0.90) / (0.09 * np.sqrt(2))))
+        assert mm09 == pytest.approx(
+            1.0 * 0.09 * np.sqrt(2 * np.pi) * captured, rel=0.10)
+
+    def test_mm09_band_stops_before_the_trough(self):
+        # Regression guard on the band edge. The conventional 1.10 limit
+        # integrates through a negative trough present in every session and
+        # subtracts real signal; 0.95 took the baseline-order CV from 7.6% to
+        # 5.2% and the area from 0.40 to 0.56 /tCr on validation data.
+        assert MM_BANDS['MM09'] == (0.70, 0.95)
 
     def test_pedestal_does_not_change_the_answer(self):
         # The failure that motivated the anchor: without it, the area tracked

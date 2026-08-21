@@ -126,6 +126,60 @@ def plot_metabolite_crlb(
     return output_file
 
 
+def plot_mm_envelope(
+    envelope: pd.DataFrame,
+    areas: pd.DataFrame,
+    output_file: Path,
+    subject: str,
+    session: str,
+) -> Path:
+    """The MM fit: spline through the metabolite-free spectrum, bands shaded.
+
+    Worth showing rather than reporting the areas alone. It was this plot that
+    exposed the negative trough at 0.95-1.10 ppm, which the numbers alone hid
+    and which set where the band edges had to go. Provisional bands are drawn
+    in a different colour so they are not read as equal to MM09.
+
+    Parameters
+    ----------
+    envelope : DataFrame
+        A ``*_mm-envelope.csv``: ``ppm, signal, envelope, anchor``.
+    areas : DataFrame
+        A ``*_mm-areas.csv``.
+    """
+    from neurofaune.preprocess.utils.mrs.mm_quantify import DEFAULT_FLANKS
+
+    fig, axis = plt.subplots(figsize=(9, 4))
+    for low, high in DEFAULT_FLANKS:
+        axis.axvspan(low, high, color='0.90', zorder=0)
+
+    for row in areas.itertuples():
+        inside = (envelope['ppm'] >= row.ppm_low) & (envelope['ppm'] <= row.ppm_high)
+        axis.fill_between(envelope.loc[inside, 'ppm'], 0,
+                          envelope.loc[inside, 'envelope'], zorder=1, alpha=0.30,
+                          color='tab:orange' if row.provisional else 'tab:red',
+                          label=f'{row.band} {row.area_per_tcr:.3f}/tCr'
+                                + (' (provisional)' if row.provisional else ''))
+
+    # The signal is drawn on the anchored scale so it and the spline share a zero.
+    axis.plot(envelope['ppm'], envelope['signal'] - envelope['anchor'],
+              lw=0.5, color='0.5', label='metabolite-free spectrum')
+    axis.plot(envelope['ppm'], envelope['envelope'], lw=2, color='tab:blue',
+              label='spline envelope')
+    axis.axhline(0, lw=0.8, color='k')
+    axis.invert_xaxis()
+    axis.set_xlabel('ppm')
+    axis.set_ylabel('signal (arbitrary units)')
+    axis.set_title(f'{subject} {session} - macromolecule envelope '
+                   '(grey = anchor flanks)')
+    axis.legend(fontsize=7, loc='upper right')
+    fig.tight_layout()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=110)
+    plt.close(fig)
+    return output_file
+
+
 def _html_report(
     subject: str,
     session: str,
@@ -237,6 +291,8 @@ def generate_mrs_qc_report(
     qc_dir: Path,
     anat_image: Optional[Path] = None,
     voxel_mask: Optional[Path] = None,
+    mm_areas: Optional[Path] = None,
+    mm_envelope: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build the per-session MRS QC report.
 
@@ -254,6 +310,11 @@ def generate_mrs_qc_report(
         ``{study}/mrs/qc/{subject}/{session}/``.
     anat_image, voxel_mask : Path, optional
         When both are given, a voxel-placement overlay is included.
+    mm_areas, mm_envelope : Path, optional
+        The ``*_mm-areas.csv`` / ``*_mm-envelope.csv`` written by
+        :func:`~neurofaune.preprocess.workflows.mrs_preprocess.export_mm_areas`.
+        When both are given, the macromolecule fit is plotted and the validated
+        band areas are added to the metrics.
 
     Returns
     -------
@@ -301,6 +362,17 @@ def generate_mrs_qc_report(
     figures.append(plot_metabolite_crlb(
         crlb, figures_dir / f'{subject}_{session}_crlb.png', subject, session,
     ))
+
+    if mm_areas and mm_envelope and Path(mm_areas).exists() and Path(mm_envelope).exists():
+        areas = pd.read_csv(mm_areas)
+        figures.append(plot_mm_envelope(
+            pd.read_csv(mm_envelope), areas,
+            figures_dir / f'{subject}_{session}_mm-envelope.png', subject, session,
+        ))
+        # Only validated bands reach the metrics; the provisional ones stay in
+        # the CSV and the figure, where their flag travels with them.
+        for row in areas[~areas['provisional']].itertuples():
+            metrics[f'mm_{row.band.lower()}_per_tcr'] = float(row.area_per_tcr)
 
     # The fsl_mrs fit figure is the single most informative panel; copy it in
     # so the report is self-contained.

@@ -376,11 +376,28 @@ package. The area is measured partly *from* the polynomial, so the failure mode
 is that it reports the polynomial — in which case changing the baseline order
 changes the answer. Across four sessions and baseline orders `poly,2`–`poly,5`:
 
-| band | mean /tCr | CV | verdict |
-|------|-----------|-----|---------|
-| MM09 | 0.40 | 7.6% | measurable — as stable as Glu (4.9%), Ins (5.2%), NAA (9.1%) |
-| MM12 | 0.14 | 44% | reported, flagged `provisional` |
-| MM14 | −0.04 | 88% | negative in 3 of 4 sessions — **not reported** |
+| band | window | mean /tCr | CV | verdict |
+|------|--------|-----------|-----|---------|
+| MM09 | 0.70–0.95 | 0.56 | 5.2% | measurable — better than NAA (9.1%), Glu (4.9%), Ins (5.2%) |
+| MM12 | 1.10–1.40 | 0.14 | 44% | reported, flagged `provisional` |
+| MM14 | — | −0.04 | 88% | negative in 3 of 4 sessions — **not reported** |
+
+Plotting the envelope (`plot_mm_envelope`, included in the QC report) turned up
+something the numbers alone hid: a systematic negative trough at 0.95–1.10 ppm
+in every session, just downfield of the MM09 peak. It is in the acquired data,
+not introduced by the fit — the raw spectrum averages −0.10 to −0.21 there,
+about 3 standard errors below zero, while the fitted polynomial stays smooth and
+positive and the metabolite model has almost no amplitude there to
+over-subtract. Zero-order phase was tested and ruled out: the best rotation
+varies from 18° to 53° between sessions and removes only about a quarter of it,
+where a dispersion artifact would rotate away almost entirely. The cause is
+unresolved.
+
+That is why MM09 ends at 0.95 rather than the conventional 1.10 — the usual
+window integrates straight through the trough and subtracts real signal.
+Narrowing took its CV from 7.6% to 5.2% and its area from 0.40 to 0.56 /tCr.
+MM12 is noise-limited rather than trough-limited (narrowing makes it worse,
+44% → 60% → 88%), so it keeps the conventional window and its flag.
 
 Only MM09 is claimed. MM14 and MM17 are omitted rather than emitted as numbers
 that look like measurements; MM17 also defines the upper anchor and would be
@@ -394,7 +411,9 @@ without a metabolite-nulled acquisition; it does not replace one.
 
 Outputs are `{sub}_{ses}_mm-areas.csv` (band, area, area_per_tcr, ppm limits,
 provisional flag) and `{sub}_{ses}_mm-envelope.csv` (ppm, signal, envelope,
-anchor — enough to plot the spline over the metabolite-free spectrum).
+anchor). The QC report plots them, and validated band areas are added to the
+per-session QC metrics as `mm_mm09_per_tcr`; provisional bands stay in the CSV
+and the figure, where their flag travels with them.
 Configured by `spectroscopy.quantify_mm`, `mm_range`, `mm_knot_spacing` and
 `mm_flanks`.
 
