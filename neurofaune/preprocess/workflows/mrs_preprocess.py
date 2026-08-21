@@ -430,10 +430,67 @@ def export_fit_curves(
         command.append('--free-shift')
 
     _run(command, 'fit curve export')
-    return {
+    outputs = {
         'curves': Path(f'{output_prefix}_fit-curves.csv'),
         'metabolite_curves': Path(f'{output_prefix}_fit-metabolites.csv'),
     }
+
+    if bool(get_config_value(config, 'spectroscopy.quantify_mm', default=True)):
+        outputs.update(export_mm_areas(outputs['curves'],
+                                       outputs['metabolite_curves'],
+                                       output_prefix, config))
+    return outputs
+
+
+def export_mm_areas(
+    curves_file: Path,
+    metabolite_curves_file: Path,
+    output_prefix: Path,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Path]:
+    """Measure the upfield MM/lipid envelope from the exported fit.
+
+    Runs after the metabolite fit and never feeds back into it, which is the
+    whole point: MM components placed *in* the basis are collinear with the
+    baseline and destabilise the metabolites. See
+    :mod:`neurofaune.preprocess.utils.mrs.mm_quantify`.
+
+    A failure here is logged and swallowed. The MM areas are an addition to the
+    metabolite results, so losing them must not cost a session its fit.
+    """
+    from neurofaune.preprocess.utils.mrs import mm_quantify
+
+    config = config or {}
+    outputs: Dict[str, Path] = {}
+    try:
+        curves = pd.read_csv(curves_file)
+        metabolites = pd.read_csv(metabolite_curves_file)
+        summary, envelope = mm_quantify.quantify_mm(
+            curves, metabolites,
+            ppm_range=tuple(get_config_value(
+                config, 'spectroscopy.mm_range',
+                default=list(mm_quantify.DEFAULT_RANGE))),
+            knot_spacing=float(get_config_value(
+                config, 'spectroscopy.mm_knot_spacing',
+                default=mm_quantify.DEFAULT_KNOT_SPACING)),
+            flanks=[tuple(f) for f in get_config_value(
+                config, 'spectroscopy.mm_flanks',
+                default=[list(f) for f in mm_quantify.DEFAULT_FLANKS])],
+        )
+    except Exception as exc:  # noqa: BLE001 - never lose a fit over the MM extra
+        logger.warning('MM quantification failed for %s: %s', curves_file.name, exc)
+        return outputs
+
+    summary.to_csv(f'{output_prefix}_mm-areas.csv', index=False)
+    envelope.to_csv(f'{output_prefix}_mm-envelope.csv', index=False)
+    outputs['mm_areas'] = Path(f'{output_prefix}_mm-areas.csv')
+    outputs['mm_envelope'] = Path(f'{output_prefix}_mm-envelope.csv')
+
+    reliable = summary[~summary['provisional']]
+    if not reliable.empty:
+        logger.info('MM areas: %s', ', '.join(
+            f"{r.band} {r.area_per_tcr:.3f}/tCr" for r in reliable.itertuples()))
+    return outputs
 
 
 def run_lcmodel_fit(

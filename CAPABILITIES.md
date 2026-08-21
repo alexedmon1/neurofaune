@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.6.6a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`
 
-**Entry points:** 149 across 9 stages.
+**Entry points:** 150 across 9 stages.
 
 
 ## analysis
@@ -101,6 +101,7 @@ _Generated from the code by `neurofaune capabilities` (v0.6.6a0)._ Do not edit b
 | `select_svs_scan` | `neurofaune.preprocess.utils.mrs.bruker_mrs` | Pick the real SVS acquisition from a session's PRESS scans. | — |
 | `fit_with_lcmodel` | `neurofaune.preprocess.utils.mrs.lcmodel` | Fit a preprocessed NIfTI-MRS spectrum with LCModel. | — |
 | `run_lcmodel` | `neurofaune.preprocess.utils.mrs.lcmodel` | Run LCModel, feeding it the control file on stdin. | — |
+| `fit_mm_spline` | `neurofaune.preprocess.utils.mrs.mm_quantify` | Fit a least-squares cubic spline to the metabolite-free signal. | — |
 | `compute_tissue_fractions` | `neurofaune.preprocess.utils.mrs.voxel_geometry` | Rasterise the voxel and measure its tissue content in one call. | — |
 | `propagate_anat_image` | `neurofaune.preprocess.utils.registration_utils` | Warp any anat-space image into moving space, reusing an existing registration. | — |
 | `propagate_anat_mask` | `neurofaune.preprocess.utils.registration_utils` | Derive a brain mask by warping the same-session anat mask into moving space. | — |

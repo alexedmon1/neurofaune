@@ -471,6 +471,22 @@ spectroscopy:
   # plottable data. fsl_mrs only.
   export_curves: true
 
+  # Macromolecule / lipid areas, measured from the exported curves after the
+  # metabolite fit rather than from basis components. MM components placed in
+  # the basis are collinear with the polynomial baseline and destabilise the
+  # metabolites; measuring afterwards cannot. Requires export_curves.
+  #
+  # Only MM09 is validated (baseline-order CV 7.6%, on par with the
+  # metabolites). MM12 is flagged provisional (CV 44%) and MM14/MM17 are not
+  # reported at all -- see neurofaune/preprocess/utils/mrs/mm_quantify.py.
+  quantify_mm: true
+  mm_range: [0.2, 1.8]           # Region the envelope spline is fitted over
+  mm_knot_spacing: 0.10          # Spline knot spacing, ppm; ~MM linewidth at 7T
+  # MM-poor windows defining the zero level. Areas are measured against a line
+  # through these, not against absolute zero: a pedestal runs the full width of
+  # the spectrum and integrating from zero gives negative, unstable areas.
+  mm_flanks: [[0.25, 0.60], [1.55, 1.80]]
+
   # Fitting (fsl_mrs)
   ppmlim: [0.2, 4.2]             # Fit range
   baseline: "poly,4"             # Higher order compensates for basis sets
