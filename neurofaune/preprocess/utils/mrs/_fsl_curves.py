@@ -62,12 +62,17 @@ def main() -> int:
     def real_spec(spectrum):
         return np.real(np.asarray(spectrum)[first:last])
 
+    # res.baseline and res.residuals are FIDs, not spectra -- only pred_spec is
+    # already transformed (`_baseline = predictedFID(..., mode='Baseline')`,
+    # `_residuals = mrs.FID - pred`). Taking the real part of a time-domain
+    # array and labelling it a spectrum yields noise-shaped nonsense, so they
+    # are transformed here before slicing.
     curves = pd.DataFrame({
         'ppm': ppm,
         'data': real_spec(mrs.get_spec()),
         'fit': real_spec(res.pred_spec),
-        'baseline': real_spec(res.baseline),
-        'residual': real_spec(res.residuals),
+        'baseline': real_spec(misc.FIDToSpec(res.baseline)),
+        'residual': real_spec(misc.FIDToSpec(res.residuals)),
     })
     prefix = Path(args.output_prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
