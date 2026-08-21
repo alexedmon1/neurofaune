@@ -376,11 +376,30 @@ package. The area is measured partly *from* the polynomial, so the failure mode
 is that it reports the polynomial — in which case changing the baseline order
 changes the answer. Across four sessions and baseline orders `poly,2`–`poly,5`:
 
-| band | window | mean /tCr | CV | verdict |
-|------|--------|-----------|-----|---------|
-| MM09 | 0.70–0.95 | 0.56 | 5.2% | measurable — better than NAA (9.1%), Glu (4.9%), Ins (5.2%) |
-| MM12 | 1.10–1.40 | 0.14 | 44% | reported, flagged `provisional` |
-| MM14 | — | −0.04 | 88% | negative in 3 of 4 sessions — **not reported** |
+Measured on the full study (87 sessions with a sound reference); baseline CV
+from 4 sessions fitted at `poly,2`–`poly,5`:
+
+| band | window | median /tCr | baseline CV | between-session CV | negative | verdict |
+|------|--------|-------------|-------------|--------------------|----------|---------|
+| MM09 | 0.70–0.95 | 0.566 | 5.2% | 26.7% | 0% | measurable |
+| MM12 | 1.10–1.40 | 0.216 | 44% | 36.5% | 0% | `provisional` |
+| MM14 | — | −0.020 | 88% | 138% | 78% | **not reported** |
+| MM17 | — | 0.006 | — | 92% | 14% | **not reported** |
+
+Those are two different quantities. Baseline CV is stability of one session
+under a changed fit; between-session CV is spread across animals, mixing real
+biology with measurement error. On the same sessions the metabolites give
+between-session CVs of 8.1% (Glu+Gln), 8.8% (NAA+NAAG), 18.9% (GSH), 24.3%
+(Tau) — so MM09 sits alongside Tau: usable, but needing larger groups than NAA
+to detect an effect of a given size.
+
+Whether MM14 and MM17 are unreportable because of the *data* or because of
+where the anchor sits was tested directly, on 87 sessions across four zero
+references (both flanks sloped/flat, upfield flank only sloped/flat). Dropping
+the upper flank does free MM17 to be non-zero — and it is still negative in 26%
+of sessions with a 184% robust CV. MM14 is negative in 39–86% under every
+variant. MM09 is nearly indifferent to the choice (median 0.566–0.577, never
+negative). The default is kept.
 
 Plotting the envelope (`plot_mm_envelope`, included in the QC report) turned up
 something the numbers alone hid: a systematic negative trough at 0.95–1.10 ppm
@@ -408,6 +427,17 @@ applied, and at TE 20 ms an unknown fraction of the MM signal has already
 decayed. Nor can this separate macromolecules from instrumental baseline roll —
 the polynomial absorbed both. It measures the one resonance that survives
 without a metabolite-nulled acquisition; it does not replace one.
+
+**The creatine denominator is checked before dividing.** `reference_area`
+integrates the real part of the modelled creatine, so a fit that puts creatine
+into dispersion collapses or inverts it while `fsl_mrs`' own concentration
+parameter is unaffected. Five of 92 sessions did exactly that — one with a
+*negative* reference area — and all five passed SNR, linewidth and placement QC
+with entirely normal reported concentrations. Unguarded, one returned −11.7
+/tCr from an ordinary MM area of 0.18. `check_reference` now refuses a
+non-positive reference, or one holding under 5% of the total modelled
+metabolite area (median is 10.2%); those sessions get a finite `area` and a
+`NaN` ratio plus `mm_reference_ok: false` in QC, never a plausible wrong number.
 
 Outputs are `{sub}_{ses}_mm-areas.csv` (band, area, area_per_tcr, ppm limits,
 provisional flag) and `{sub}_{ses}_mm-envelope.csv` (ppm, signal, envelope,

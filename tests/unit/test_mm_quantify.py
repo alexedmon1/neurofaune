@@ -14,9 +14,11 @@ import pytest
 
 from neurofaune.preprocess.utils.mrs.mm_quantify import (
     DEFAULT_FLANKS,
+    MIN_REFERENCE_FRACTION,
     MM_BANDS,
     PROVISIONAL_BANDS,
     anchor_envelope,
+    check_reference,
     fit_mm_spline,
     integrate_bands,
     metabolite_free_spectrum,
@@ -237,6 +239,59 @@ class TestQuantifyMM:
         a = wide.set_index('band').loc['MM09', 'area']
         b = narrow.set_index('band').loc['MM09', 'area']
         assert abs(a - b) / a < 0.10
+
+
+class TestReferenceGuard:
+    """The denominator fails silently, so it gets its own guard and own tests.
+
+    A session whose modelled creatine integrates to ~0 still fits, still
+    reports plausible concentrations and still passes SNR/linewidth QC. Only
+    the ratio explodes -- one real session returned -11.7 /tCr from an entirely
+    ordinary MM area of 0.18.
+    """
+
+    def test_healthy_reference_passes(self):
+        ppm = np.linspace(0.2, 4.2, 4000)
+        result = check_reference(make_metabolites(ppm, cr=1.0))
+        assert result['ok']
+        assert result['fraction'] > MIN_REFERENCE_FRACTION
+
+    def test_negative_reference_is_rejected(self):
+        # The real failure: PCr integrating negative because the fit put
+        # creatine into dispersion.
+        ppm = np.linspace(0.2, 4.2, 4000)
+        metabolites = make_metabolites(ppm, cr=1.0)
+        metabolites['PCr'] = -2.0 * metabolites['PCr']
+        result = check_reference(metabolites)
+        assert not result['ok']
+        assert 'non-positive' in result['reason']
+
+    def test_collapsed_reference_is_rejected(self):
+        ppm = np.linspace(0.2, 4.2, 4000)
+        metabolites = make_metabolites(ppm, cr=1.0)
+        metabolites[['Cr', 'PCr']] *= 0.02
+        result = check_reference(metabolites)
+        assert not result['ok']
+        assert 'below' in result['reason']
+
+    def test_quantify_returns_nan_not_a_wrong_number(self):
+        ppm = np.linspace(0.2, 4.2, 2000)
+        curves = make_curves(mm_height=1.0)
+        metabolites = make_metabolites(curves['ppm'].to_numpy(), cr=1.0)
+        metabolites['PCr'] = -2.0 * metabolites['PCr']
+        summary, _ = quantify_mm(curves, metabolites)
+        assert summary['area_per_tcr'].isna().all()
+        # The area itself is unaffected and must still be reported.
+        assert summary.set_index('band').loc['MM09', 'area'] > 0
+        assert ppm.size  # keep the fixture meaningful
+
+    def test_area_survives_a_bad_reference(self):
+        good = quantify_mm(make_curves(mm_height=1.0))[0]
+        metabolites = make_metabolites(make_curves()['ppm'].to_numpy(), cr=1.0)
+        metabolites[['Cr', 'PCr']] *= 0.02
+        bad = quantify_mm(make_curves(mm_height=1.0), metabolites)[0]
+        assert bad.set_index('band').loc['MM09', 'area'] == pytest.approx(
+            good.set_index('band').loc['MM09', 'area'])
 
 
 class TestStability:

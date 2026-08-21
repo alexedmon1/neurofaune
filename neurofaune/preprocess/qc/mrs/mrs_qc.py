@@ -372,7 +372,18 @@ def generate_mrs_qc_report(
         # Only validated bands reach the metrics; the provisional ones stay in
         # the CSV and the figure, where their flag travels with them.
         for row in areas[~areas['provisional']].itertuples():
-            metrics[f'mm_{row.band.lower()}_per_tcr'] = float(row.area_per_tcr)
+            metrics[f'mm_{row.band.lower()}_area'] = float(row.area)
+            if np.isfinite(row.area_per_tcr):
+                metrics[f'mm_{row.band.lower()}_per_tcr'] = float(row.area_per_tcr)
+
+        # A NaN ratio beside a finite area means quantify_mm refused the
+        # creatine reference. That is worth flagging rather than leaving as a
+        # silent gap: such sessions fit, report plausible concentrations and
+        # pass SNR and linewidth, so nothing else here would catch them.
+        metrics['mm_reference_ok'] = bool(areas['area_per_tcr'].notna().any())
+        if not metrics['mm_reference_ok']:
+            logger.warning('%s %s: creatine reference rejected; MM areas are '
+                           'reported unscaled', subject, session)
 
     # The fsl_mrs fit figure is the single most informative panel; copy it in
     # so the report is self-contained.

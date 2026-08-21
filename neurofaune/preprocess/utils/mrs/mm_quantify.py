@@ -44,7 +44,21 @@ orders poly,2 through poly,5 that took MM09 from 34% to 7.6% CV, and made every
 session's area positive.
 
 The consequence is a stated convention: areas are relative to the 1.55-1.80 ppm
-level, so MM17 is zero by construction and is not reported.
+level, which suppresses MM17 by construction.
+
+That raised the obvious objection -- that MM14 and MM17 might be unreportable
+because of where the anchor sits rather than because of the data. Four zero
+references were compared on 87 sessions (both flanks sloped, both flat, upfield
+flank only sloped, upfield flank only flat). Dropping the upper flank does free
+MM17 to be non-zero, and it is still not measurable: negative in 26% of
+sessions with a robust CV of 184%. MM14 is negative in 39-86% of sessions under
+every variant. The objection was worth testing and the verdict survives it.
+
+MM09 is essentially indifferent to the choice (median 0.566-0.577, never
+negative) except under the upfield-sloped variant, which extrapolates a slope
+across 1.2 ppm from a single 0.35 ppm window and degrades it as expected. The
+default is kept because it gives MM09 the lowest between-session scatter and
+MM12 its only tolerable one.
 
 A trough that constrains the bands
 ----------------------------------
@@ -64,15 +78,26 @@ subtracts real signal. The bands below stop at the zero-crossing instead.
 
 What is measurable here, and what is not
 ----------------------------------------
-On this study's data, tested across baseline orders:
+Measured on the full study (87 sessions with a sound reference), with
+baseline-order stability from 4 sessions fitted at poly,2 through poly,5:
 
-===== ============ ======= ==========================================
-band  mean /tCr    CV      verdict
-===== ============ ======= ==========================================
-MM09  0.56         5.2%    measurable -- better than NAA (9.1%)
-MM12  0.14         44%     provisional -- reported, do not rely on it
-MM14  -0.04        88%     not measurable; negative in 3 of 4 sessions
-===== ============ ======= ==========================================
+===== ========== ========= ======== ======== =================================
+band  median     baseline  between  negative verdict
+      /tCr       CV        CV
+===== ========== ========= ======== ======== =================================
+MM09  0.566      5.2%      26.7%    0%       measurable
+MM12  0.216      44%       36.5%    0%       provisional -- do not rely on it
+MM14  -0.020     88%       138%     78%      not measurable
+MM17  0.006      --        92%      14%      not measurable
+===== ========== ========= ======== ======== =================================
+
+Two different quantities sit in that table and should not be conflated.
+Baseline CV is stability of one session under a changed fit; between-session CV
+is spread across animals, which mixes real biology with measurement error. For
+scale, on the same sessions the metabolites give between-session CVs of 8.1%
+(Glu+Gln), 8.8% (NAA+NAAG), 18.9% (GSH) and 24.3% (Tau). MM09 at 26.7% is
+therefore noisier across animals than the strong singlets and comparable to
+Tau: usable, but needing larger groups than NAA to detect an effect.
 
 The number is an *area ratio*, not a concentration: no MM relaxation correction
 is applied, and at TE 20 ms an unknown fraction of the MM signal has already
@@ -87,7 +112,7 @@ data, it is reporting the polynomial.
 """
 
 import logging
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -132,6 +157,19 @@ DEFAULT_KNOT_SPACING = 0.10
 
 #: Basis names summed to form the creatine reference.
 TCR_COMPONENTS: Tuple[str, ...] = ('Cr', 'PCr')
+
+#: Smallest share of the total modelled metabolite area the creatine reference
+#: may hold before its ratios are refused. Across 92 sessions the share is
+#: tightly distributed -- median 10.2%, 5th percentile 5.2% -- so this cutoff
+#: is about half the median and caught 5 sessions, one of them with a
+#: *negative* reference area (PCr integrating to -0.016, Cr to exactly 0).
+#:
+#: Those are phase failures, not concentration failures: reference_area
+#: integrates the real part of the modelled creatine, so a fit that puts
+#: creatine partly into dispersion collapses or inverts the integral while
+#: fsl_mrs' own concentration parameter is unaffected. Their reported
+#: metabolite concentrations were normal; only area ratios computed here break.
+MIN_REFERENCE_FRACTION = 0.05
 
 
 def metabolite_free_spectrum(curves: pd.DataFrame) -> pd.DataFrame:
@@ -290,6 +328,45 @@ def reference_area(
     return float(np.trapezoid(total[order], ppm[order]))
 
 
+def check_reference(
+    metabolites: pd.DataFrame,
+    components: Sequence[str] = TCR_COMPONENTS,
+    minimum_fraction: float = MIN_REFERENCE_FRACTION,
+) -> Dict[str, Any]:
+    """Is the creatine reference sound enough to divide by?
+
+    Guarding this matters because the failure is silent. A session whose
+    modelled creatine integrates to near zero still fits, still reports
+    plausible concentrations, and still passes SNR and linewidth QC -- but any
+    area *ratio* taken against it explodes. One validation session returned
+    -11.7 /tCr from a perfectly ordinary MM area of 0.18, purely because its
+    denominator had gone negative.
+
+    Returns
+    -------
+    dict
+        ``area``, ``total``, ``fraction``, ``ok`` and ``reason``. ``ok`` is
+        False for a non-positive reference or one holding less than
+        ``minimum_fraction`` of the total modelled metabolite area.
+    """
+    area = reference_area(metabolites, components)
+    ppm = metabolites['ppm'].to_numpy(float)
+    order = np.argsort(ppm)
+    total = float(np.trapezoid(
+        metabolites.drop(columns=['ppm']).to_numpy(float).sum(axis=1)[order], ppm[order]))
+    fraction = area / total if total else float('nan')
+
+    if area <= 0:
+        return {'area': area, 'total': total, 'fraction': fraction, 'ok': False,
+                'reason': f'creatine reference area is non-positive ({area:.4f}); '
+                          'the fit put creatine into dispersion or to zero'}
+    if not np.isfinite(fraction) or fraction < minimum_fraction:
+        return {'area': area, 'total': total, 'fraction': fraction, 'ok': False,
+                'reason': f'creatine reference is {fraction:.1%} of the modelled '
+                          f'metabolite area, below the {minimum_fraction:.0%} floor'}
+    return {'area': area, 'total': total, 'fraction': fraction, 'ok': True, 'reason': ''}
+
+
 def quantify_mm(
     curves: pd.DataFrame,
     metabolites: Optional[pd.DataFrame] = None,
@@ -323,15 +400,20 @@ def quantify_mm(
     envelope, line = anchor_envelope(ppm, raw, flanks)
     areas = integrate_bands(ppm, envelope, bands)
 
+    # A bad reference must yield no ratio rather than a plausible-looking one:
+    # the numerator is usually fine when the denominator collapses, so the
+    # result looks like a measurement and is not. See check_reference.
     tcr = None
     if metabolites is not None:
         try:
-            tcr = reference_area(metabolites)
+            reference = check_reference(metabolites)
         except KeyError as exc:
             logger.warning('no creatine reference for MM scaling: %s', exc)
-    if tcr is not None and abs(tcr) < 1e-12:
-        logger.warning('creatine reference area is ~0; MM ratios not computed')
-        tcr = None
+        else:
+            if reference['ok']:
+                tcr = reference['area']
+            else:
+                logger.warning('MM ratios not computed: %s', reference['reason'])
 
     limits = dict(MM_BANDS if bands is None else bands)
     summary = pd.DataFrame([
