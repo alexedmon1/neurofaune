@@ -193,6 +193,8 @@ BIDS-ification and neurofaune ships its own reader. And its outputs are
                               {sub}_{ses}_metabolites.csv    tidy per-session results
                               {sub}_{ses}_fit-curves.csv      ppm, data, fit, baseline, residual
                               {sub}_{ses}_fit-metabolites.csv ppm + one column per metabolite
+                              {sub}_{ses}_mm-areas.csv        upfield MM/lipid band areas
+                              {sub}_{ses}_mm-envelope.csv     MM spline + its anchor line
 {study}/mrs/qc/{sub}/{ses}/   QC report, voxel-placement overlay, CRLB chart
 {study}/mrs/logs/             batch summaries, failure tracebacks
 {study}/mrs/index.html        study QC index: sortable, links every report
@@ -347,6 +349,54 @@ to be *measured*, with a metabolite-nulled acquisition; it cannot be simulated,
 since MM is not a spin system. Until then, treat metabolites under the MM
 resonances with more caution than NAA, tCr, Glu and Ins. The evidence is written
 up in `mrs/basis/README.md` in the study tree (outside this repo).
+
+#### Macromolecule areas, measured after the fit
+
+What *can* be recovered without an MM basis is measured post hoc, by
+`quantify_mm` (on by default; needs `export_curves`). It runs after the
+metabolite fit and never feeds back into it, which is precisely why it is safe
+— the failures above all came from letting MM components compete with the
+baseline *during* fitting.
+
+Because `fit` is metabolites plus baseline, the metabolite-free spectrum is
+`residual + baseline`. Adding the baseline back is the point, not an oversight:
+with an MM-free basis, the polynomial is where the MM signal went. A cubic
+spline through that recovers the upfield envelope, where the basis is nearly
+empty (lactate and alanine are its only occupants and both are subtracted).
+
+Areas are measured against a line through MM-poor flank windows, not against
+zero. A pedestal of about −0.15 runs the full width of the spectrum — present
+even with the baseline switched off entirely — and integrating from zero gave
+negative areas and a mean CV of 34% across baseline orders. Anchoring fixes
+that, at the cost of a stated convention: areas are relative to the 1.55–1.80
+ppm level.
+
+The criterion for whether a band means anything needs no second fitting
+package. The area is measured partly *from* the polynomial, so the failure mode
+is that it reports the polynomial — in which case changing the baseline order
+changes the answer. Across four sessions and baseline orders `poly,2`–`poly,5`:
+
+| band | mean /tCr | CV | verdict |
+|------|-----------|-----|---------|
+| MM09 | 0.40 | 7.6% | measurable — as stable as Glu (4.9%), Ins (5.2%), NAA (9.1%) |
+| MM12 | 0.14 | 44% | reported, flagged `provisional` |
+| MM14 | −0.04 | 88% | negative in 3 of 4 sessions — **not reported** |
+
+Only MM09 is claimed. MM14 and MM17 are omitted rather than emitted as numbers
+that look like measurements; MM17 also defines the upper anchor and would be
+zero by construction.
+
+These are **area ratios, not concentrations**: no MM relaxation correction is
+applied, and at TE 20 ms an unknown fraction of the MM signal has already
+decayed. Nor can this separate macromolecules from instrumental baseline roll —
+the polynomial absorbed both. It measures the one resonance that survives
+without a metabolite-nulled acquisition; it does not replace one.
+
+Outputs are `{sub}_{ses}_mm-areas.csv` (band, area, area_per_tcr, ppm limits,
+provisional flag) and `{sub}_{ses}_mm-envelope.csv` (ppm, signal, envelope,
+anchor — enough to plot the spline over the metabolite-free spectrum).
+Configured by `spectroscopy.quantify_mm`, `mm_range`, `mm_knot_spacing` and
+`mm_flanks`.
 
 ### Resting-State Metrics
 
