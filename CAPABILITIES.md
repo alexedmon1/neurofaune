@@ -1,6 +1,6 @@
 # neurofaune capabilities
 
-_Generated from the code by `neurofaune capabilities` (v0.6.6a0)._ Do not edit by hand — run `make capabilities`.
+_Generated from the code by `neurofaune capabilities` (v0.6.7a0)._ Do not edit by hand — run `make capabilities`.
 
 **CLI subcommands:** `bids`, `capabilities`, `check-paths`
 
