@@ -11,8 +11,11 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
 import nibabel as nib
 import numpy as np
+
+from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
 
 
 def register_subject_to_template(
@@ -369,11 +372,11 @@ def propagate_atlas_to_dwi_direct(
 
     # Locate all required transforms
     subj_transforms = transforms_root / subject / session
-    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
     fa_to_template = subj_transforms / 'FA_to_template_0GenericAffine.mat'
-    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_root, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     if not fa_to_template.exists():
         raise FileNotFoundError(
@@ -381,9 +384,10 @@ def propagate_atlas_to_dwi_direct(
             "Run FA-to-template registration first."
         )
 
-    if not tpl_to_sigma_affine.exists():
+    if tpl_to_sigma_affine is None:
         raise FileNotFoundError(
-            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Template→SIGMA transform not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
@@ -395,7 +399,7 @@ def propagate_atlas_to_dwi_direct(
     transform_list.append(f"[{fa_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")
 
@@ -484,11 +488,11 @@ def propagate_atlas_to_bold_direct(
     cohort = session.replace('ses-', '')
 
     subj_transforms = transforms_root / subject / session
-    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
     bold_to_template = subj_transforms / 'BOLD_to_template_0GenericAffine.mat'
-    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_root, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     if not bold_to_template.exists():
         raise FileNotFoundError(
@@ -496,9 +500,10 @@ def propagate_atlas_to_bold_direct(
             "Run BOLD-to-template registration first."
         )
 
-    if not tpl_to_sigma_affine.exists():
+    if tpl_to_sigma_affine is None:
         raise FileNotFoundError(
-            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Template→SIGMA transform not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
@@ -508,7 +513,7 @@ def propagate_atlas_to_bold_direct(
     transform_list.append(f"[{bold_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")
 
@@ -595,11 +600,11 @@ def propagate_atlas_to_msme_direct(
     cohort = session.replace('ses-', '')
 
     subj_transforms = transforms_root / subject / session
-    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
     msme_to_template = subj_transforms / 'MSME_to_template_0GenericAffine.mat'
-    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_root, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     if not msme_to_template.exists():
         raise FileNotFoundError(
@@ -607,9 +612,10 @@ def propagate_atlas_to_msme_direct(
             "Run MSME-to-template registration first."
         )
 
-    if not tpl_to_sigma_affine.exists():
+    if tpl_to_sigma_affine is None:
         raise FileNotFoundError(
-            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Template→SIGMA transform not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
@@ -619,7 +625,7 @@ def propagate_atlas_to_msme_direct(
     transform_list.append(f"[{msme_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")
 
@@ -729,14 +735,14 @@ def propagate_atlas_to_dwi(
 
     # Locate all required transforms
     subj_transforms = transforms_root / subject / session
-    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
     # Required transforms (check existence)
     fa_to_t2w = subj_transforms / 'FA_to_T2w_0GenericAffine.mat'
     t2w_to_tpl_affine = subj_transforms / 'T2w_to_template_0GenericAffine.mat'
     t2w_to_tpl_inv_warp = subj_transforms / 'T2w_to_template_1InverseWarp.nii.gz'
-    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_root, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     # Check FA→T2w exists
     if not fa_to_t2w.exists():
@@ -753,9 +759,10 @@ def propagate_atlas_to_dwi(
         )
 
     # Check Template→SIGMA exists
-    if not tpl_to_sigma_affine.exists():
+    if tpl_to_sigma_affine is None:
         raise FileNotFoundError(
-            f"Template→SIGMA transform not found: {tpl_to_sigma_affine}\n"
+            "Template→SIGMA transform not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
@@ -772,7 +779,7 @@ def propagate_atlas_to_dwi(
     transform_list.append(f"[{t2w_to_tpl_affine},1]")
 
     # 3. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")
 
@@ -869,7 +876,6 @@ def propagate_atlas_to_bold(
 
     # Locate all required transforms
     subj_transforms = transforms_root / subject / session
-    tpl_transforms = templates_root / 'anat' / cohort / 'transforms'
 
     # Helper to find transforms with multiple naming patterns
     def _find(directory, *names):
@@ -891,8 +897,9 @@ def propagate_atlas_to_bold(
         f'{subject}_{session}_T2w_to_template_1InverseWarp.nii.gz',
         'T2w_to_template_1InverseWarp.nii.gz'
     )
-    tpl_to_sigma_affine = _find(tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat')
-    tpl_to_sigma_inv_warp = _find(tpl_transforms, 'tpl-to-SIGMA_1InverseWarp.nii.gz')
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_root, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     # Check BOLD→T2w exists
     if not bold_to_t2w:
@@ -911,7 +918,8 @@ def propagate_atlas_to_bold(
     # Check Template→SIGMA exists
     if not tpl_to_sigma_affine:
         raise FileNotFoundError(
-            f"Template→SIGMA transform not found in: {tpl_transforms}\n"
+            "Template→SIGMA transform not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
@@ -928,7 +936,7 @@ def propagate_atlas_to_bold(
     transform_list.append(f"[{t2w_to_tpl_affine},1]")
 
     # 3. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")
 

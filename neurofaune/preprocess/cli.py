@@ -105,5 +105,29 @@ def capabilities(fmt, output):
         click.echo(text, nl=False)
 
 
+@main.command("check-paths")
+@click.argument("paths", nargs=-1, required=True,
+                type=click.Path(exists=True, path_type=Path))
+def check_paths(paths):
+    """Fail if code hardcodes a tpl->SIGMA transform filename.
+
+    ANTs names those files after the --output prefix it was given, so the name is
+    a property of how the study ran registration, not a constant. Code that spells
+    one out keeps working until the layout changes, then silently resolves nothing
+    -- the step skips, the run exits 0, and the gap shows up only in a log. Point
+    this at a study's own code (e.g. `neurofaune check-paths preprocessing/code`)
+    and gate the pipeline on it.
+    """
+    from neurofaune.qa import find_hardcoded_sigma_paths
+
+    findings = find_hardcoded_sigma_paths(paths)
+    for f in findings:
+        click.echo(str(f), err=True)
+    if findings:
+        click.echo(f"\n{len(findings)} hardcoded tpl->SIGMA path(s)", err=True)
+        raise SystemExit(1)
+    click.echo("no hardcoded tpl->SIGMA paths")
+
+
 if __name__ == "__main__":
     main()

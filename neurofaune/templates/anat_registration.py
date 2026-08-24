@@ -14,6 +14,7 @@ import nibabel as nib
 import numpy as np
 
 from neurofaune.templates.manifest import TemplateManifest, find_template_manifest
+from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
 from neurofaune.templates.registration_qc import (
     compute_registration_metrics,
     generate_registration_qc_figure,
@@ -229,13 +230,13 @@ def propagate_atlas_to_anat(
 
     # Locate transforms
     subj_transforms = Path(transforms_dir) / subject / session
-    tpl_transforms = Path(templates_dir) / 'anat' / cohort / 'transforms'
 
     # Required transforms
     t2w_to_tpl_affine = subj_transforms / f'{subject}_{session}_T2w_to_template_0GenericAffine.mat'
     t2w_to_tpl_inv_warp = subj_transforms / f'{subject}_{session}_T2w_to_template_1InverseWarp.nii.gz'
-    tpl_to_sigma_affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    tpl_to_sigma_inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_dir, cohort)
+    tpl_to_sigma_affine = tpl_to_sigma['affine']
+    tpl_to_sigma_inv_warp = tpl_to_sigma['inverse_warp']
 
     # Check transforms exist
     if not t2w_to_tpl_affine.exists():
@@ -243,16 +244,17 @@ def propagate_atlas_to_anat(
             f"T2w→Template affine not found: {t2w_to_tpl_affine}\n"
             "Run register_anat_to_template() first."
         )
-    if not tpl_to_sigma_affine.exists():
+    if tpl_to_sigma_affine is None:
         raise FileNotFoundError(
-            f"Template→SIGMA affine not found: {tpl_to_sigma_affine}\n"
+            "Template→SIGMA affine not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}\n"
             "Run template-to-SIGMA registration first."
         )
 
     print(f"  T2w→Template affine: {t2w_to_tpl_affine.name}")
     print(f"  T2w→Template warp: {t2w_to_tpl_inv_warp.name if t2w_to_tpl_inv_warp.exists() else 'N/A'}")
     print(f"  Template→SIGMA affine: {tpl_to_sigma_affine.name}")
-    print(f"  Template→SIGMA warp: {tpl_to_sigma_inv_warp.name if tpl_to_sigma_inv_warp.exists() else 'N/A'}")
+    print(f"  Template→SIGMA warp: {tpl_to_sigma_inv_warp.name if tpl_to_sigma_inv_warp else 'N/A'}")
 
     # Build transform chain for SIGMA → T2w
     # ANTs applies transforms in reverse order
@@ -264,7 +266,7 @@ def propagate_atlas_to_anat(
     transform_list.append(f"[{t2w_to_tpl_affine},1]")  # Invert affine
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp.exists():
+    if tpl_to_sigma_inv_warp is not None:
         transform_list.append(str(tpl_to_sigma_inv_warp))
     transform_list.append(f"[{tpl_to_sigma_affine},1]")  # Invert affine
 

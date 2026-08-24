@@ -44,6 +44,7 @@ import numpy as np
 import nibabel as nib
 
 from neurofaune.templates.registration_qc import compute_dice_coefficient
+from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +199,10 @@ def run_consistency_qc(
         subtx = transforms_dir / subject / session
         aff1 = subtx / f"{subject}_{session}_T2w_to_template_0GenericAffine.mat"
         warp1 = subtx / f"{subject}_{session}_T2w_to_template_1Warp.nii.gz"
-        tpltx = templates_dir / "anat" / coh / "transforms"
-        aff2 = tpltx / "tpl-to-SIGMA_0GenericAffine.mat"
-        warp2 = tpltx / "tpl-to-SIGMA_1Warp.nii.gz"
-        if not (aff1.exists() and aff2.exists()):
+        tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_dir, coh)
+        aff2 = tpl_to_sigma["affine"]
+        warp2 = tpl_to_sigma["warp"]
+        if not (aff1.exists() and aff2 is not None):
             logger.warning("missing transforms for %s %s — skipped", subject, session)
             continue
         out = warped_dir / f"{subject}_{session}_brain_in_atlas.nii.gz"
@@ -209,7 +210,7 @@ def run_consistency_qc(
             warp_brain_to_atlas(
                 mask, aff1, aff2, atlas_mask, out,
                 to_template_warp=warp1 if warp1.exists() else None,
-                tpl_to_sigma_warp=warp2 if warp2.exists() else None,
+                tpl_to_sigma_warp=warp2,
                 interpolation=interpolation,
             )
             warped[(subject, session)] = out

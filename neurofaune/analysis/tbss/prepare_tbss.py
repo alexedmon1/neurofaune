@@ -45,6 +45,7 @@ import numpy as np
 import pandas as pd
 
 from neurofaune.config import load_config, get_config_value
+from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
 
 
 # Supported DTI metrics
@@ -261,7 +262,6 @@ def discover_tbss_subjects(
 
             # Validate transforms
             subj_transforms = transforms_dir / subject / session
-            tpl_transforms = templates_dir / 'anat' / cohort / 'transforms'
 
             sd.fa_to_t2w_affine = _find_transform(
                 subj_transforms, 'FA_to_T2w_0GenericAffine.mat'
@@ -276,12 +276,9 @@ def discover_tbss_subjects(
                 f'{subject}_{session}_T2w_to_template_1Warp.nii.gz',
                 'T2w_to_template_1Warp.nii.gz'
             )
-            sd.tpl_to_sigma_affine = _find_transform(
-                tpl_transforms, 'tpl-to-SIGMA_0GenericAffine.mat'
-            )
-            sd.tpl_to_sigma_warp = _find_transform(
-                tpl_transforms, 'tpl-to-SIGMA_1Warp.nii.gz'
-            )
+            tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(templates_dir, cohort)
+            sd.tpl_to_sigma_affine = tpl_to_sigma['affine']
+            sd.tpl_to_sigma_warp = tpl_to_sigma['warp']
 
             missing_transforms = []
             if not sd.fa_to_t2w_affine:

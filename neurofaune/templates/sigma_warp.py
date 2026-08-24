@@ -18,6 +18,7 @@ import tempfile
 
 TPL_TO_SIGMA_AFFINE = "tpl-to-SIGMA_0GenericAffine.mat"
 TPL_TO_SIGMA_WARP = "tpl-to-SIGMA_1Warp.nii.gz"
+TPL_TO_SIGMA_INVERSE_WARP = "tpl-to-SIGMA_1InverseWarp.nii.gz"
 
 #: Timepoints per ``antsApplyTransforms -e 3`` call for a 4-D input.
 #:
@@ -60,7 +61,9 @@ def resolve_tpl_to_sigma(
     -------
     dict
         ``affine``, ``warp`` (None if the registration was affine-only),
-        ``found`` (bool), ``searched`` (list of directories tried).
+        ``inverse_warp`` (SIGMA->template, for propagating atlas labels the
+        other way; None if absent), ``found`` (bool), ``searched`` (list of
+        directories tried).
     """
     search: List[Path] = [Path(d) for d in (candidate_dirs or [])]
     if template_file:
@@ -95,9 +98,42 @@ def resolve_tpl_to_sigma(
         warp = d / f"{prefix}1Warp.nii.gz"
         if not warp.exists():
             warp = d / TPL_TO_SIGMA_WARP
-        return {"affine": affine, "warp": warp if warp.exists() else None,
+        # SIGMA->template. Atlas propagation needs this leg, not the forward one.
+        inv = d / f"{prefix}1InverseWarp.nii.gz"
+        if not inv.exists():
+            inv = d / TPL_TO_SIGMA_INVERSE_WARP
+        return {"affine": affine,
+                "warp": warp if warp.exists() else None,
+                "inverse_warp": inv if inv.exists() else None,
                 "found": True, "searched": tried}
-    return {"affine": None, "warp": None, "found": False, "searched": tried}
+    return {"affine": None, "warp": None, "inverse_warp": None,
+            "found": False, "searched": tried}
+
+
+def resolve_tpl_to_sigma_for_cohort(
+    templates_root: Path,
+    cohort: str,
+    template_file: Optional[Path] = None,
+) -> Dict[str, Optional[Path]]:
+    """Resolve tpl->SIGMA for a study that keys its templates by timepoint.
+
+    Eight call sites used to open-code ``templates_root/'anat'/cohort/'transforms'``
+    and then name the transform files outright. That directory is one study's
+    layout, and the filenames are whatever ``--output`` prefix built them, so the
+    combination broke twice on the cuprizone study -- silently, because a missing
+    transform makes the caller skip rather than raise.
+
+    Deliberately does NOT fall back to scanning sibling timepoint directories.
+    Finding *a* tpl->SIGMA warp is worse than finding none if it belongs to a
+    different timepoint: the session would be warped with the wrong transform and
+    every downstream number would look plausible.
+    """
+    root = Path(templates_root)
+    return resolve_tpl_to_sigma(
+        template_file=template_file,
+        candidate_dirs=[root / "anat" / cohort / "transforms",
+                        root / "anat" / cohort],
+    )
 
 
 def warp_maps_to_sigma(

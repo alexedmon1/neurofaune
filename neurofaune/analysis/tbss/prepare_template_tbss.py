@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple
 import nibabel as nib
 import numpy as np
 
+from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
 from neurofaune.analysis.tbss.prepare_tbss import (
     SubjectData,
     _find_metric_file,
@@ -90,15 +91,18 @@ def warp_atlas_to_template(
 
     # Paths
     sigma_dir = study_root / 'atlas' / 'SIGMA_study_space'
-    tpl_transforms = study_root / 'templates' / 'anat' / cohort / 'transforms'
     reference = study_root / 'templates' / 'anat' / cohort / f'tpl-BPARat_{cohort}_T2w.nii.gz'
 
-    affine = tpl_transforms / 'tpl-to-SIGMA_0GenericAffine.mat'
-    inv_warp = tpl_transforms / 'tpl-to-SIGMA_1InverseWarp.nii.gz'
+    tpl_to_sigma = resolve_tpl_to_sigma_for_cohort(study_root / 'templates', cohort)
+    affine = tpl_to_sigma['affine']
+    inv_warp = tpl_to_sigma['inverse_warp']
 
-    for required in [reference, affine, inv_warp]:
-        if not required.exists():
-            raise FileNotFoundError(f"Required file not found: {required}")
+    if affine is None or inv_warp is None:
+        raise FileNotFoundError(
+            "Template→SIGMA transforms not found. Searched: "
+            f"{[str(d) for d in tpl_to_sigma['searched']]}")
+    if not reference.exists():
+        raise FileNotFoundError(f"Required file not found: {reference}")
 
     # Assets to warp: (source filename, output filename, interpolation)
     assets = [
