@@ -14,7 +14,7 @@ import pytest
 
 from neurofaune.preprocess.utils.mrs.mm_quantify import (
     DEFAULT_FLANKS,
-    MIN_REFERENCE_FRACTION,
+    MIN_REFERENCE_PURITY,
     MM_BANDS,
     PROVISIONAL_BANDS,
     anchor_envelope,
@@ -254,7 +254,7 @@ class TestReferenceGuard:
         ppm = np.linspace(0.2, 4.2, 4000)
         result = check_reference(make_metabolites(ppm, cr=1.0))
         assert result['ok']
-        assert result['fraction'] > MIN_REFERENCE_FRACTION
+        assert result['purity'] > MIN_REFERENCE_PURITY
 
     def test_negative_reference_is_rejected(self):
         # The real failure: PCr integrating negative because the fit put
@@ -267,12 +267,24 @@ class TestReferenceGuard:
         assert 'non-positive' in result['reason']
 
     def test_collapsed_reference_is_rejected(self):
+        # Creatine swamped by another species inside its own window.
         ppm = np.linspace(0.2, 4.2, 4000)
         metabolites = make_metabolites(ppm, cr=1.0)
         metabolites[['Cr', 'PCr']] *= 0.02
+        metabolites['Cho'] = gaussian(ppm, 3.03, 5.0, 0.02)
         result = check_reference(metabolites)
         assert not result['ok']
         assert 'below' in result['reason']
+
+    def test_reference_uses_the_methyl_singlet_not_the_whole_range(self):
+        # Regression guard on the fix. A wide-range integral reports phase
+        # rather than amplitude; five of 92 sessions collapsed that way, one to
+        # a negative area, from entirely normal creatine amplitudes.
+        ppm = np.linspace(0.2, 4.2, 4000)
+        metabolites = make_metabolites(ppm, cr=1.0)
+        # Signal far outside the tCr window must not enter the reference.
+        metabolites['Cr'] = metabolites['Cr'] - gaussian(ppm, 1.30, 20.0, 0.05)
+        assert reference_area(metabolites) > 0
 
     def test_quantify_returns_nan_not_a_wrong_number(self):
         ppm = np.linspace(0.2, 4.2, 2000)

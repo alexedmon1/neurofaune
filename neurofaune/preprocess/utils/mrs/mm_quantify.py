@@ -78,15 +78,15 @@ subtracts real signal. The bands below stop at the zero-crossing instead.
 
 What is measurable here, and what is not
 ----------------------------------------
-Measured on the full study (87 sessions with a sound reference), with
-baseline-order stability from 4 sessions fitted at poly,2 through poly,5:
+Measured on all 92 sessions of the full study, with baseline-order stability
+from 4 sessions fitted at poly,2 through poly,5:
 
 ===== ========== ========= ======== ======== =================================
 band  median     baseline  between  negative verdict
       /tCr       CV        CV
 ===== ========== ========= ======== ======== =================================
-MM09  0.566      5.2%      26.7%    0%       measurable
-MM12  0.216      44%       36.5%    0%       provisional -- do not rely on it
+MM09  0.763      4.7%      19.5%    0%       measurable
+MM12  0.290      44%       36.5%    0%       provisional -- do not rely on it
 MM14  -0.020     88%       138%     78%      not measurable
 MM17  0.006      --        92%      14%      not measurable
 ===== ========== ========= ======== ======== =================================
@@ -95,9 +95,9 @@ Two different quantities sit in that table and should not be conflated.
 Baseline CV is stability of one session under a changed fit; between-session CV
 is spread across animals, which mixes real biology with measurement error. For
 scale, on the same sessions the metabolites give between-session CVs of 8.1%
-(Glu+Gln), 8.8% (NAA+NAAG), 18.9% (GSH) and 24.3% (Tau). MM09 at 26.7% is
-therefore noisier across animals than the strong singlets and comparable to
-Tau: usable, but needing larger groups than NAA to detect an effect.
+(Glu+Gln), 8.8% (NAA+NAAG), 18.9% (GSH) and 24.3% (Tau). MM09 at 19.5% is
+therefore noisier across animals than the strong singlets and sits alongside
+GSH: usable, but needing larger groups than NAA to detect an effect.
 
 The number is an *area ratio*, not a concentration: no MM relaxation correction
 is applied, and at TE 20 ms an unknown fraction of the MM signal has already
@@ -158,18 +158,28 @@ DEFAULT_KNOT_SPACING = 0.10
 #: Basis names summed to form the creatine reference.
 TCR_COMPONENTS: Tuple[str, ...] = ('Cr', 'PCr')
 
-#: Smallest share of the total modelled metabolite area the creatine reference
-#: may hold before its ratios are refused. Across 92 sessions the share is
-#: tightly distributed -- median 10.2%, 5th percentile 5.2% -- so this cutoff
-#: is about half the median and caught 5 sessions, one of them with a
-#: *negative* reference area (PCr integrating to -0.016, Cr to exactly 0).
+#: Window integrated for the creatine reference: the tCr methyl singlet at
+#: 3.027 ppm. Restricting to it is not cosmetic -- integrating the modelled
+#: creatine across the whole fit range instead makes the reference
+#: phase-sensitive rather than amplitude-sensitive, because the integral of a
+#: spectrum over a wide range is dominated by the t=0 value of its FID. Five of
+#: 92 sessions collapsed that way, one to a *negative* area, while their fitted
+#: creatine amplitudes were entirely normal (Cr+PCr 0.201 against a 0.252
+#: median) and their reported concentrations were fine.
 #:
-#: Those are phase failures, not concentration failures: reference_area
-#: integrates the real part of the modelled creatine, so a fit that puts
-#: creatine partly into dispersion collapses or inverts the integral while
-#: fsl_mrs' own concentration parameter is unaffected. Their reported
-#: metabolite concentrations were normal; only area ratios computed here break.
-MIN_REFERENCE_FRACTION = 0.05
+#: Measured over the same 92 sessions, the local window is better on every
+#: count: the reference is never non-positive (min 0.131 against -0.016), the
+#: MM09 ratio's between-session CV falls from 247% to 19.5%, its baseline-order
+#: CV from 5.2% to 4.7%, and no session has to be excluded.
+TCR_WINDOW: Tuple[float, float] = (2.90, 3.15)
+
+#: Smallest share of the modelled signal *inside* TCR_WINDOW that creatine may
+#: hold before the reference is refused. Across 92 sessions the share runs
+#: 0.795 to 2.94 with a median of 0.998 -- creatine dominates that window, as
+#: it should -- so this floor is a wide safety net that fires on none of them.
+#: It exists to catch a genuinely collapsed fit, not to trim outliers.
+MIN_REFERENCE_PURITY = 0.5
+
 
 
 def metabolite_free_spectrum(curves: pd.DataFrame) -> pd.DataFrame:
@@ -311,12 +321,19 @@ def integrate_bands(
 def reference_area(
     metabolites: pd.DataFrame,
     components: Sequence[str] = TCR_COMPONENTS,
+    window: Tuple[float, float] = TCR_WINDOW,
 ) -> float:
-    """Area of the modelled creatine signal, for scaling the MM areas.
+    """Area of the modelled creatine methyl singlet, for scaling the MM areas.
 
     Taken from the fitted metabolite curves rather than from a reported
     concentration, so numerator and denominator are areas of the same spectrum
     in the same arbitrary units and the ratio is scale-free.
+
+    Integrated over ``window`` rather than the whole fit range. That matters:
+    a wide-range integral of a real spectrum is dominated by the t=0 value of
+    its FID and so reports phase rather than amplitude, which is how five of 92
+    sessions produced a near-zero or negative reference from perfectly normal
+    creatine amplitudes. See :data:`TCR_WINDOW`.
     """
     present = [c for c in components if c in metabolites.columns]
     if not present:
@@ -325,46 +342,63 @@ def reference_area(
     ppm = metabolites['ppm'].to_numpy(float)
     total = metabolites[present].to_numpy(float).sum(axis=1)
     order = np.argsort(ppm)
-    return float(np.trapezoid(total[order], ppm[order]))
+    ppm, total = ppm[order], total[order]
+
+    low, high = min(window), max(window)
+    inside = (ppm >= low) & (ppm <= high)
+    if inside.sum() < 2:
+        raise ValueError(f'no modelled creatine between {low} and {high} ppm')
+    return float(np.trapezoid(total[inside], ppm[inside]))
 
 
 def check_reference(
     metabolites: pd.DataFrame,
     components: Sequence[str] = TCR_COMPONENTS,
-    minimum_fraction: float = MIN_REFERENCE_FRACTION,
+    window: Tuple[float, float] = TCR_WINDOW,
+    minimum_purity: float = MIN_REFERENCE_PURITY,
 ) -> Dict[str, Any]:
     """Is the creatine reference sound enough to divide by?
 
-    Guarding this matters because the failure is silent. A session whose
-    modelled creatine integrates to near zero still fits, still reports
-    plausible concentrations, and still passes SNR and linewidth QC -- but any
-    area *ratio* taken against it explodes. One validation session returned
-    -11.7 /tCr from a perfectly ordinary MM area of 0.18, purely because its
-    denominator had gone negative.
+    A safety net rather than a filter. With the reference taken over the methyl
+    singlet (see :data:`TCR_WINDOW`) none of this study's 92 sessions fail it.
+    The check exists because the failure mode is silent when it does occur: a
+    session whose modelled creatine collapses still fits, still reports
+    plausible concentrations and still passes SNR, linewidth and placement QC,
+    while any area *ratio* taken against it explodes. One session returned
+    -11.7 /tCr from an entirely ordinary MM area of 0.18.
+
+    ``purity`` is creatine's share of the modelled signal inside the window,
+    which is self-normalising and so needs no cohort context. Observed range
+    across 92 sessions: 0.795 to 2.94, median 0.998.
 
     Returns
     -------
     dict
-        ``area``, ``total``, ``fraction``, ``ok`` and ``reason``. ``ok`` is
-        False for a non-positive reference or one holding less than
-        ``minimum_fraction`` of the total modelled metabolite area.
+        ``area``, ``window_total``, ``purity``, ``ok`` and ``reason``.
     """
-    area = reference_area(metabolites, components)
+    area = reference_area(metabolites, components, window)
     ppm = metabolites['ppm'].to_numpy(float)
     order = np.argsort(ppm)
-    total = float(np.trapezoid(
-        metabolites.drop(columns=['ppm']).to_numpy(float).sum(axis=1)[order], ppm[order]))
-    fraction = area / total if total else float('nan')
+    ppm_sorted = ppm[order]
+    low, high = min(window), max(window)
+    inside = (ppm_sorted >= low) & (ppm_sorted <= high)
+    window_total = float(np.trapezoid(
+        metabolites.drop(columns=['ppm']).to_numpy(float).sum(axis=1)[order][inside],
+        ppm_sorted[inside]))
+    purity = area / window_total if window_total else float('nan')
 
     if area <= 0:
-        return {'area': area, 'total': total, 'fraction': fraction, 'ok': False,
+        return {'area': area, 'window_total': window_total, 'purity': purity,
+                'ok': False,
                 'reason': f'creatine reference area is non-positive ({area:.4f}); '
-                          'the fit put creatine into dispersion or to zero'}
-    if not np.isfinite(fraction) or fraction < minimum_fraction:
-        return {'area': area, 'total': total, 'fraction': fraction, 'ok': False,
-                'reason': f'creatine reference is {fraction:.1%} of the modelled '
-                          f'metabolite area, below the {minimum_fraction:.0%} floor'}
-    return {'area': area, 'total': total, 'fraction': fraction, 'ok': True, 'reason': ''}
+                          'the fit put creatine to zero or into dispersion'}
+    if not np.isfinite(purity) or purity < minimum_purity:
+        return {'area': area, 'window_total': window_total, 'purity': purity,
+                'ok': False,
+                'reason': f'creatine is only {purity:.1%} of the modelled signal in '
+                          f'{low}-{high} ppm, below the {minimum_purity:.0%} floor'}
+    return {'area': area, 'window_total': window_total, 'purity': purity,
+            'ok': True, 'reason': ''}
 
 
 def quantify_mm(

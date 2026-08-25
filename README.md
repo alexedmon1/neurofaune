@@ -376,13 +376,13 @@ package. The area is measured partly *from* the polynomial, so the failure mode
 is that it reports the polynomial — in which case changing the baseline order
 changes the answer. Across four sessions and baseline orders `poly,2`–`poly,5`:
 
-Measured on the full study (87 sessions with a sound reference); baseline CV
-from 4 sessions fitted at `poly,2`–`poly,5`:
+Measured on all 92 sessions of the full study; baseline CV from 4 sessions
+fitted at `poly,2`–`poly,5`:
 
 | band | window | median /tCr | baseline CV | between-session CV | negative | verdict |
 |------|--------|-------------|-------------|--------------------|----------|---------|
-| MM09 | 0.70–0.95 | 0.566 | 5.2% | 26.7% | 0% | measurable |
-| MM12 | 1.10–1.40 | 0.216 | 44% | 36.5% | 0% | `provisional` |
+| MM09 | 0.70–0.95 | 0.763 | 4.7% | 19.5% | 0% | measurable |
+| MM12 | 1.10–1.40 | 0.290 | 44% | 36.5% | 0% | `provisional` |
 | MM14 | — | −0.020 | 88% | 138% | 78% | **not reported** |
 | MM17 | — | 0.006 | — | 92% | 14% | **not reported** |
 
@@ -390,7 +390,7 @@ Those are two different quantities. Baseline CV is stability of one session
 under a changed fit; between-session CV is spread across animals, mixing real
 biology with measurement error. On the same sessions the metabolites give
 between-session CVs of 8.1% (Glu+Gln), 8.8% (NAA+NAAG), 18.9% (GSH), 24.3%
-(Tau) — so MM09 sits alongside Tau: usable, but needing larger groups than NAA
+(Tau) — so MM09 sits alongside GSH: usable, but needing larger groups than NAA
 to detect an effect of a given size.
 
 Whether MM14 and MM17 are unreportable because of the *data* or because of
@@ -428,16 +428,24 @@ decayed. Nor can this separate macromolecules from instrumental baseline roll �
 the polynomial absorbed both. It measures the one resonance that survives
 without a metabolite-nulled acquisition; it does not replace one.
 
-**The creatine denominator is checked before dividing.** `reference_area`
-integrates the real part of the modelled creatine, so a fit that puts creatine
-into dispersion collapses or inverts it while `fsl_mrs`' own concentration
-parameter is unaffected. Five of 92 sessions did exactly that — one with a
-*negative* reference area — and all five passed SNR, linewidth and placement QC
-with entirely normal reported concentrations. Unguarded, one returned −11.7
-/tCr from an ordinary MM area of 0.18. `check_reference` now refuses a
-non-positive reference, or one holding under 5% of the total modelled
-metabolite area (median is 10.2%); those sessions get a finite `area` and a
-`NaN` ratio plus `mm_reference_ok: false` in QC, never a plausible wrong number.
+**The creatine denominator is the tCr methyl singlet, not the whole spectrum.**
+Integrating the modelled creatine across the full fit range makes the reference
+report *phase* rather than amplitude, because a wide-range integral of a real
+spectrum is dominated by the t=0 value of its FID. Five of 92 sessions
+collapsed that way — one to a **negative** area, returning −11.7 /tCr from an
+ordinary MM area of 0.18 — while their fitted creatine amplitudes were normal
+(Cr+PCr 0.201 against a 0.252 median), their Cr/NAA ratios were normal, and all
+five passed SNR, linewidth and placement QC. They were not bad sessions; the
+denominator was bad.
+
+Restricting the reference to 2.90–3.15 ppm fixes it on every count: the
+reference is never non-positive (min 0.131 vs −0.016), MM09's between-session
+CV falls from 247% to 19.5%, its baseline-order CV from 5.2% to 4.7%, and no
+session needs excluding. `check_reference` remains as a safety net — it rejects
+a non-positive reference, or one where creatine holds under 50% of the modelled
+signal in its own window (observed 0.795–2.94, median 0.998) — and fires on
+none of the 92. A refused session gets a finite `area`, a `NaN` ratio and
+`mm_reference_ok: false` in QC, never a plausible wrong number.
 
 Outputs are `{sub}_{ses}_mm-areas.csv` (band, area, area_per_tcr, ppm limits,
 provisional flag) and `{sub}_{ses}_mm-envelope.csv` (ppm, signal, envelope,
