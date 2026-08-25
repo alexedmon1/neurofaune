@@ -102,6 +102,9 @@ def main() -> int:
                         help='HLSVD residual water removal')
     parser.add_argument('--no-phase', action='store_true',
                         help='Skip zero-order phasing and leave it to fsl_mrs')
+    parser.add_argument('--no-ecc', action='store_true',
+                        help='Skip eddy-current correction (diagnostic: ECC is '
+                             'the suspect for the 0.95-1.10 ppm baseline trough)')
     parser.add_argument('--phase-method', choices=('search', 'tcr'), default='search',
                         help="'search' scans zero-order phase for the most "
                              "absorptive spectrum; 'tcr' phases on the creatine "
@@ -140,8 +143,9 @@ def main() -> int:
     # Eddy-current correction. Applying it to the reference against itself
     # also removes the reference's own phase, which is what the water peak
     # would otherwise need a separate phasing step for.
-    supp = proc.ecc(supp, ref)
-    ref = proc.ecc(ref, ref)
+    if not args.no_ecc:
+        supp = proc.ecc(supp, ref)
+        ref = proc.ecc(ref, ref)
 
     if args.remove_water:
         supp = proc.remove_peaks(supp, [-0.25, 0.25], limit_units='ppm')
