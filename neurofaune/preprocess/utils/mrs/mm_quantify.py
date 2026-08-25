@@ -90,12 +90,32 @@ Three things it is not, each tested rather than assumed:
   against the peak -- MM09 falls 20-46% for a flat trough -- because the offset
   is *differential*, between the MM and the metabolites, not global.
 
-The mechanism is consistent with the first FID points. Macromolecule T2 is very
-short, so MM signal lives in the first few samples while metabolites persist;
-any residual sub-sample group delay or first-point error therefore imprints a
-different effective phase on broad components than on narrow ones. The
-converter's fractional group-delay correction is the obvious suspect, and that
-remains a hypothesis -- the *observation* is what the 92-session fit supports.
+The mechanism is residual digital-filter group delay, supported but not
+nailed down. A delay of d dwell periods is a linear phase ramp in frequency, so
+it separates two resonances f Hz apart by 360*f*d*dwell degrees. MM09 and tCr
+are 643 Hz apart at 300.4 MHz with a 300 us dwell, giving 69.4 degrees per
+dwell period -- so the observed -59.5 implies about 0.86 of a dwell.
+
+That was tested directly, by perturbing the converter's resolved delay by a
+known amount and re-running the real chain (not by adding a phase ramp to
+preprocessed data, which would only show that adding phase adds phase). The
+MM09 phase does respond, strongly and monotonically, and extrapolates to zero
+at an offset of -0.5 to -1.1 dwell periods across configurations -- consistent
+with the 0.86 the phase magnitude implies.
+
+What the test does *not* establish is the coefficient. In the production
+configuration the slope came out 61-70 deg/dwell against the predicted 69.4,
+which is a good match; with the preprocessing's zero-order phase search
+disabled it came out 142-151, roughly double. Those two setups should differ by
+a constant offset, not a slope, so something is unaccounted for -- and the
+second run had points railed at the +/-180 bound of the fit, which corrupts the
+regression. Treat the mechanism as well-supported in direction and order of
+magnitude, and unproven in detail.
+
+Note what this would and would not affect if confirmed. FSL-MRS fits Phi0 and
+Phi1, so a residual delay is largely absorbed for the *metabolites* -- which is
+why concentrations look fine and nothing else flagged it. Macromolecules are
+not in the model, so they keep it.
 
 The practical consequence is that band areas are absorption-mode projections of
 a signal about 59 degrees out of phase, capturing roughly cos(59 deg) ~ 0.5 of

@@ -427,12 +427,24 @@ Three alternatives were tested and ruled out rather than assumed:
   trough against the peak (MM09 drops 20–46% to flatten it), because the offset
   is *differential*, between MM and metabolites, not global.
 
-Mechanistically this is consistent with the first FID points: MM T2 is very
-short, so MM signal lives in the first few samples while metabolites persist,
-and any residual sub-sample group delay imprints a different effective phase on
-broad components than narrow ones. The converter's fractional group-delay
-correction is the obvious suspect — that part remains a hypothesis; the
-16-session fit is what supports the observation.
+**Mechanism: residual group delay, supported but not proven.** A delay of *d*
+dwell periods is a linear phase ramp, separating two resonances *f* Hz apart by
+360·*f*·*d*·dwell degrees. MM09 and tCr are 643 Hz apart at 300.4 MHz with a
+300 µs dwell → 69.4°/dwell, so −59.5° implies ≈0.86 of a dwell.
+
+Tested directly by perturbing the converter's resolved delay and re-running the
+real chain. The phase responds strongly and monotonically and extrapolates to
+zero at −0.5 to −1.1 dwell, consistent with that 0.86. But the coefficient did
+not pin down: 61–70°/dwell in the production configuration (matching the
+predicted 69.4) versus 142–151°/dwell with the zero-order phase search
+disabled, where the two setups should differ by a constant, not a slope — and
+that second run had points railed at the fit's ±180° bound. Well-supported in
+direction and magnitude; unproven in detail.
+
+If confirmed it would matter less than it sounds: `fsl_mrs` fits Phi0 and Phi1,
+so a residual delay is largely absorbed for the *metabolites* — which is why
+concentrations look fine and nothing else flagged it. Macromolecules aren't in
+the model, so they keep it.
 
 Practically, band areas are absorption-mode projections of a signal ~59° out of
 phase, capturing roughly cos(59°) ≈ 0.5 of the MM09 amplitude. `fit_mm_lineshape`
