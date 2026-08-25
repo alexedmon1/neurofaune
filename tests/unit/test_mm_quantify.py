@@ -17,8 +17,11 @@ from neurofaune.preprocess.utils.mrs.mm_quantify import (
     MIN_REFERENCE_PURITY,
     MM_BANDS,
     PROVISIONAL_BANDS,
+    LINESHAPE_WINDOW,
     anchor_envelope,
     check_reference,
+    complex_metabolite_free_spectrum,
+    fit_mm_lineshape,
     fit_mm_spline,
     integrate_bands,
     metabolite_free_spectrum,
@@ -53,6 +56,33 @@ def make_curves(mm_height=1.0, pedestal=0.0, noise=0.0, baseline_share=0.6, seed
         'fit': fit,
         'baseline': baseline,
         'residual': data - fit,
+    })
+
+
+def phased_lorentzian(ppm, amplitude, centre, width, phase_deg):
+    """Real part of a phased complex Lorentzian -- the MM09 model."""
+    z = amplitude * np.exp(1j * np.deg2rad(phase_deg)) / (1j * (ppm - centre) + width)
+    return np.real(z)
+
+
+def make_complex_curves(amplitude=0.1, phase_deg=-59.0, centre=0.88, width=0.055,
+                        noise=0.0, seed=0):
+    """Fit curves whose MM09 resonance has a known amplitude and phase."""
+    rng = np.random.default_rng(seed)
+    ppm = np.linspace(0.2, 4.2, 2000)
+    mm = phased_lorentzian(ppm, amplitude, centre, width, phase_deg)
+    mm_imag = np.imag(amplitude * np.exp(1j * np.deg2rad(phase_deg))
+                      / (1j * (ppm - centre) + width))
+    naa = gaussian(ppm, 2.008, 5.0, 0.02)
+    data = naa + mm + rng.normal(0, noise, ppm.size)
+    return pd.DataFrame({
+        'ppm': ppm,
+        'data': data,
+        'fit': naa,
+        'baseline': np.zeros_like(ppm),
+        'residual': data - naa,
+        'baseline_imag': np.zeros_like(ppm),
+        'residual_imag': mm_imag,
     })
 
 
@@ -327,3 +357,69 @@ class TestStability:
     def test_band_averaging_to_zero_is_skipped_not_infinite(self):
         estimates = {'poly2': {'MM14': 0.1}, 'poly3': {'MM14': -0.1}}
         assert 'MM14' not in mm_stability(estimates)
+
+
+class TestComplexSpectrum:
+    def test_carries_the_imaginary_part(self):
+        free = complex_metabolite_free_spectrum(make_complex_curves())
+        assert 'imag' in free.columns
+        assert np.abs(free['imag']).max() > 0
+
+    def test_old_exports_are_rejected(self):
+        # Treating a real-only export as complex would pin the phase at zero
+        # and silently defeat the fit, so it must fail loudly instead.
+        with pytest.raises(KeyError, match='re-export'):
+            complex_metabolite_free_spectrum(make_curves())
+
+
+class TestLineshapeFit:
+    """The fit exists because MM09 sits ~59 degrees out of phase with the
+    metabolites, so a real-part band integral sees only cos(59) of it."""
+
+    def test_recovers_a_known_phase_and_amplitude(self):
+        curves = make_complex_curves(amplitude=0.1, phase_deg=-59.0,
+                                     centre=0.88, width=0.055)
+        free = complex_metabolite_free_spectrum(curves)
+        result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+        assert result['phase_deg'] == pytest.approx(-59.0, abs=3.0)
+        assert result['amplitude'] == pytest.approx(0.1, rel=0.10)
+        assert result['centre'] == pytest.approx(0.88, abs=0.01)
+        assert result['width'] == pytest.approx(0.055, abs=0.01)
+
+    def test_phase_correction_is_the_cosine_factor(self):
+        free = complex_metabolite_free_spectrum(
+            make_complex_curves(phase_deg=-60.0))
+        result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+        expected = result['area_absorption'] * np.cos(np.deg2rad(result['phase_deg']))
+        assert result['area'] == pytest.approx(expected, rel=1e-6)
+        # A 60 degree offset costs half the amplitude, which is the whole point.
+        assert result['area'] / result['area_absorption'] == pytest.approx(0.5, abs=0.05)
+
+    def test_absorptive_input_needs_no_phase(self):
+        free = complex_metabolite_free_spectrum(make_complex_curves(phase_deg=0.0))
+        result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+        assert abs(result['phase_deg']) < 5.0
+        # Nothing to gain over the absorption-only model when there is no phase.
+        assert result['improvement'] < 0.05
+
+    def test_phased_input_beats_the_absorption_only_model(self):
+        free = complex_metabolite_free_spectrum(make_complex_curves(phase_deg=-59.0))
+        result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+        assert result['improvement'] > 0.10
+
+    def test_survives_noise(self):
+        free = complex_metabolite_free_spectrum(
+            make_complex_curves(phase_deg=-59.0, noise=0.05, seed=7))
+        result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+        assert result['phase_deg'] == pytest.approx(-59.0, abs=15.0)
+        assert result['converged']
+
+    def test_window_is_wider_than_the_band(self):
+        # The dispersion lobe at 0.95-1.10 is the evidence for the phase, so
+        # the fit window must include it even though the band stops at 0.95.
+        assert LINESHAPE_WINDOW[0] <= MM_BANDS['MM09'][0]
+        assert LINESHAPE_WINDOW[1] > MM_BANDS['MM09'][1]
+
+    def test_too_few_points_is_an_error(self):
+        with pytest.raises(ValueError, match='too few'):
+            fit_mm_lineshape(np.linspace(0.6, 1.35, 10), np.zeros(10))

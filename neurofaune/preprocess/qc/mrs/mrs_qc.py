@@ -293,6 +293,7 @@ def generate_mrs_qc_report(
     voxel_mask: Optional[Path] = None,
     mm_areas: Optional[Path] = None,
     mm_envelope: Optional[Path] = None,
+    mm_lineshape: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build the per-session MRS QC report.
 
@@ -381,6 +382,18 @@ def generate_mrs_qc_report(
         # silent gap: such sessions fit, report plausible concentrations and
         # pass SNR and linewidth, so nothing else here would catch them.
         metrics['mm_reference_ok'] = bool(areas['area_per_tcr'].notna().any())
+
+        # Lineshape fit, when the export carried the imaginary part. The phase
+        # is worth surfacing per session: it is well determined (CV 1-5% across
+        # baseline orders) and a session drifting far from the rest points at a
+        # timing or phasing problem upstream.
+        if mm_lineshape and Path(mm_lineshape).exists():
+            line = pd.read_csv(mm_lineshape).iloc[0].to_dict()
+            metrics['mm09_phase_deg'] = float(line['phase_deg'])
+            metrics['mm09_lineshape_improvement'] = float(line['improvement'])
+            if np.isfinite(line.get('area_absorption_per_tcr', float('nan'))):
+                metrics['mm09_per_tcr_phase_corrected'] = float(
+                    line['area_absorption_per_tcr'])
         if not metrics['mm_reference_ok']:
             logger.warning('%s %s: creatine reference rejected; MM areas are '
                            'reported unscaled', subject, session)

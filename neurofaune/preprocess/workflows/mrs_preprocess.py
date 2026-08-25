@@ -486,6 +486,31 @@ def export_mm_areas(
     outputs['mm_areas'] = Path(f'{output_prefix}_mm-areas.csv')
     outputs['mm_envelope'] = Path(f'{output_prefix}_mm-envelope.csv')
 
+    # Lineshape fit: estimates MM09's phase instead of assuming it, so the area
+    # does not depend on where the band edge sits. Needs the imaginary columns,
+    # which older exports lack -- hence the separate try.
+    if bool(get_config_value(config, 'spectroscopy.mm_lineshape', default=True)):
+        try:
+            free = mm_quantify.complex_metabolite_free_spectrum(curves)
+            lineshape = mm_quantify.fit_mm_lineshape(
+                free['ppm'].to_numpy(), free['signal'].to_numpy())
+            reference = mm_quantify.check_reference(metabolites)
+            if reference['ok']:
+                lineshape['area_per_tcr'] = lineshape['area'] / reference['area']
+                lineshape['area_absorption_per_tcr'] = (
+                    lineshape['area_absorption'] / reference['area'])
+            pd.DataFrame([lineshape]).to_csv(
+                f'{output_prefix}_mm-lineshape.csv', index=False)
+            outputs['mm_lineshape'] = Path(f'{output_prefix}_mm-lineshape.csv')
+            logger.info('MM09 lineshape: phase %.1f deg, %.3f/tCr phase-corrected '
+                        '(%.1f%% better than absorption-only)',
+                        lineshape['phase_deg'],
+                        lineshape.get('area_absorption_per_tcr', float('nan')),
+                        100 * lineshape['improvement'])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('MM lineshape fit failed for %s: %s',
+                           curves_file.name, exc)
+
     reliable = summary[~summary['provisional']]
     if not reliable.empty:
         logger.info('MM areas: %s', ', '.join(
@@ -867,6 +892,7 @@ def run_mrs_preprocessing(
             voxel_mask=fractions.get('mask'),
             mm_areas=curve_files.get('mm_areas'),
             mm_envelope=curve_files.get('mm_envelope'),
+            mm_lineshape=curve_files.get('mm_lineshape'),
         )
 
     return outputs

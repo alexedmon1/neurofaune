@@ -372,6 +372,123 @@ def reference_area(
     return float(np.trapezoid(total[inside], ppm[inside]))
 
 
+#: Window the MM09 lineshape is fitted over. Wider than the MM09 band, because
+#: the fit needs the dispersion lobe at 0.95-1.10 to determine the phase -- the
+#: lobe is the evidence, so excluding it would discard the thing being measured.
+LINESHAPE_WINDOW: Tuple[float, float] = (0.60, 1.35)
+
+
+def complex_metabolite_free_spectrum(curves: pd.DataFrame) -> pd.DataFrame:
+    """Metabolite-free spectrum with its imaginary part, for lineshape fitting.
+
+    Requires the ``baseline_imag`` and ``residual_imag`` columns added to the
+    curve export. Older files lack them and are rejected rather than silently
+    treated as real-valued, which would fix the fitted phase at zero and defeat
+    the point.
+    """
+    real = metabolite_free_spectrum(curves)
+    for column in ('baseline_imag', 'residual_imag'):
+        if column not in curves:
+            raise KeyError(
+                f'fit curves lack {column!r}; re-export them. The lineshape fit '
+                'needs the complex spectrum, and treating it as real would '
+                'force the phase to zero.')
+    imaginary = (curves['residual_imag'].to_numpy(float)
+                 + curves['baseline_imag'].to_numpy(float))
+    order = np.argsort(curves['ppm'].to_numpy(float))
+    real = real.copy()
+    real['imag'] = imaginary[order]
+    return real
+
+
+def _lorentzian(ppm, amplitude, centre, width, phase):
+    """Real part of a phased complex Lorentzian."""
+    return np.real(amplitude * np.exp(1j * phase) / (1j * (ppm - centre) + width))
+
+
+def fit_mm_lineshape(
+    ppm: np.ndarray,
+    signal: np.ndarray,
+    window: Tuple[float, float] = LINESHAPE_WINDOW,
+    centre_bounds: Tuple[float, float] = (0.75, 1.05),
+    width_bounds: Tuple[float, float] = (0.01, 0.40),
+) -> Dict[str, Any]:
+    """Fit MM09 as one complex Lorentzian with a free phase.
+
+    The band integral in :func:`quantify_mm` measures the *absorption-mode
+    projection* of MM09, which is about ``cos(59 deg)`` of its true amplitude
+    and has to stop at 0.95 ppm to avoid the dispersion lobe. Fitting the
+    lineshape instead recovers the whole resonance: the phase is estimated
+    rather than assumed, so the area does not depend on where the band edge is
+    put, and the trough becomes part of the model instead of something to
+    dodge.
+
+    ``area`` is the absorption-mode area the band integral would see; ``area_
+    absorption`` is the phase-corrected one, ``amplitude * pi``, which is what
+    a correctly-phased acquisition would have given. They differ by ``cos
+    (phase)``.
+
+    ``improvement`` is the RMS gain over the same model forced to zero phase.
+    It is the evidence that the phase is real: on 16 sessions it ran 12-28%
+    with the angle negative every time.
+
+    Returns
+    -------
+    dict
+        ``amplitude, centre, width, phase_deg, area, area_absorption, rms,
+        rms_absorption_only, improvement, converged``.
+    """
+    from scipy.optimize import least_squares
+
+    ppm = np.asarray(ppm, float)
+    signal = np.asarray(signal, float)
+    order = np.argsort(ppm)
+    ppm, signal = ppm[order], signal[order]
+
+    low, high = min(window), max(window)
+    inside = (ppm >= low) & (ppm <= high)
+    x, y = ppm[inside], signal[inside]
+    if x.size < 32:
+        raise ValueError(f'only {x.size} points between {low} and {high} ppm; '
+                         'too few to fit a lineshape')
+
+    def residual(params, fixed_phase=None):
+        amplitude, centre, width, c0, c1 = params[:5]
+        phase = params[5] if fixed_phase is None else fixed_phase
+        model = _lorentzian(x, amplitude, centre, width, phase) + c0 + c1 * (x - 1.0)
+        return model - y
+
+    scale = float(np.abs(y).max()) or 1.0
+    guess = [0.1 * scale, 0.88, 0.05, 0.0, 0.0]
+    lower = [0.0, centre_bounds[0], width_bounds[0], -10 * scale, -10 * scale]
+    upper = [100 * scale, centre_bounds[1], width_bounds[1], 10 * scale, 10 * scale]
+
+    free = least_squares(residual, guess + [0.0],
+                         bounds=(lower + [-np.pi], upper + [np.pi]))
+    absorption = least_squares(lambda p: residual(p, fixed_phase=0.0), guess,
+                               bounds=(lower, upper))
+
+    rms = float(np.sqrt(np.mean(free.fun ** 2)))
+    rms_absorption = float(np.sqrt(np.mean(absorption.fun ** 2)))
+    amplitude, centre, width, _, _, phase = free.x
+
+    return {
+        'amplitude': float(amplitude),
+        'centre': float(centre),
+        'width': float(width),
+        'phase_deg': float(np.rad2deg(phase)),
+        # pi * amplitude is the integral of a unit complex Lorentzian's real
+        # part; the measured projection is that times cos(phase).
+        'area_absorption': float(np.pi * amplitude),
+        'area': float(np.pi * amplitude * np.cos(phase)),
+        'rms': rms,
+        'rms_absorption_only': rms_absorption,
+        'improvement': float((rms_absorption - rms) / rms_absorption)
+        if rms_absorption else float('nan'),
+        'converged': bool(free.success),
+    }
+
+
 def check_reference(
     metabolites: pd.DataFrame,
     components: Sequence[str] = TCR_COMPONENTS,

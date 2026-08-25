@@ -486,6 +486,12 @@ spectroscopy:
   # through these, not against absolute zero: a pedestal runs the full width of
   # the spectrum and integrating from zero gives negative, unstable areas.
   mm_flanks: [[0.25, 0.60], [1.55, 1.80]]
+  # Fit MM09 as a complex Lorentzian with a free phase, alongside the band
+  # integral. The MM signal sits ~59 deg out of phase with the metabolites, so
+  # a real-part band integral captures only cos(59) ~ 0.5 of it and has to stop
+  # at 0.95 ppm to avoid the dispersion lobe. The lineshape fit estimates the
+  # phase instead, making the area independent of the band edge.
+  mm_lineshape: true
 
   # Fitting (fsl_mrs)
   ppmlim: [0.2, 4.2]             # Fit range

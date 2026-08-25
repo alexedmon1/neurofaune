@@ -67,12 +67,21 @@ def main() -> int:
     # `_residuals = mrs.FID - pred`). Taking the real part of a time-domain
     # array and labelling it a spectrum yields noise-shaped nonsense, so they
     # are transformed here before slicing.
+    def imag_spec(spectrum):
+        return np.imag(np.asarray(spectrum)[first:last])
+
+    # The imaginary parts are carried too. Absorption-mode areas alone cannot
+    # express a resonance that is out of phase with the metabolites, and the
+    # macromolecule signal here is (~59 degrees off; see mm_quantify), so
+    # fitting its lineshape needs the complex spectrum, not just the real part.
     curves = pd.DataFrame({
         'ppm': ppm,
         'data': real_spec(mrs.get_spec()),
         'fit': real_spec(res.pred_spec),
         'baseline': real_spec(misc.FIDToSpec(res.baseline)),
         'residual': real_spec(misc.FIDToSpec(res.residuals)),
+        'baseline_imag': imag_spec(misc.FIDToSpec(res.baseline)),
+        'residual_imag': imag_spec(misc.FIDToSpec(res.residuals)),
     })
     prefix = Path(args.output_prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
