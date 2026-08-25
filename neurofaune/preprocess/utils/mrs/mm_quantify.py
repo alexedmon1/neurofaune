@@ -60,21 +60,42 @@ across 1.2 ppm from a single 0.35 ppm window and degrades it as expected. The
 default is kept because it gives MM09 the lowest between-session scatter and
 MM12 its only tolerable one.
 
-A trough that constrains the bands
-----------------------------------
+The trough, and what it is
+--------------------------
 Plotting the envelope showed a systematic negative excursion at 0.95-1.10 ppm
-in every session, immediately downfield of the MM09 peak. It is in the acquired
-data, not introduced here: the raw spectrum averages -0.10 to -0.21 there
-(about 3 standard errors below zero) while the fitted polynomial is smooth and
-positive across the same window, and the metabolite model has almost no
-amplitude there to over-subtract. A zero-order phase error was tested and ruled
-out -- the rotation that best flattens the trough varies from 18 to 53 degrees
-between sessions and removes only about a quarter of it, where a dispersion
-artifact would rotate away almost entirely. The cause is unresolved.
+in every session, immediately downfield of the MM09 peak, deep enough that the
+conventional 0.70-1.10 MM09 window integrates through it and subtracts real
+signal. That is why the band below stops at 0.95, the zero-crossing.
 
-Its practical consequence is that band edges cannot be placed conventionally:
-the usual 0.70-1.10 MM09 window integrates straight through the trough and
-subtracts real signal. The bands below stop at the zero-crossing instead.
+It is **the dispersion lobe of the MM09 resonance itself**. Fitting the
+metabolite-free spectrum over 0.60-1.35 ppm with a single complex Lorentzian of
+free phase, plus a linear baseline, explains the positive peak and the negative
+trough together 12-28% better (RMS) than the same model forced to pure
+absorption. The fitted angle is negative in all 16 sessions tested, spanning
+-37 to -71 degrees with a median near -59.
+
+Three things it is not, each tested rather than assumed:
+
+* Not metabolite over-subtraction. The metabolite model peaks at 0.23 there
+  against a -0.76 trough, and the excursion is present in the raw data.
+* Not eddy-current correction. Running the production chain with ``--no-ecc``
+  leaves the trough in place, and makes one of three sessions twice as bad.
+* Not a global zero-order phase. Rotating the whole spectrum trades the trough
+  against the peak -- MM09 falls 20-46% for a flat trough -- because the offset
+  is *differential*, between the MM and the metabolites, not global.
+
+The mechanism is consistent with the first FID points. Macromolecule T2 is very
+short, so MM signal lives in the first few samples while metabolites persist;
+any residual sub-sample group delay or first-point error therefore imprints a
+different effective phase on broad components than on narrow ones. The
+converter's fractional group-delay correction is the obvious suspect, and that
+remains a hypothesis -- the *observation* is what the 16-session fit supports.
+
+The practical consequence is that these areas are absorption-mode projections
+of a signal sitting about 59 degrees out of phase, so they capture roughly
+cos(59 deg) ~ 0.5 of the MM09 amplitude. That is a systematic scale factor
+shared by every session, so it biases the absolute value while leaving
+between-session comparisons intact.
 
 What is measurable here, and what is not
 ----------------------------------------
