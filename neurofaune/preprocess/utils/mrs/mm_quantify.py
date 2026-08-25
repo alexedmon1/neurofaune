@@ -70,9 +70,15 @@ signal. That is why the band below stops at 0.95, the zero-crossing.
 It is **the dispersion lobe of the MM09 resonance itself**. Fitting the
 metabolite-free spectrum over 0.60-1.35 ppm with a single complex Lorentzian of
 free phase, plus a linear baseline, explains the positive peak and the negative
-trough together 12-28% better (RMS) than the same model forced to pure
-absorption. The fitted angle is negative in all 16 sessions tested, spanning
--37 to -71 degrees with a median near -59.
+trough together better than the same model forced to pure absorption. Across
+all 92 sessions of the study that fit converges every time, improves the RMS by
+a median 21%, and returns a negative angle in 92 of 92 -- median -59.5 degrees,
+5th to 95th percentile -71 to -44.
+
+Two features of that fit argue it is finding something real. The centre lands
+at 0.887 ppm with a 1.5% CV across the study, which is MM09 and not a noise
+excursion. And the angle is the same in every cohort (-58.8 to -61.0 degrees,
+n = 18-30 each), so it is systematic rather than biological or batch-specific.
 
 Three things it is not, each tested rather than assumed:
 
@@ -89,13 +95,24 @@ short, so MM signal lives in the first few samples while metabolites persist;
 any residual sub-sample group delay or first-point error therefore imprints a
 different effective phase on broad components than on narrow ones. The
 converter's fractional group-delay correction is the obvious suspect, and that
-remains a hypothesis -- the *observation* is what the 16-session fit supports.
+remains a hypothesis -- the *observation* is what the 92-session fit supports.
 
-The practical consequence is that these areas are absorption-mode projections
-of a signal sitting about 59 degrees out of phase, so they capture roughly
-cos(59 deg) ~ 0.5 of the MM09 amplitude. That is a systematic scale factor
-shared by every session, so it biases the absolute value while leaving
-between-session comparisons intact.
+The practical consequence is that band areas are absorption-mode projections of
+a signal about 59 degrees out of phase, capturing roughly cos(59 deg) ~ 0.5 of
+the MM09 amplitude. :func:`fit_mm_lineshape` recovers the rest, and both are
+reported, because neither dominates:
+
+============== =============== ==================== ====================
+measure        median /tCr     baseline-order CV    between-session CV
+============== =============== ==================== ====================
+band integral  0.763           1.5%                 19.5%
+phase-corrected 1.341          1.7%                 21.2%
+============== =============== ==================== ====================
+
+Estimating the phase per session costs a little precision, so the band integral
+is marginally the better statistic for group contrasts, while the corrected
+area is the better estimate of absolute MM content. The choice belongs to the
+analysis, not to this module.
 
 What is measurable here, and what is not
 ----------------------------------------

@@ -410,9 +410,12 @@ from 7.6% to 5.2%.
 
 **The trough is the dispersion lobe of the MM09 resonance.** Fitting the
 metabolite-free spectrum over 0.60–1.35 ppm with a single complex Lorentzian of
-free phase explains the peak and the trough *together* 12–28% better (RMS) than
-the same model forced to pure absorption, and the fitted angle is negative in
-all 16 sessions tested (−37° to −71°, median ≈ −59°).
+free phase explains the peak and the trough *together*. Across all 92 sessions
+it converges every time, improves the RMS by a median 21%, and returns a
+negative angle in 92 of 92 (median −59.5°, 5th–95th −71° to −44°). The centre
+lands at 0.887 ppm with a 1.5% CV — MM09, not a noise excursion — and the angle
+is the same in every cohort (−58.8° to −61.0°), so it is systematic rather than
+biological or batch-specific.
 
 Three alternatives were tested and ruled out rather than assumed:
 
@@ -431,10 +434,19 @@ broad components than narrow ones. The converter's fractional group-delay
 correction is the obvious suspect — that part remains a hypothesis; the
 16-session fit is what supports the observation.
 
-Practically, these areas are absorption-mode projections of a signal ~59° out
-of phase, capturing roughly cos(59°) ≈ 0.5 of the MM09 amplitude. It is a
-systematic factor shared by every session, so it biases the absolute value and
-leaves between-session comparisons intact.
+Practically, band areas are absorption-mode projections of a signal ~59° out of
+phase, capturing roughly cos(59°) ≈ 0.5 of the MM09 amplitude. `fit_mm_lineshape`
+recovers the rest (`*_mm-lineshape.csv`), and **both are reported, because
+neither dominates**:
+
+| measure | median /tCr | baseline-order CV | between-session CV |
+|---|---|---|---|
+| band integral | 0.763 | 1.5% | 19.5% |
+| phase-corrected | 1.341 | 1.7% | 21.2% |
+
+Estimating the phase per session costs a little precision, so the band integral
+is marginally better for group contrasts and the corrected area is the better
+estimate of absolute MM content. That choice belongs to the analysis.
 
 MM12 is noise-limited rather than trough-limited (narrowing makes it worse,
 44% → 60% → 88%), so it keeps the conventional window and its flag.
