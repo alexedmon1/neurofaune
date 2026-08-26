@@ -685,9 +685,9 @@ HIGHER_IS_BETTER = (
 #: Metrics carried in the scanner's arbitrary intensity units. They are not
 #: comparable BETWEEN sessions -- raw DVARS tracks how bright a session is
 #: (r = 0.815 with signal RMS on a 92-session cohort), so z-scoring it ranks
-#: brightness. Each has a normalized twin ('..._pct') that is comparable and is
+#: brightness. Each has a standardized twin ('..._std') that is comparable and is
 #: z-scored in its place; the raw value stays in the CSV for the per-session
-#: plots. Matched as a name fragment, and never applied to the '_pct' twin.
+#: plots. Matched as a name fragment, and never applied to the '_std' twin.
 SCALE_DEPENDENT_METRICS = ('dvars',)
 
 #: Suffixes marking a per-map ORDER STATISTIC rather than a session property.
@@ -782,8 +782,8 @@ def select_zscore_metrics(
             skipped[col] = 'per-map order statistic (set by a single voxel)'
             continue
         low = col.lower()
-        if not low.endswith('_pct') and any(f in low for f in SCALE_DEPENDENT_METRICS):
-            skipped[col] = 'scanner intensity units; use the _pct twin'
+        if not low.endswith('_std') and any(f in low for f in SCALE_DEPENDENT_METRICS):
+            skipped[col] = 'scanner intensity units; use the _std twin'
             continue
         reason = _degenerate_reason(df[col])
         if reason:

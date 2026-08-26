@@ -489,28 +489,39 @@ def fit_mm_lineshape(
         raise ValueError(f'only {x.size} points between {low} and {high} ppm; '
                          'too few to fit a lineshape')
 
-    def residual(params, fixed_phase=None):
-        amplitude, centre, width, c0, c1 = params[:5]
-        phase = params[5] if fixed_phase is None else fixed_phase
-        model = _lorentzian(x, amplitude, centre, width, phase) + c0 + c1 * (x - 1.0)
+    # The complex amplitude is carried as its real and imaginary parts rather
+    # than as (magnitude, angle). A bounded angle rails when the true phase
+    # approaches +/-180 -- which it does under group-delay perturbation, where
+    # it corrupted an earlier experiment -- and the Cartesian form has no
+    # bounds to rail against. The model is also linear in these two, which
+    # conditions the fit better.
+    def residual(params, absorption_only=False):
+        real_amp, imag_amp, centre, width, c0, c1 = params
+        if absorption_only:
+            imag_amp = 0.0
+        complex_amp = real_amp + 1j * imag_amp
+        model = np.real(complex_amp / (1j * (x - centre) + width)) + c0 + c1 * (x - 1.0)
         return model - y
 
     scale = float(np.abs(y).max()) or 1.0
-    guess = [0.1 * scale, 0.88, 0.05, 0.0, 0.0]
-    lower = [0.0, centre_bounds[0], width_bounds[0], -10 * scale, -10 * scale]
-    upper = [100 * scale, centre_bounds[1], width_bounds[1], 10 * scale, 10 * scale]
+    guess = [0.1 * scale, 0.0, 0.88, 0.05, 0.0, 0.0]
+    lower = [-100 * scale, -100 * scale, centre_bounds[0], width_bounds[0],
+             -10 * scale, -10 * scale]
+    upper = [100 * scale, 100 * scale, centre_bounds[1], width_bounds[1],
+             10 * scale, 10 * scale]
 
-    free = least_squares(residual, guess + [0.0],
-                         bounds=(lower + [-np.pi], upper + [np.pi]))
-    absorption = least_squares(lambda p: residual(p, fixed_phase=0.0), guess,
+    free = least_squares(residual, guess, bounds=(lower, upper))
+    absorption = least_squares(lambda p: residual(p, absorption_only=True), guess,
                                bounds=(lower, upper))
 
     rms = float(np.sqrt(np.mean(free.fun ** 2)))
     rms_absorption = float(np.sqrt(np.mean(absorption.fun ** 2)))
-    amplitude, centre, width, _, _, phase = free.x
+    real_amp, imag_amp, centre, width = free.x[:4]
+    amplitude = float(np.hypot(real_amp, imag_amp))
+    phase = float(np.arctan2(imag_amp, real_amp))
 
     return {
-        'amplitude': float(amplitude),
+        'amplitude': amplitude,
         'centre': float(centre),
         'width': float(width),
         'phase_deg': float(np.rad2deg(phase)),

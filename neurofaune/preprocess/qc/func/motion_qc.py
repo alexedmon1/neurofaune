@@ -145,11 +145,18 @@ def calculate_dvars(
     how bright the session is and is NOT comparable across sessions. Measured on
     a 92-session cohort, raw DVARS correlated with session signal RMS at
     r = 0.815 -- a cohort-relative outlier test on it flags bright sessions, not
-    unstable ones. Pass ``normalize=True`` to divide by the mean in-mask signal
-    and get DVARS as **% signal change**, which is comparable.
+    unstable ones. Pass ``normalize=True`` for **standardized DVARS**, which is
+    dimensionless and comparable.
+
+    Standardization divides by the median across voxels of each voxel's own
+    temporal-difference standard deviation, so a typical volume scores ~1.0.
+    It deliberately does NOT normalize by mean signal: preprocessed BOLD is
+    routinely demeaned (this cohort's in-mask mean is -0.22), which makes a
+    percent-of-mean figure undefined, unstable, and sign-dependent -- it would
+    divide by a near-zero number for some sessions and not others.
 
     The default stays False so existing callers keep their units; QC reporting
-    emits both and compares sessions on the normalized one.
+    emits both and compares sessions on the standardized one.
 
     Parameters
     ----------
@@ -158,7 +165,7 @@ def calculate_dvars(
     mask_file : Path
         Brain mask
     normalize : bool
-        Express DVARS as a percentage of the mean in-mask signal.
+        Return standardized (dimensionless) DVARS instead of scanner units.
 
     Returns
     -------
@@ -182,11 +189,14 @@ def calculate_dvars(
     dvars = np.sqrt(np.mean(diff ** 2, axis=0))
 
     if normalize:
-        scale = float(np.mean(timeseries))
-        # A non-positive mean means an empty or all-background mask; leaving the
-        # raw values is more honest than emitting inf.
+        # Median of the per-voxel temporal-difference SD: robust to the handful
+        # of voxels that dominate a mean, and independent of any DC offset, so
+        # it works on demeaned data where a percent-of-mean figure does not.
+        scale = float(np.median(np.std(diff, axis=1))) if diff.size else 0.0
+        # Zero scale means an empty mask or a constant series; returning the raw
+        # values is more honest than emitting inf.
         if np.isfinite(scale) and scale > 0:
-            dvars = 100.0 * dvars / scale
+            dvars = dvars / scale
 
     return dvars
 
@@ -280,9 +290,9 @@ def generate_motion_qc_report(
     # Calculate metrics
     fd = calculate_framewise_displacement(motion_params)
     dvars = calculate_dvars(bold_file, mask_file)
-    # Cross-session comparison needs the normalized form; the raw one is kept
+    # Cross-session comparison needs the standardized form; the raw one is kept
     # because the per-session plots and any existing consumer are in its units.
-    dvars_pct = calculate_dvars(bold_file, mask_file, normalize=True)
+    dvars_std = calculate_dvars(bold_file, mask_file, normalize=True)
 
     if threshold_fd is None:
         threshold_fd = fd_threshold_from_voxel_size(bold_file)
@@ -643,12 +653,13 @@ def generate_motion_qc_report(
             'mean_dvars': float(np.mean(dvars)),
             'max_dvars': float(np.max(dvars)),
             'std_dvars': float(np.std(dvars)),
-            # % signal change -- the only DVARS comparable BETWEEN sessions.
-            # The raw values above are in scanner units and track how bright the
-            # session is (r = 0.815 with signal RMS on a 92-session cohort).
-            'mean_dvars_pct': float(np.mean(dvars_pct)),
-            'max_dvars_pct': float(np.max(dvars_pct)),
-            'std_dvars_pct': float(np.std(dvars_pct)),
+            # Standardized (dimensionless, ~1.0 = typical volume) -- the only
+            # DVARS comparable BETWEEN sessions. The raw values above are in
+            # scanner units and track how bright the session is (r = 0.815 with
+            # signal RMS on a 92-session cohort).
+            'mean_dvars_std': float(np.mean(dvars_std)),
+            'max_dvars_std': float(np.max(dvars_std)),
+            'std_dvars_std': float(np.std(dvars_std)),
         },
         'translation': {
             'mean_abs_x': float(mean_abs_displacement[0]),

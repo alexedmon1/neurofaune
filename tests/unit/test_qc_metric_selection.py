@@ -83,7 +83,7 @@ class TestDirection:
         assert _metric_direction(name) == 'low'
 
     @pytest.mark.parametrize('name', [
-        'motion_mean_fd', 'motion_max_fd', 'mean_dvars_pct',
+        'motion_mean_fd', 'motion_max_fd', 'mean_dvars_std',
         'pct_bad_volumes', 'to_sigma_centroid_offset_mm',
     ])
     def test_badness_metrics_flag_high_only(self, name):
@@ -111,13 +111,13 @@ class TestDirection:
 
 
 class TestScaleDependentMetrics:
-    def test_raw_dvars_is_skipped_but_its_pct_twin_is_not(self):
+    def test_raw_dvars_is_skipped_but_its_standardized_twin_is_not(self):
         rng = np.random.default_rng(4)
         df = _cohort(motion_mean_dvars=rng.normal(34, 7, 92),
-                     motion_mean_dvars_pct=rng.normal(1.2, 0.2, 92))
+                     motion_mean_dvars_std=rng.normal(1.0, 0.1, 92))
         usable, skipped = select_zscore_metrics(df)
         assert 'motion_mean_dvars' in skipped
-        assert 'motion_mean_dvars_pct' in usable
+        assert 'motion_mean_dvars_std' in usable
 
 
 class TestAbsoluteGates:

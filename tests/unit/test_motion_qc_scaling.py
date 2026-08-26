@@ -44,24 +44,43 @@ class TestDvarsNormalization:
         raw2 = calculate_dvars(b2, m2).mean()
         assert raw2 == pytest.approx(10.0 * raw1, rel=1e-6)
 
-    def test_normalized_dvars_is_invariant_to_brightness(self, bold_and_mask):
+    def test_standardized_dvars_is_invariant_to_brightness(self, bold_and_mask):
         b1, m1 = bold_and_mask(scale=1.0)
         b2, m2 = bold_and_mask(scale=10.0)
-        pct1 = calculate_dvars(b1, m1, normalize=True).mean()
-        pct2 = calculate_dvars(b2, m2, normalize=True).mean()
-        assert pct2 == pytest.approx(pct1, rel=1e-6)
+        std1 = calculate_dvars(b1, m1, normalize=True).mean()
+        std2 = calculate_dvars(b2, m2, normalize=True).mean()
+        assert std2 == pytest.approx(std1, rel=1e-6)
 
     def test_default_stays_raw_for_existing_callers(self, bold_and_mask):
         b, m = bold_and_mask()
         assert np.allclose(calculate_dvars(b, m),
                            calculate_dvars(b, m, normalize=False))
 
-    def test_normalized_is_a_percentage_of_mean_signal(self, bold_and_mask):
+    def test_standardized_is_scaled_by_the_temporal_difference_sd(self, bold_and_mask):
         b, m = bold_and_mask()
         raw = calculate_dvars(b, m)
-        pct = calculate_dvars(b, m, normalize=True)
-        mean_signal = nib.load(b).get_fdata().mean()
-        assert np.allclose(pct, 100.0 * raw / mean_signal)
+        std = calculate_dvars(b, m, normalize=True)
+        data = nib.load(b).get_fdata().reshape(-1, 20)
+        scale = np.median(np.std(np.diff(data, axis=1), axis=1))
+        assert np.allclose(std, raw / scale)
+
+    def test_standardized_is_near_one_for_a_typical_volume(self, bold_and_mask):
+        """The point of standardizing: ~1.0 means 'an ordinary volume'."""
+        b, m = bold_and_mask()
+        assert calculate_dvars(b, m, normalize=True).mean() == pytest.approx(1.0, abs=0.25)
+
+    def test_demeaned_data_still_standardizes(self, tmp_path):
+        """Preprocessed BOLD is demeaned (this cohort: in-mask mean -0.22), which
+        is exactly where a percent-of-mean normalization breaks down."""
+        rng = np.random.default_rng(7)
+        data = rng.normal(0.0, 5.0, (5, 5, 3, 15))     # mean ~ 0
+        aff = np.eye(4)
+        bold, mask = tmp_path / 'd.nii.gz', tmp_path / 'dm.nii.gz'
+        nib.save(nib.Nifti1Image(data, aff), bold)
+        nib.save(nib.Nifti1Image(np.ones((5, 5, 3), dtype=np.uint8), aff), mask)
+        out = calculate_dvars(bold, mask, normalize=True)
+        assert np.all(np.isfinite(out))
+        assert out.mean() == pytest.approx(1.0, abs=0.3)
 
     def test_empty_mask_does_not_produce_inf(self, tmp_path):
         aff = np.eye(4)
