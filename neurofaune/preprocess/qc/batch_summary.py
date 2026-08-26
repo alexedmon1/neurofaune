@@ -666,6 +666,177 @@ def _extract_cohort(session: str) -> str:
     return session
 
 
+#: Metric-name fragments whose HIGH tail is the only defect ("lower is better").
+#: A cohort-relative z-test on these should never flag the quietest session.
+LOWER_IS_BETTER = (
+    'fd', 'dvars', 'motion', 'outlier', 'bad_volume', 'displacement',
+    'residual', 'noise', 'over_inclusion', 'centroid_offset',
+)
+
+#: Metric-name fragments whose LOW tail is the only defect ("higher is better").
+#: These are goodness-of-fit / signal-quality scores; a two-sided test on them
+#: flags the BEST sessions in the cohort, which is how 'registration_nmi' and
+#: 'skull_stripping_snr_estimate' ended up on a flag list.
+HIGHER_IS_BETTER = (
+    'snr', 'nmi', 'dice', 'correlation', 'coverage', 'covered',
+    'mutual_information', 'quality', 'contrast_to_noise', 'cnr',
+)
+
+#: Metrics carried in the scanner's arbitrary intensity units. They are not
+#: comparable BETWEEN sessions -- raw DVARS tracks how bright a session is
+#: (r = 0.815 with signal RMS on a 92-session cohort), so z-scoring it ranks
+#: brightness. Each has a normalized twin ('..._pct') that is comparable and is
+#: z-scored in its place; the raw value stays in the CSV for the per-session
+#: plots. Matched as a name fragment, and never applied to the '_pct' twin.
+SCALE_DEPENDENT_METRICS = ('dvars',)
+
+#: Suffixes marking a per-map ORDER STATISTIC rather than a session property.
+#: The max of a voxelwise map is set by one voxel, usually where the fit failed
+#: or the map saturated at a physical ceiling; it carries no information about
+#: how good the session is. Observed in practice: fa_max > 1 in 100% of sessions
+#: (a tensor fit cannot exceed 1), mwf_max / iwf_max clipped at 1, and md_min
+#: negative in 99% of sessions. Excluded from z-scoring; still reported, and
+#: still available to absolute thresholds where a study wants one.
+ORDER_STATISTIC_SUFFIXES = ('_max', '_min')
+
+#: A metric needs at least this many DISTINCT values before a z-test means
+#: anything. 'csf_max' had 2 distinct values across 92 sessions with sd 4e-17,
+#: which produced z = 5.5 on numerically zero variance.
+MIN_DISTINCT_VALUES = 5
+
+#: Minimum relative spread (std / |mean|) for a z-test to be meaningful. Catches
+#: float-noise-only variation that MIN_DISTINCT_VALUES misses.
+MIN_RELATIVE_SPREAD = 1e-6
+
+#: If this fraction of sessions or more sit on the metric's own extreme, the
+#: metric is saturated and the z-score ranks noise, not quality.
+MAX_SATURATED_FRACTION = 0.5
+
+#: An absolute gate that trips this fraction of the cohort or more is describing
+#: the COHORT, not outliers within it -- almost always a threshold carried over
+#: from another species or sequence. Observed: the default dwi ``fa_mean``
+#: window (0.25, 0.55) trips 90 of 92 sessions on a rat cohort whose FA runs at
+#: 0.202, and the default anat ``brain_to_total_ratio`` (0.8, 2.5) tripped 92 of
+#: 92. Emitting 90 identical session flags buries the one fact worth acting on,
+#: so such a gate is reported once as a configuration defect instead.
+MAX_GATE_TRIP_FRACTION = 0.5
+
+
+def _metric_direction(col: str) -> str:
+    """Which tail of ``col`` is a defect: 'low', 'high', or 'both'.
+
+    Matched on name fragments because metrics arrive prefixed by their source
+    dict (``skull_stripping_snr_estimate``, ``to_sigma_dice``,
+    ``motion_mean_fd``). LOWER_IS_BETTER is checked first so a hypothetical
+    'motion_snr' is treated as motion.
+    """
+    name = col.lower()
+    if any(frag in name for frag in LOWER_IS_BETTER):
+        return 'high'
+    if any(frag in name for frag in HIGHER_IS_BETTER):
+        return 'low'
+    return 'both'
+
+
+def _degenerate_reason(series: pd.Series) -> Optional[str]:
+    """Why ``series`` cannot support a cohort-relative z-test, or None if it can."""
+    vals = series.dropna()
+    if len(vals) < 3:
+        return 'fewer than 3 observations'
+    std = vals.std()
+    if not np.isfinite(std) or std <= 0:
+        return 'zero variance'
+    n_distinct = vals.nunique()
+    if n_distinct < MIN_DISTINCT_VALUES:
+        return f'only {n_distinct} distinct values'
+    mean = abs(vals.mean())
+    if mean > 0 and (std / mean) < MIN_RELATIVE_SPREAD:
+        return f'relative spread {std / mean:.1e} is float noise'
+    for extreme in (vals.max(), vals.min()):
+        frac = (vals == extreme).mean()
+        if frac >= MAX_SATURATED_FRACTION:
+            return f'{frac:.0%} of sessions saturated at {extreme:.4g}'
+    return None
+
+
+def select_zscore_metrics(
+    df: pd.DataFrame,
+    config: Optional[BatchQCConfig] = None,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Decide which metrics may be z-scored, and in which direction.
+
+    Returns
+    -------
+    (usable, skipped)
+        ``usable`` maps column -> direction ('low', 'high', 'both').
+        ``skipped`` maps column -> the reason it was excluded. Reporting the
+        skips matters: a metric silently dropped from QC looks exactly like a
+        metric that passed.
+    """
+    usable: Dict[str, str] = {}
+    skipped: Dict[str, str] = {}
+    for col in df.select_dtypes(include=[np.number]).columns:
+        if col in ('subject', 'session'):
+            continue
+        if col.endswith(ORDER_STATISTIC_SUFFIXES):
+            skipped[col] = 'per-map order statistic (set by a single voxel)'
+            continue
+        low = col.lower()
+        if not low.endswith('_pct') and any(f in low for f in SCALE_DEPENDENT_METRICS):
+            skipped[col] = 'scanner intensity units; use the _pct twin'
+            continue
+        reason = _degenerate_reason(df[col])
+        if reason:
+            skipped[col] = reason
+            continue
+        usable[col] = _metric_direction(col)
+    return usable, skipped
+
+
+def select_absolute_gates(
+    df: pd.DataFrame,
+    thresholds: Dict[str, Tuple[Optional[float], Optional[float]]],
+) -> Tuple[Dict[str, Tuple[Optional[float], Optional[float]]], Dict[str, str]]:
+    """Split configured gates into ones that discriminate and ones that don't.
+
+    A gate tripping most of the cohort cannot separate good sessions from bad
+    ones. Either it was set for a different species or sequence, or the whole
+    cohort fails -- and both of those are one finding about the *study*, not
+    N findings about N sessions. Returning them separately lets the report say
+    so once, loudly, instead of N times, quietly.
+
+    Returns
+    -------
+    (gates, misconfigured)
+        ``gates`` are applied per session. ``misconfigured`` maps metric -> a
+        description of how much of the cohort it trips.
+    """
+    gates: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    misconfigured: Dict[str, str] = {}
+    n = len(df)
+    for metric, (low, high) in thresholds.items():
+        if metric not in df.columns:
+            continue
+        vals = df[metric].dropna()
+        if vals.empty:
+            continue
+        tripped = pd.Series(False, index=vals.index)
+        if low is not None:
+            tripped |= vals < low
+        if high is not None:
+            tripped |= vals > high
+        frac = tripped.sum() / n if n else 0.0
+        if frac >= MAX_GATE_TRIP_FRACTION:
+            misconfigured[metric] = (
+                f'gate ({low}, {high}) trips {frac:.0%} of the cohort '
+                f'(observed median {vals.median():.4g}) -- threshold is wrong '
+                f'for this cohort, or the whole cohort fails'
+            )
+            continue
+        gates[metric] = (low, high)
+    return gates, misconfigured
+
+
 def detect_outliers(
     df: pd.DataFrame,
     config: BatchQCConfig,
@@ -674,7 +845,14 @@ def detect_outliers(
     """
     Detect outliers based on z-scores and absolute thresholds.
 
-    Returns DataFrame with outlier flags and reasons.
+    Absolute thresholds are applied exactly as configured. Z-scores are applied
+    only to metrics that can support one, and only on the tail that is actually
+    a defect -- see :func:`select_zscore_metrics`. Without those two filters a
+    cohort-relative test flags saturated maxima, float-noise columns, and the
+    best-performing sessions on every goodness-of-fit score.
+
+    Returns DataFrame with outlier flags and reasons. The metrics excluded from
+    z-scoring, and why, are attached as ``result.attrs['zscore_skipped']``.
     """
     if df.empty:
         return pd.DataFrame()
@@ -682,15 +860,17 @@ def detect_outliers(
     # Get modality-specific thresholds
     thresholds = getattr(config, f'{modality}_thresholds', {})
 
+    usable, skipped = select_zscore_metrics(df, config)
+    stats = {col: (df[col].mean(), df[col].std()) for col in usable}
+    gates, misconfigured = select_absolute_gates(df, thresholds)
+
     outlier_records = []
 
     for idx, row in df.iterrows():
         flags = []
 
         # Check absolute thresholds
-        for metric, (low, high) in thresholds.items():
-            if metric not in df.columns:
-                continue
+        for metric, (low, high) in gates.items():
             val = row.get(metric)
             if pd.isna(val):
                 continue
@@ -699,20 +879,20 @@ def detect_outliers(
             if high is not None and val > high:
                 flags.append(f"{metric}={val:.3f} (> {high})")
 
-        # Check z-scores for numeric columns
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            if col in ['subject', 'session']:
-                continue
+        # Check z-scores, one-sided where only one tail is a defect
+        for col, direction in usable.items():
             val = row.get(col)
             if pd.isna(val):
                 continue
-            col_mean = df[col].mean()
-            col_std = df[col].std()
-            if col_std > 0:
-                z = abs((val - col_mean) / col_std)
-                if z > config.outlier_z_threshold:
-                    flags.append(f"{col}: z={z:.1f}")
+            col_mean, col_std = stats[col]
+            z = (val - col_mean) / col_std
+            if direction == 'high' and z <= config.outlier_z_threshold:
+                continue
+            if direction == 'low' and -z <= config.outlier_z_threshold:
+                continue
+            if direction == 'both' and abs(z) <= config.outlier_z_threshold:
+                continue
+            flags.append(f"{col}: z={z:+.1f}")
 
         outlier_records.append({
             'subject': row['subject'],
@@ -722,7 +902,10 @@ def detect_outliers(
             'flags': '; '.join(flags) if flags else ''
         })
 
-    return pd.DataFrame(outlier_records)
+    result = pd.DataFrame(outlier_records)
+    result.attrs['zscore_skipped'] = skipped
+    result.attrs['threshold_misconfigured'] = misconfigured
+    return result
 
 
 def generate_distribution_plots(

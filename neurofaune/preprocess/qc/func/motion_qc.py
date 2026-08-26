@@ -131,19 +131,35 @@ def get_scrub_indices(fd: np.ndarray, threshold: float) -> np.ndarray:
     return np.where(fd > threshold)[0] + 1
 
 
-def calculate_dvars(bold_file: Path, mask_file: Path) -> np.ndarray:
+def calculate_dvars(
+    bold_file: Path,
+    mask_file: Path,
+    normalize: bool = False,
+) -> np.ndarray:
     """
     Calculate DVARS (spatial root mean square of temporal derivative).
-    
+
     DVARS measures how much the brain image changes from one volume to the next.
-    
+
+    Raw DVARS is in the scanner's arbitrary intensity units, so it scales with
+    how bright the session is and is NOT comparable across sessions. Measured on
+    a 92-session cohort, raw DVARS correlated with session signal RMS at
+    r = 0.815 -- a cohort-relative outlier test on it flags bright sessions, not
+    unstable ones. Pass ``normalize=True`` to divide by the mean in-mask signal
+    and get DVARS as **% signal change**, which is comparable.
+
+    The default stays False so existing callers keep their units; QC reporting
+    emits both and compares sessions on the normalized one.
+
     Parameters
     ----------
     bold_file : Path
         4D BOLD timeseries
     mask_file : Path
         Brain mask
-    
+    normalize : bool
+        Express DVARS as a percentage of the mean in-mask signal.
+
     Returns
     -------
     np.ndarray
@@ -152,20 +168,53 @@ def calculate_dvars(bold_file: Path, mask_file: Path) -> np.ndarray:
     # Load data
     bold_img = nib.load(bold_file)
     bold_data = bold_img.get_fdata()
-    
+
     mask_img = nib.load(mask_file)
     mask_data = mask_img.get_fdata().astype(bool)
-    
+
     # Extract timeseries within mask
     timeseries = bold_data[mask_data, :]
-    
+
     # Calculate temporal derivative
     diff = np.diff(timeseries, axis=1)
-    
+
     # Calculate RMS across voxels
     dvars = np.sqrt(np.mean(diff ** 2, axis=0))
-    
+
+    if normalize:
+        scale = float(np.mean(timeseries))
+        # A non-positive mean means an empty or all-background mask; leaving the
+        # raw values is more honest than emitting inf.
+        if np.isfinite(scale) and scale > 0:
+            dvars = 100.0 * dvars / scale
+
     return dvars
+
+
+#: Framewise-displacement threshold as a fraction of the in-plane voxel size.
+#: Power et al. use 0.5 mm on ~3 mm human voxels, i.e. ~17% of a voxel. Rodent
+#: acquisitions are sub-mm, and NIfTI headers here carry 10x-scaled voxel sizes
+#: for FSL/ANTs compatibility, so a threshold typed in human millimetres is
+#: wrong twice over: a 0.05 header-unit cut against a 4.0 header-unit voxel is
+#: 1.25% of a voxel, which flagged a median of 11.7% of volumes across a cohort
+#: whose worst session moved 3.6% of a voxel. Expressing it as a fraction of the
+#: voxel makes the threshold scale-free and species-free.
+FD_VOXEL_FRACTION = 0.17
+
+
+def fd_threshold_from_voxel_size(
+    bold_file: Path,
+    fraction: float = FD_VOXEL_FRACTION,
+) -> float:
+    """Framewise-displacement threshold in the image header's own units.
+
+    Uses the mean in-plane voxel dimension: FD is dominated by in-plane motion,
+    and the through-plane dimension of these acquisitions is far coarser (8.0 vs
+    4.0 header units for this cohort's BOLD), so including it would roughly
+    double the threshold for no principled reason.
+    """
+    zooms = nib.load(bold_file).header.get_zooms()[:3]
+    return fraction * float(np.mean(zooms[:2]))
 
 
 def generate_motion_qc_report(
@@ -175,7 +224,7 @@ def generate_motion_qc_report(
     bold_file: Path,
     mask_file: Path,
     output_dir: Path,
-    threshold_fd: float = 0.5,
+    threshold_fd: Optional[float] = None,
     original_file: Optional[Path] = None,
     brain_file: Optional[Path] = None,
     skull_strip_mask_file: Optional[Path] = None,
@@ -198,8 +247,12 @@ def generate_motion_qc_report(
         Brain mask
     output_dir : Path
         Output directory for QC report
-    threshold_fd : float
-        Framewise displacement threshold for flagging (default: 0.5mm)
+    threshold_fd : float, optional
+        Framewise displacement threshold for flagging, in the image header's own
+        units. Default None derives it from the voxel size via
+        :func:`fd_threshold_from_voxel_size`, which is the only form that is
+        correct for both human-scale and 10x-scaled rodent headers. Pass a
+        number to override.
     original_file : Path, optional
         Original (pre-skull-strip) reference image for skull strip QC
     brain_file : Path, optional
@@ -227,7 +280,13 @@ def generate_motion_qc_report(
     # Calculate metrics
     fd = calculate_framewise_displacement(motion_params)
     dvars = calculate_dvars(bold_file, mask_file)
-    
+    # Cross-session comparison needs the normalized form; the raw one is kept
+    # because the per-session plots and any existing consumer are in its units.
+    dvars_pct = calculate_dvars(bold_file, mask_file, normalize=True)
+
+    if threshold_fd is None:
+        threshold_fd = fd_threshold_from_voxel_size(bold_file)
+
     # Calculate summary statistics
     mean_fd = np.mean(fd)
     max_fd = np.max(fd)
@@ -580,9 +639,16 @@ def generate_motion_qc_report(
             'n_bad_volumes': int(n_bad_volumes),
             'pct_bad_volumes': float(pct_bad_volumes),
             'fd_threshold': float(threshold_fd),
+            'fd_threshold_voxel_fraction': float(FD_VOXEL_FRACTION),
             'mean_dvars': float(np.mean(dvars)),
             'max_dvars': float(np.max(dvars)),
             'std_dvars': float(np.std(dvars)),
+            # % signal change -- the only DVARS comparable BETWEEN sessions.
+            # The raw values above are in scanner units and track how bright the
+            # session is (r = 0.815 with signal RMS on a 92-session cohort).
+            'mean_dvars_pct': float(np.mean(dvars_pct)),
+            'max_dvars_pct': float(np.max(dvars_pct)),
+            'std_dvars_pct': float(np.std(dvars_pct)),
         },
         'translation': {
             'mean_abs_x': float(mean_abs_displacement[0]),

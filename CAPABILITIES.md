@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.6.7a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`, `check-paths`
 
-**Entry points:** 151 across 9 stages.
+**Entry points:** 153 across 9 stages.
 
 
 ## analysis
@@ -78,6 +78,8 @@ _Generated from the code by `neurofaune capabilities` (v0.6.7a0)._ Do not edit b
 | function | module | summary | config keys |
 |---|---|---|---|
 | `compute_slice_metrics` | `neurofaune.preprocess.qc.batch_summary` | Compute per-slice QC metrics for a DTI FA map. | — |
+| `select_absolute_gates` | `neurofaune.preprocess.qc.batch_summary` | Split configured gates into ones that discriminate and ones that don't. | — |
+| `select_zscore_metrics` | `neurofaune.preprocess.qc.batch_summary` | Decide which metrics may be z-scored, and in which direction. | — |
 | `compute_fd_from_confounds` | `neurofaune.preprocess.qc.func.motion_qc` | Compute per-volume framewise displacement from a BIDS confounds TSV. | — |
 
 ## preprocess (utils)
