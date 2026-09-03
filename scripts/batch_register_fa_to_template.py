@@ -69,7 +69,8 @@ def find_registration_subjects(study_root: Path):
 
 def main():
     parser = argparse.ArgumentParser(description='Batch FA-to-Template registration')
-    parser.add_argument('--study-root', type=Path, default=Path('/mnt/arborea/bpa-rat'))
+    parser.add_argument('--study-root', type=Path, required=True,
+                        help='Study root directory')
     parser.add_argument('--n-cores', type=int, default=4, help='Cores for ANTs registration')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be done')
     parser.add_argument('--force', action='store_true', help='Re-run even if transform exists')

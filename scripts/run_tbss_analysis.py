@@ -15,19 +15,19 @@ Usage:
     # Run all 4 analyses with 5000 permutations
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
         --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --n-permutations 5000
 
     # Run a single analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
         --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --analyses per_pnd_p60
 
     # Quick test with fewer permutations
     uv run python scripts/run_tbss_analysis.py \
         --tbss-dir $STUDY_ROOT/analysis/tbss/dwi \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --analyses per_pnd_p30 \
         --n-permutations 100 --seed 42
 """

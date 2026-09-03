@@ -422,7 +422,7 @@ uv run python scripts/batch_register_dwi.py \
 
 # 4. Prepare TBSS data (with exclusions)
 uv run python -m neurofaune.analysis.tbss.prepare_tbss \
-    --config configs/bpa_rat_example.yaml \
+    --config config.yaml \
     --output-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi \
     --exclude-file /mnt/arborea/bpa-rat/analysis/tbss/dwi/exclude_bad_dti.txt
 
@@ -436,7 +436,7 @@ uv run python scripts/prepare_tbss_designs.py \
 for analysis in per_pnd_p30 per_pnd_p60 per_pnd_p90 pooled; do
     PYTHONUNBUFFERED=1 uv run python scripts/run_tbss_analysis.py \
         --tbss-dir /mnt/arborea/bpa-rat/analysis/tbss/dwi \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --analyses $analysis \
         --n-permutations 5000 \
         2>&1 | tee /mnt/arborea/bpa-rat/analysis/tbss/dwi/logs/randomise_${analysis}.log &

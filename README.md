@@ -8,6 +8,7 @@ Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles mu
 - [FSL 6.0+](https://fsl.fmrib.ox.ac.uk/fsl/)
 - [ANTs 2.3+](https://github.com/ANTsX/ANTs)
 - CUDA (optional, for GPU-accelerated eddy correction)
+- [neuroaider](https://github.com/alexedmon1/neuroaider) — **only** for FSL design-matrix scripts (`prepare_tbss_designs.py`, `prepare_tbss_dose_response_designs.py`, `prepare_vbm_designs.py`, `prepare_mvpa_designs.py`). Those wrappers import `DesignHelper` from a sibling clone (`../neuroaider` next to this repo). Voxelwise randomise itself does not need it.
 
 ```bash
 git clone https://github.com/alexedmon1/neurofaune.git
@@ -31,6 +32,13 @@ point **or a config key**:
 
 ```bash
 make capabilities   # rewrites CAPABILITIES.md
+```
+
+Study-side code that hardcodes a template→SIGMA transform filename will keep
+working until the layout changes, then silently skip. Gate it with:
+
+```bash
+neurofaune check-paths path/to/study/code
 ```
 
 `make advisory` currently reports several thousand ruff findings and ~1,180 mypy
@@ -519,8 +527,12 @@ All support `--dry-run`, `--subjects sub-Rat49 sub-Rat50`, `--force`, and `--ski
 Standalone registration scripts for individual modality-to-template steps:
 
 ```bash
+# DWI → SIGMA (preferred): FA → cohort template → SIGMA in one pass.
+uv run python scripts/batch_register_dwi.py --study-root /path/to/study --n-cores 4
+
 # These take --study-root (not --config) and derive the rest from the study tree.
 # All support --dry-run and --force; all but the last also take --n-cores.
+# FA→T2w is the older chain; prefer batch_register_dwi.py for new work.
 uv run python scripts/batch_register_fa_to_t2w.py        --study-root /path/to/study
 uv run python scripts/batch_register_fa_to_template.py   --study-root /path/to/study
 uv run python scripts/batch_register_bold_to_t2w.py      --study-root /path/to/study
@@ -567,10 +579,14 @@ uv run python scripts/extract_roi_means.py \
 Produces wide and long CSVs with per-region and per-territory means (234 regions, 11 territories).
 
 ```python
-from neurofaune.network.roi_extraction import load_parcellation, extract_all_subjects
+from neurofaune.network.roi_extraction import extract_all_subjects, to_long_format
 
-parcellation, labels = load_parcellation(parcellation_path, labels_csv_path)
-wide_df, long_df = extract_all_subjects(derivatives_dir, parcellation, labels, modality="dwi")
+wide_by_metric = extract_all_subjects(
+    derivatives_dir, parcellation_path, labels_csv_path,
+    modality="dwi", metrics=["FA", "MD"],
+)
+fa_wide = wide_by_metric["FA"]
+# Optional tidy form: to_long_format(fa_wide, labels_df, metric_name="FA")
 ```
 
 ### Functional Connectivity
@@ -721,7 +737,7 @@ Per cohort (pooled, p30, p60, p90), the pipeline runs:
 ```python
 from neurofaune.network.mcca import load_multiview_data, run_mcca, permutation_test_mcca
 
-Xs, view_names, metadata = load_multiview_data(
+Xs, view_names, feature_names, metadata = load_multiview_data(
     roi_dir, views={"dwi": ["FA", "MD"], "msme": ["MWF", "T2"]},
     feature_set="bilateral",
 )
@@ -744,7 +760,8 @@ WM-skeleton voxel-wise analysis for DTI and MSME metrics using FSL randomise wit
 uv run python -m neurofaune.analysis.tbss.prepare_tbss --config config.yaml \
     --output-dir /path/to/analysis/tbss/dwi
 
-# Prepare designs (group contrasts + dose-response)
+# Prepare designs (group contrasts + dose-response).
+# These scripts import DesignHelper from neuroaider (see Prerequisites).
 uv run python scripts/prepare_tbss_designs.py \
     --study-tracker /path/to/tracker.csv \
     --tbss-dir /path/to/analysis/tbss/dwi \
@@ -782,7 +799,7 @@ uv run python scripts/run_voxelwise_fmri_analysis.py \
 
 ### VBM (Voxel-Based Morphometry)
 
-Voxel-wise analysis of tissue density (GM, WM, CSF) using FSL randomise. Design scripts support both ordinal dose and continuous AUC targets:
+Voxel-wise analysis of tissue density (GM, WM, CSF) using FSL randomise. Design scripts support both ordinal dose and continuous AUC targets. `prepare_vbm_designs.py` needs neuroaider (see Prerequisites).
 
 ```bash
 # Designs are written to {vbm-dir}/designs — there is no --output-dir.
@@ -804,7 +821,7 @@ uv run python scripts/run_vbm_analysis.py \
 
 ### MVPA (Multi-Voxel Pattern Analysis)
 
-Whole-brain decoding and searchlight mapping. Supports both categorical group designs and continuous regression targets (ordinal dose or AUC):
+Whole-brain decoding and searchlight mapping. Supports both categorical group designs and continuous regression targets (ordinal dose or AUC). `prepare_mvpa_designs.py` needs neuroaider (see Prerequisites).
 
 ```bash
 # Paths come from --config, or individually via --derivatives-dir /
@@ -832,7 +849,7 @@ The `neurofaune/reporting/` module provides a unified analysis dashboard. Every 
 ### Generating the Dashboard
 
 ```bash
-# Backfill existing results and generate dashboard
+# Backfill existing results (scans analysis/ and sibling network/) and generate dashboard
 uv run python scripts/generate_analysis_index.py \
     --analysis-root /path/to/analysis \
     --study-name "BPA Rat Study" \
@@ -957,7 +974,7 @@ diffusion:
 ```yaml
 msme:
   skull_strip:
-    method: "atropos_bet"
+    method: "adaptive"             # per-slice BET; 'atropos_bet' fails on 5-slice MSME
     n_classes: 3
   t2_fitting:
     n_components: 120              # NNLS spectrum components
@@ -1009,7 +1026,7 @@ Neurofaune automatically selects the skull stripping method based on image geome
 | T2w anatomical | 41 | `atropos_bet` (5-class) | Middle 3 classes by volume = brain |
 | DTI diffusion | 11 | `atropos_bet` (3-class) | Brightest class = brain |
 | BOLD functional | 9 | `adaptive` | Per-slice BET with iterative frac |
-| MSME T2 mapping | 5 | `atropos_bet` (3-class) | Brightest class = brain |
+| MSME T2 mapping | 5 | `adaptive` | Per-slice BET (`atropos_bet` fails on 5-slice slabs) |
 
 The threshold between methods is 10 slices. Standard 3D BET fails on partial-coverage data (BOLD, MSME) where the volume is essentially a flat slab.
 
@@ -1041,6 +1058,8 @@ neurofaune/
 │   │   ├── dwi_preprocess.py        # DTI: eddy, tensor fit, FA→T2w
 │   │   ├── func_preprocess.py       # fMRI: motion, ICA, filter, BOLD→T2w
 │   │   ├── msme_preprocess.py       # MSME: T2 mapping, MWF, MSME→T2w
+│   │   ├── mrs_preprocess.py        # SVS PRESS: convert, fit, quantify
+│   │   ├── multishell_models.py     # DKI / NODDI
 │   │   └── bruker_session.py        # Single-session orchestrator
 │   ├── qc/                          # Quality control (per modality)
 │   └── utils/
@@ -1061,10 +1080,15 @@ neurofaune/
 │   ├── mcca.py                      # MCCA: load, fit, permutation, dose, PERMANOVA
 │   └── mcca_visualization.py        # Canonical correlations, scores, loadings plots
 ├── analysis/                        # Voxelwise group-level statistical analysis
+│   ├── func/                        # fALFF, ReHo, group MELODIC
 │   ├── stats/                       # FSL randomise wrapper, cluster reporting
+│   ├── tbss/                        # Tract-based spatial statistics
+│   ├── vbm/                         # Voxel-based morphometry
 │   ├── mvpa/                        # Multi-voxel pattern analysis
 │   ├── progress.py                  # Lightweight progress tracking for runner scripts
-│   └── provenance.py                # Provenance chain for analysis reproducibility
+│   └── provenance.py                # Analysis-side hashing / batch-run manifests
+├── provenance.py                    # BIDS GeneratedBy records for preprocess derivatives
+├── qa/                              # Path-hygiene checks (`neurofaune check-paths`)
 ├── reporting/                       # Unified analysis dashboard
 │   ├── registry.py                  # JSON registry (file-locked, NFS-safe)
 │   ├── discover.py                  # Backfill existing results into registry

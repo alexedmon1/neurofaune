@@ -604,10 +604,19 @@ class CovNetAnalysis:
             config_path, roi_dir, covnet_root
         )
 
+        if labels_csv is None and config_path is not None:
+            from neurofaune.config import load_config, get_config_value
+            cfg = load_config(Path(config_path))
+            atlas_base = get_config_value(cfg, "atlas.base_path")
+            if atlas_base:
+                labels_csv = (
+                    Path(atlas_base)
+                    / "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
+                )
         if labels_csv is None:
-            labels_csv = Path(
-                "/mnt/arborea/atlases/SIGMA/"
-                "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
+            raise ValueError(
+                "labels_csv is required for territory mapping. "
+                "Pass labels_csv= or set atlas.base_path in config."
             )
         labels_csv = Path(labels_csv)
 

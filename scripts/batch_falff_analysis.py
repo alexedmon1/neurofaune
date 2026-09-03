@@ -487,14 +487,14 @@ def main():
     parser.add_argument(
         "--study-root",
         type=Path,
-        default=Path("/mnt/arborea/bpa-rat"),
-        help="Study root directory (default: /mnt/arborea/bpa-rat)",
+        default=None,
+        help="Study root directory (default: paths.study_root from --config)",
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("/home/edm9fd/sandbox/neurofaune/configs/default.yaml"),
-        help="Configuration file",
+        default=None,
+        help="Study config YAML (required unless --study-root is set)",
     )
     parser.add_argument(
         "--n-workers",
@@ -547,6 +547,17 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.config is None and args.study_root is None:
+        parser.error("Provide --config or --study-root")
+    if args.config is not None:
+        _cfg = load_config(args.config)
+        if args.study_root is None:
+            args.study_root = Path(get_config_value(_cfg, "paths.study_root"))
+    elif args.config is None:
+        candidate = args.study_root / "config.yaml"
+        if candidate.exists():
+            args.config = candidate
 
     # Load QC exclusions if provided
     qc_exclusions = set()

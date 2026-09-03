@@ -18,7 +18,7 @@ import traceback
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from neurofaune.analysis.provenance import write_batch_run_manifest
-from neurofaune.config import load_config
+from neurofaune.config import get_config_value, load_config
 from neurofaune.preprocess.workflows.func_preprocess import run_functional_preprocessing
 from neurofaune.utils.transforms import create_transform_registry
 from neurofaune.utils.select_anatomical import is_3d_only_subject
@@ -209,20 +209,20 @@ def main():
     parser.add_argument(
         '--bids-root',
         type=Path,
-        default=Path('/mnt/arborea/bpa-rat/raw/bids'),
-        help='BIDS root directory'
+        default=None,
+        help='BIDS root directory (default: paths.bids from --config)'
     )
     parser.add_argument(
         '--output-root',
         type=Path,
-        default=Path('/mnt/arborea/bpa-rat'),
-        help='Output root directory (study root)'
+        default=None,
+        help='Output root directory / study root (default: paths.study_root from --config)'
     )
     parser.add_argument(
         '--config',
         type=Path,
-        default=Path('/home/edm9fd/sandbox/neurofaune/configs/default.yaml'),
-        help='Configuration file'
+        default=None,
+        help='Study config YAML (required unless --bids-root and --output-root are both set)'
     )
     parser.add_argument(
         '--n-workers',
@@ -259,6 +259,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.config is None and (args.bids_root is None or args.output_root is None):
+        parser.error("Provide --config, or both --bids-root and --output-root")
+    if args.config is not None:
+        _cfg = load_config(args.config)
+        if args.bids_root is None:
+            args.bids_root = Path(get_config_value(_cfg, "paths.bids"))
+        if args.output_root is None:
+            args.output_root = Path(get_config_value(_cfg, "paths.study_root"))
 
     # Find all scans
     print(f"Scanning for BOLD images in {args.bids_root}...")

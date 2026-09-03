@@ -17,7 +17,10 @@ from .section_renderers import render_entry
 logger = logging.getLogger(__name__)
 
 # Display order for analysis type groups
-_TYPE_ORDER = ["tbss", "roi_extraction", "covnet", "connectome", "classification", "regression", "mvpa", "batch_qc"]
+_TYPE_ORDER = [
+    "tbss", "roi_extraction", "covnet", "connectome", "classification",
+    "regression", "mcca", "mvpa", "batch_qc",
+]
 
 _TYPE_LABELS = {
     "tbss": "TBSS (Tract-Based Spatial Statistics)",
@@ -26,6 +29,7 @@ _TYPE_LABELS = {
     "connectome": "Functional Connectome",
     "classification": "Multivariate Classification",
     "regression": "Dose-Response Regression",
+    "mcca": "Multi-modal CCA",
     "mvpa": "MVPA (Voxel-Level Decoding)",
     "batch_qc": "Batch QC",
 }

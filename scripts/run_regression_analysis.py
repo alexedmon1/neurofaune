@@ -73,11 +73,7 @@ def main():
         help="CSV of sessions to exclude",
     )
     parser.add_argument(
-        "--atlas-labels", type=Path,
-        default=Path(
-            "/mnt/arborea/atlases/SIGMA/"
-            "SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv"
-        ),
+        "--atlas-labels", type=Path, default=None,
         help="SIGMA atlas labels CSV for territory weight plots",
     )
     parser.add_argument(

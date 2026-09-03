@@ -19,19 +19,19 @@ Usage:
     # Run ReHo analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_voxelwise_fmri_analysis.py \
         --analysis-dir $STUDY_ROOT/analysis/reho \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --metrics ReHo --n-permutations 5000
 
     # Run fALFF analysis
     PYTHONUNBUFFERED=1 uv run python scripts/run_voxelwise_fmri_analysis.py \
         --analysis-dir $STUDY_ROOT/analysis/falff \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --metrics fALFF --n-permutations 5000
 
     # Quick test
     uv run python scripts/run_voxelwise_fmri_analysis.py \
         --analysis-dir $STUDY_ROOT/analysis/reho \
-        --config configs/bpa_rat_example.yaml \
+        --config config.yaml \
         --analyses per_pnd_p30 \
         --metrics ReHo --n-permutations 100 --seed 42
 """

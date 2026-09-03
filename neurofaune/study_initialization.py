@@ -1035,13 +1035,14 @@ def _generate_next_steps(report: dict, study_root: Path) -> List[str]:
     has_bruker = bruker_info.get('status') == 'success' and bruker_info.get('n_scans', 0) > 0
     has_bids = bids_info.get('status') == 'success' and bids_info.get('n_subjects', 0) > 0
 
+    config = study_root / "config.yaml"
+    bids = study_root / "raw" / "bids"
+
     if has_bruker and not has_bids:
-        # Need to convert Bruker to BIDS first
         steps.append(
-            f"Convert Bruker data to BIDS format ({bruker_info.get('n_scans', 0)} scans found). "
-            f"Use brkraw or similar tool."
+            f"Convert Bruker data to BIDS format ({bruker_info.get('n_scans', 0)} scans found): "
+            f"neurofaune bids --config {config}"
         )
-        steps.append(f"  Example: brkraw tonii {study_root}/raw/bruker -o {study_root}/raw/bids")
 
     if has_bids:
         modalities = bids_info.get('modalities', {})
@@ -1049,24 +1050,28 @@ def _generate_next_steps(report: dict, study_root: Path) -> List[str]:
         if modalities.get('anat', 0) > 0:
             steps.append(
                 f"Run anatomical preprocessing ({modalities['anat']} sessions): "
-                f"uv run python scripts/batch_preprocess_anat.py --config {study_root}/config.yaml"
+                f"uv run python scripts/batch_preprocess_anat.py "
+                f"{bids} {study_root} --config {config}"
             )
 
         if modalities.get('dwi', 0) > 0:
             steps.append(
                 f"Run DTI preprocessing ({modalities['dwi']} sessions): "
-                f"uv run python scripts/batch_preprocess_dwi.py --config {study_root}/config.yaml"
+                f"uv run python scripts/batch_preprocess_dwi.py "
+                f"--config {config} --bids-root {bids} --output-root {study_root}"
             )
 
         if modalities.get('func', 0) > 0:
             steps.append(
                 f"Run functional preprocessing ({modalities['func']} sessions): "
-                f"uv run python scripts/batch_preprocess_func.py --config {study_root}/config.yaml"
+                f"uv run python scripts/batch_preprocess_func.py "
+                f"--bids-root {bids} --output-root {study_root} --config {config}"
             )
 
         steps.append(
             "Build age-specific templates: "
-            f"uv run python scripts/build_templates.py --config {study_root}/config.yaml"
+            f"uv run python scripts/build_templates.py "
+            f"--config {config} --cohort all --modality anat"
         )
     elif not has_bruker:
         steps.append(f"Add raw data (Bruker) to: {study_root}/raw/bruker/")

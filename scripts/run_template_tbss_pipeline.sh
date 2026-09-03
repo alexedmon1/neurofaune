@@ -9,19 +9,22 @@
 #   3. Run randomise with cluster reporting
 #
 # Usage:
-#   bash scripts/run_template_tbss_pipeline.sh
+#   STUDY_ROOT=/path/to/study bash scripts/run_template_tbss_pipeline.sh
 #
 #   # Single cohort
-#   COHORTS="p90" bash scripts/run_template_tbss_pipeline.sh
+#   STUDY_ROOT=/path/to/study COHORTS="p90" bash scripts/run_template_tbss_pipeline.sh
 #
 #   # Custom output
-#   OUTPUT=/mnt/arborea/bpa-rat/analysis/tbss_tpl bash scripts/run_template_tbss_pipeline.sh
+#   STUDY_ROOT=/path/to/study OUTPUT=/path/to/analysis/tbss_tpl bash scripts/run_template_tbss_pipeline.sh
 #
 set -euo pipefail
 
-STUDY_ROOT="${STUDY_ROOT:-/mnt/arborea/bpa-rat}"
+if [[ -z "${STUDY_ROOT:-}" ]]; then
+    echo "STUDY_ROOT is required" >&2
+    exit 1
+fi
 OUTPUT="${OUTPUT:-${STUDY_ROOT}/analysis/tbss/template}"
-CONFIG="${CONFIG:-${STUDY_ROOT}/configs/bpa_rat_example.yaml}"
+CONFIG="${CONFIG:-${STUDY_ROOT}/config.yaml}"
 TRACKER="${TRACKER:-${STUDY_ROOT}/study_tracker_combined.csv}"
 COHORTS="${COHORTS:-p30 p60 p90}"
 METRICS="${METRICS:-FA MD AD RD}"

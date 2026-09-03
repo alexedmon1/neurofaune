@@ -299,7 +299,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='Visualize MSME skull stripping and registration')
-    parser.add_argument('--study-root', type=Path, default=Path('/mnt/arborea/bpa-rat'),
+    parser.add_argument('--study-root', type=Path, required=True,
+                        help='Study root directory')
                         help='Study root directory')
     parser.add_argument('--output-dir', type=Path, default=None,
                         help='Output directory for figures (default: study_root/qc/msme_visualization)')

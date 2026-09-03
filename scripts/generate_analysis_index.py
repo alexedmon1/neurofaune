@@ -52,7 +52,8 @@ def main():
         "--analysis-root",
         type=Path,
         required=True,
-        help="Root directory of analysis outputs",
+        help="Root directory of analysis outputs (typically {study}/analysis; "
+             "backfill also scans sibling network/ for ROI, CovNet, classification, MCCA)",
     )
     parser.add_argument(
         "--study-name",

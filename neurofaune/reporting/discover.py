@@ -7,6 +7,7 @@ registry entries for any summaries found.
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,50 +28,79 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _rel(path: Path, root: Path) -> str:
-    """Return path relative to root as a string."""
+    """Return path relative to root, including ``../`` for sibling dirs."""
     try:
-        return str(path.relative_to(root))
+        return os.path.relpath(str(path), str(root))
     except ValueError:
         return str(path)
 
 
+def _search_roots(analysis_root: Path) -> List[Path]:
+    """analysis_root, the study root, and ``network/`` (ROI/CovNet/MCCA live there)."""
+    roots = [analysis_root]
+    if analysis_root.name == "analysis":
+        roots.append(analysis_root.parent)
+        roots.append(analysis_root.parent / "network")
+    network = analysis_root / "network"
+    if network not in roots:
+        roots.append(network)
+    seen: List[Path] = []
+    for root in roots:
+        if root not in seen:
+            seen.append(root)
+    return seen
+
+
+def _find_summaries(analysis_root: Path, dirname: str, filename: str) -> List[Path]:
+    """Find ``filename`` in ``dirname`` or one level below, across search roots."""
+    found: List[Path] = []
+    seen: set[Path] = set()
+    for root in _search_roots(analysis_root):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        candidates = [base / filename]
+        candidates.extend(sorted(base.glob(f"*/{filename}")))
+        for path in candidates:
+            resolved = path.resolve()
+            if resolved in seen or not path.is_file():
+                continue
+            seen.add(resolved)
+            found.append(path)
+    return found
+
+
 def _discover_roi(analysis_root: Path) -> List[Dict[str, Any]]:
-    """Discover ROI extraction summaries."""
+    """Discover ROI extraction summaries (``analysis/roi`` or ``network/roi``)."""
     entries = []
-    roi_dir = analysis_root / "roi"
-    if not roi_dir.is_dir():
-        return entries
+    for summary_path in _find_summaries(analysis_root, "roi", "extraction_summary.json"):
+        roi_dir = summary_path.parent
+        data = _read_json(summary_path)
+        if data is None:
+            continue
 
-    summary_path = roi_dir / "extraction_summary.json"
-    if not summary_path.exists():
-        return entries
+        modality = data.get("modality", "unknown")
+        metrics_info = data.get("metrics", {})
+        n_subjects = 0
+        metric_names = list(metrics_info.keys())
+        if metrics_info:
+            first = next(iter(metrics_info.values()))
+            n_subjects = first.get("n_subjects", 0)
 
-    data = _read_json(summary_path)
-    if data is None:
-        return entries
-
-    modality = data.get("modality", "unknown")
-    metrics_info = data.get("metrics", {})
-    n_subjects = 0
-    metric_names = list(metrics_info.keys())
-    if metrics_info:
-        first = next(iter(metrics_info.values()))
-        n_subjects = first.get("n_subjects", 0)
-
-    entries.append({
-        "entry_id": f"roi_extraction_{modality}",
-        "analysis_type": "roi_extraction",
-        "display_name": f"ROI Extraction ({modality.upper()}: {', '.join(metric_names)})",
-        "output_dir": _rel(roi_dir, analysis_root),
-        "summary_stats": {
-            "modality": modality,
-            "n_subjects": n_subjects,
-            "metrics": metric_names,
-            "n_regions": next(iter(metrics_info.values()), {}).get("n_regions", 0),
-            "n_territories": next(iter(metrics_info.values()), {}).get("n_territories", 0),
-        },
-        "source_summary_json": _rel(summary_path, analysis_root),
-    })
+        entries.append({
+            "entry_id": f"roi_extraction_{modality}",
+            "analysis_type": "roi_extraction",
+            "display_name": f"ROI Extraction ({modality.upper()}: {', '.join(metric_names)})",
+            "output_dir": _rel(roi_dir, analysis_root),
+            "summary_stats": {
+                "modality": modality,
+                "n_subjects": n_subjects,
+                "metrics": metric_names,
+                "n_regions": next(iter(metrics_info.values()), {}).get("n_regions", 0),
+                "n_territories": next(iter(metrics_info.values()), {}).get("n_territories", 0),
+            },
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
     return entries
 
 
@@ -133,140 +163,123 @@ def _discover_tbss(analysis_root: Path) -> List[Dict[str, Any]]:
 def _discover_covnet(analysis_root: Path) -> List[Dict[str, Any]]:
     """Discover CovNet analysis summaries."""
     entries = []
-    covnet_dir = analysis_root / "covnet"
-    if not covnet_dir.is_dir():
-        return entries
+    for summary_path in _find_summaries(analysis_root, "covnet", "covnet_summary.json"):
+        covnet_dir = summary_path.parent
+        data = _read_json(summary_path)
+        if data is None:
+            continue
 
-    summary_path = covnet_dir / "covnet_summary.json"
-    if not summary_path.exists():
-        return entries
+        metrics = list(data.keys())
+        n_subjects = 0
+        n_rois = 0
+        for metric_data in data.values():
+            if isinstance(metric_data, dict):
+                n_subjects = max(n_subjects, metric_data.get("n_subjects", 0))
+                n_rois = max(n_rois, metric_data.get("n_bilateral_rois", 0))
 
-    data = _read_json(summary_path)
-    if data is None:
-        return entries
+        figures = []
+        fig_dir = covnet_dir / "figures"
+        if fig_dir.is_dir():
+            for fig in sorted(fig_dir.rglob("*.png")):
+                figures.append(_rel(fig, analysis_root))
 
-    metrics = list(data.keys())
-    n_subjects = 0
-    n_rois = 0
-    for metric_data in data.values():
-        if isinstance(metric_data, dict):
-            n_subjects = max(n_subjects, metric_data.get("n_subjects", 0))
-            n_rois = max(n_rois, metric_data.get("n_bilateral_rois", 0))
-
-    # Collect figures
-    figures = []
-    fig_dir = covnet_dir / "figures"
-    if fig_dir.is_dir():
-        for fig in sorted(fig_dir.rglob("*.png")):
-            figures.append(_rel(fig, analysis_root))
-
-    entries.append({
-        "entry_id": "covnet",
-        "analysis_type": "covnet",
-        "display_name": f"CovNet Analysis ({', '.join(metrics)})",
-        "output_dir": _rel(covnet_dir, analysis_root),
-        "summary_stats": {
-            "metrics": metrics,
-            "n_subjects": n_subjects,
-            "n_bilateral_rois": n_rois,
-        },
-        "figures": figures[:20],  # Cap at 20 figure refs
-        "source_summary_json": _rel(summary_path, analysis_root),
-    })
+        entries.append({
+            "entry_id": "covnet",
+            "analysis_type": "covnet",
+            "display_name": f"CovNet Analysis ({', '.join(metrics)})",
+            "output_dir": _rel(covnet_dir, analysis_root),
+            "summary_stats": {
+                "metrics": metrics,
+                "n_subjects": n_subjects,
+                "n_bilateral_rois": n_rois,
+            },
+            "figures": figures[:20],
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
     return entries
 
 
 def _discover_classification(analysis_root: Path) -> List[Dict[str, Any]]:
     """Discover Multivariate Classification analysis summaries."""
     entries = []
-    clf_dir = analysis_root / "classification"
-    if not clf_dir.is_dir():
-        return entries
+    for summary_path in _find_summaries(
+        analysis_root, "classification", "classification_summary.json"
+    ):
+        clf_dir = summary_path.parent
+        data = _read_json(summary_path)
+        if data is None:
+            continue
 
-    summary_path = clf_dir / "classification_summary.json"
-    if not summary_path.exists():
-        return entries
+        metrics = data.get("metrics", [])
+        feature_sets = data.get("feature_sets", [])
+        n_subjects = data.get("n_subjects", 0)
+        n_sig = data.get("n_significant_permanova", 0)
+        best_acc = data.get("best_classification_accuracy", 0)
 
-    data = _read_json(summary_path)
-    if data is None:
-        return entries
+        figures = []
+        for fig in sorted(clf_dir.rglob("*.png")):
+            figures.append(_rel(fig, analysis_root))
 
-    metrics = data.get("metrics", [])
-    feature_sets = data.get("feature_sets", [])
-    n_subjects = data.get("n_subjects", 0)
-    n_sig = data.get("n_significant_permanova", 0)
-    best_acc = data.get("best_classification_accuracy", 0)
-
-    # Collect figures
-    figures = []
-    for fig in sorted(clf_dir.rglob("*.png")):
-        figures.append(_rel(fig, analysis_root))
-
-    summary_stats = {
-        "metrics": metrics,
-        "feature_sets": feature_sets,
-        "n_subjects": n_subjects,
-        "n_significant_permanova": n_sig,
-        "best_classification_accuracy": best_acc,
-    }
-
-    entries.append({
-        "entry_id": "classification",
-        "analysis_type": "classification",
-        "display_name": f"Multivariate Classification ({', '.join(metrics)})",
-        "output_dir": _rel(clf_dir, analysis_root),
-        "summary_stats": summary_stats,
-        "figures": figures[:20],
-        "source_summary_json": _rel(summary_path, analysis_root),
-    })
+        suffix = "" if clf_dir.name == "classification" else f"_{clf_dir.name}"
+        entries.append({
+            "entry_id": f"classification{suffix}",
+            "analysis_type": "classification",
+            "display_name": f"Multivariate Classification ({', '.join(metrics) or clf_dir.name})",
+            "output_dir": _rel(clf_dir, analysis_root),
+            "summary_stats": {
+                "metrics": metrics,
+                "feature_sets": feature_sets,
+                "n_subjects": n_subjects,
+                "n_significant_permanova": n_sig,
+                "best_classification_accuracy": best_acc,
+            },
+            "figures": figures[:20],
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
     return entries
 
 
 def _discover_regression(analysis_root: Path) -> List[Dict[str, Any]]:
     """Discover Dose-Response Regression analysis summaries."""
     entries = []
-    reg_dir = analysis_root / "regression"
-    if not reg_dir.is_dir():
-        return entries
+    for summary_path in _find_summaries(
+        analysis_root, "regression", "regression_summary.json"
+    ):
+        reg_dir = summary_path.parent
+        data = _read_json(summary_path)
+        if data is None:
+            continue
 
-    summary_path = reg_dir / "regression_summary.json"
-    if not summary_path.exists():
-        return entries
+        metrics = data.get("metrics", [])
+        feature_sets = data.get("feature_sets", [])
+        n_subjects = data.get("n_subjects", 0)
+        best_r2 = data.get("best_r2")
+        best_rho = data.get("best_spearman_rho")
 
-    data = _read_json(summary_path)
-    if data is None:
-        return entries
+        figures = []
+        for fig in sorted(reg_dir.rglob("*.png")):
+            figures.append(_rel(fig, analysis_root))
 
-    metrics = data.get("metrics", [])
-    feature_sets = data.get("feature_sets", [])
-    n_subjects = data.get("n_subjects", 0)
-    best_r2 = data.get("best_r2")
-    best_rho = data.get("best_spearman_rho")
+        summary_stats = {
+            "metrics": metrics,
+            "feature_sets": feature_sets,
+            "n_subjects": n_subjects,
+        }
+        if best_r2 is not None:
+            summary_stats["best_r2"] = best_r2
+        if best_rho is not None:
+            summary_stats["best_spearman_rho"] = best_rho
 
-    # Collect figures
-    figures = []
-    for fig in sorted(reg_dir.rglob("*.png")):
-        figures.append(_rel(fig, analysis_root))
-
-    summary_stats = {
-        "metrics": metrics,
-        "feature_sets": feature_sets,
-        "n_subjects": n_subjects,
-    }
-    if best_r2 is not None:
-        summary_stats["best_r2"] = best_r2
-    if best_rho is not None:
-        summary_stats["best_spearman_rho"] = best_rho
-
-    entries.append({
-        "entry_id": "regression",
-        "analysis_type": "regression",
-        "display_name": f"Dose-Response Regression ({', '.join(metrics)})",
-        "output_dir": _rel(reg_dir, analysis_root),
-        "summary_stats": summary_stats,
-        "figures": figures[:20],
-        "source_summary_json": _rel(summary_path, analysis_root),
-    })
+        suffix = "" if reg_dir.name == "regression" else f"_{reg_dir.name}"
+        entries.append({
+            "entry_id": f"regression{suffix}",
+            "analysis_type": "regression",
+            "display_name": f"Dose-Response Regression ({', '.join(metrics) or reg_dir.name})",
+            "output_dir": _rel(reg_dir, analysis_root),
+            "summary_stats": summary_stats,
+            "figures": figures[:20],
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
     return entries
 
 
@@ -362,6 +375,38 @@ def _discover_connectome(analysis_root: Path) -> List[Dict[str, Any]]:
     return entries
 
 
+def _discover_mcca(analysis_root: Path) -> List[Dict[str, Any]]:
+    """Discover MCCA summaries under ``network/mcca`` (or ``analysis/mcca``)."""
+    entries = []
+    for summary_path in _find_summaries(analysis_root, "mcca", "mcca_summary.json"):
+        mcca_dir = summary_path.parent
+        data = _read_json(summary_path)
+        if data is None:
+            continue
+
+        figures = []
+        for fig in sorted(mcca_dir.rglob("*.png")):
+            figures.append(_rel(fig, analysis_root))
+
+        views = data.get("views", {})
+        view_names = list(views.keys()) if isinstance(views, dict) else list(views)
+        entries.append({
+            "entry_id": "mcca",
+            "analysis_type": "mcca",
+            "display_name": f"Multi-modal CCA ({', '.join(view_names) or 'MCCA'})",
+            "output_dir": _rel(mcca_dir, analysis_root),
+            "summary_stats": {
+                "views": view_names,
+                "n_subjects": data.get("n_subjects_max", data.get("n_subjects", 0)),
+                "n_significant_cv": data.get("n_significant_canonical_variates", 0),
+                "n_significant_dose": data.get("n_significant_dose_associations", 0),
+            },
+            "figures": figures[:20],
+            "source_summary_json": _rel(summary_path, analysis_root),
+        })
+    return entries
+
+
 def _discover_batch_qc(analysis_root: Path) -> List[Dict[str, Any]]:
     """
     Discover batch QC summaries.
@@ -454,6 +499,7 @@ def backfill_registry(
     discoveries.extend(_discover_connectome(analysis_root))
     discoveries.extend(_discover_classification(analysis_root))
     discoveries.extend(_discover_regression(analysis_root))
+    discoveries.extend(_discover_mcca(analysis_root))
     discoveries.extend(_discover_mvpa(analysis_root))
     discoveries.extend(_discover_batch_qc(analysis_root))
 

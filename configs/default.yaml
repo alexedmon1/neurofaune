@@ -11,7 +11,7 @@ study:
 
 # Directory structure (neurovrai-compatible)
 paths:
-  study_root: "/mnt/arborea/bpa-rat"
+  study_root: "/path/to/study"  # overridden by init_study / a study config.yaml
   raw: "${paths.study_root}/raw"
   bruker: "${paths.raw}/bruker"
   bids: "${paths.raw}/bids"
@@ -36,7 +36,7 @@ paths:
 # Atlas configuration
 atlas:
   name: "SIGMA"
-  base_path: "/mnt/arborea/atlases/SIGMA_scaled"  # Scaled 10x for FSL/ANTs compatibility
+  base_path: "/path/to/SIGMA_scaled"  # Scaled 10x for FSL/ANTs compatibility
 
   # Study-space atlas (reoriented to match study acquisition orientation)
   # Set up using: setup_study_atlas() from neurofaune.templates.slice_registration

@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-from neurofaune.connectome.matrices import (
+from neurofaune.network.matrices import (
+    bilateral_average,
     load_and_prepare_data,
 )
 
@@ -51,9 +52,13 @@ def _load_filter_select(
             raise ValueError(f"No subjects remaining after cohort filter '{cohort_filter}'")
         logger.info("Cohort filter '%s': n=%d", cohort_filter, len(df))
 
-    # Select feature set
+    # Select feature set. ``bilateral`` (and the ``region`` alias) average
+    # paired _L/_R columns; ``all`` keeps every individual L/R ROI.
     if feature_set in ("bilateral", "region"):
+        df, roi_cols = bilateral_average(df, roi_cols)
         feature_names = [c for c in roi_cols if not c.startswith("territory_")]
+        if not feature_names:
+            raise ValueError("No region ROI columns found after bilateral averaging")
     elif feature_set == "territory":
         feature_names = [c for c in roi_cols if c.startswith("territory_")]
         if not feature_names:

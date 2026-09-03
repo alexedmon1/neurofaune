@@ -164,7 +164,8 @@ def warp_bold_to_sigma(
 
 def main():
     parser = argparse.ArgumentParser(description='Batch warp BOLD to SIGMA space')
-    parser.add_argument('--study-root', type=Path, default=Path('/mnt/arborea/bpa-rat'))
+    parser.add_argument('--study-root', type=Path, required=True,
+                        help='Study root directory')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be done')
     parser.add_argument('--force', action='store_true', help='Re-run even if output exists')
     args = parser.parse_args()

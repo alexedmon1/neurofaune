@@ -307,6 +307,25 @@ def render_connectome(entry: Dict[str, Any], analysis_root: Path) -> str:
     )
 
 
+def render_mcca(entry: Dict[str, Any], analysis_root: Path) -> str:
+    """Render an MCCA entry section."""
+    stats = entry.get("summary_stats", {})
+    views = stats.get("views", [])
+    cards = [
+        _stat_card(stats.get("n_subjects", "?"), "Subjects"),
+        _stat_card(", ".join(views) if views else "—", "Views"),
+        _stat_card(stats.get("n_significant_cv", "?"), "Sig. CVs"),
+        _stat_card(stats.get("n_significant_dose", "?"), "Sig. Dose Assoc."),
+    ]
+    gallery = _figures_gallery(entry.get("figures", []), analysis_root)
+    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+    return (
+        f'<div class="stats-grid">{"".join(cards)}</div>'
+        f"{output_link}"
+        f"{gallery}"
+    )
+
+
 def render_generic(entry: Dict[str, Any], analysis_root: Path) -> str:
     """Fallback renderer for unknown analysis types."""
     stats = entry.get("summary_stats", {})
@@ -325,6 +344,7 @@ RENDERERS = {
     "connectome": render_connectome,
     "classification": render_classification,
     "regression": render_regression,
+    "mcca": render_mcca,
     "mvpa": render_mvpa,
     "batch_qc": render_batch_qc,
 }

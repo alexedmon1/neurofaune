@@ -13,7 +13,7 @@ Usage:
         --study-tracker /mnt/arborea/bpa-rat/study_tracker_combined_250916.csv \
         --modality dwi \
         --metrics FA MD AD RD \
-        --output-dir /mnt/arborea/bpa-rat/analysis/roi
+        --output-dir /mnt/arborea/bpa-rat/network/roi
 """
 
 import argparse

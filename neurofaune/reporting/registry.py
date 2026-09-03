@@ -123,7 +123,8 @@ def register(
     Args:
         analysis_root: Absolute path to analysis root directory.
         entry_id: Stable unique key for this entry.
-        analysis_type: One of 'tbss', 'roi_extraction', 'covnet', 'batch_qc'.
+        analysis_type: One of 'tbss', 'roi_extraction', 'covnet', 'connectome',
+            'classification', 'regression', 'mcca', 'mvpa', 'batch_qc'.
         display_name: Human-readable label shown in the dashboard.
         output_dir: Relative path (from analysis_root) to output directory.
         status: 'completed', 'partial', or 'failed'.
