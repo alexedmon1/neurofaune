@@ -396,11 +396,25 @@ class TestLineshapeFit:
         assert result['area'] / result['area_absorption'] == pytest.approx(0.5, abs=0.05)
 
     def test_absorptive_input_needs_no_phase(self):
-        free = complex_metabolite_free_spectrum(make_complex_curves(phase_deg=0.0))
+        # Needs noise to be a meaningful test: on noiseless data both models fit
+        # to machine precision and their RMS ratio is degenerate, not small.
+        free = complex_metabolite_free_spectrum(
+            make_complex_curves(phase_deg=0.0, noise=0.02, seed=11))
         result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
-        assert abs(result['phase_deg']) < 5.0
+        assert abs(result['phase_deg']) < 10.0
         # Nothing to gain over the absorption-only model when there is no phase.
         assert result['improvement'] < 0.05
+
+    def test_phase_does_not_rail_near_180_degrees(self):
+        # The Cartesian amplitude exists for this: a bounded angle rails at
+        # +/-180, which corrupted the group-delay perturbation experiment.
+        for target in (170.0, -170.0, 179.0):
+            free = complex_metabolite_free_spectrum(
+                make_complex_curves(phase_deg=target))
+            result = fit_mm_lineshape(free['ppm'].to_numpy(), free['signal'].to_numpy())
+            recovered = np.angle(np.exp(1j * np.deg2rad(
+                result['phase_deg'] - target)), deg=True)
+            assert abs(recovered) < 3.0, f'{target} -> {result["phase_deg"]}'
 
     def test_phased_input_beats_the_absorption_only_model(self):
         free = complex_metabolite_free_spectrum(make_complex_curves(phase_deg=-59.0))
