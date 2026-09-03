@@ -11,6 +11,7 @@ import pytest
 from neurofaune.preprocess.qc.func.motion_qc import (
     FD_VOXEL_FRACTION,
     calculate_dvars,
+    calculate_framewise_displacement,
     fd_threshold_from_voxel_size,
 )
 
@@ -95,7 +96,18 @@ class TestFdThreshold:
     def test_threshold_follows_the_voxel(self, bold_and_mask):
         """0.05 against a 4.0 header-unit voxel was 1.25% of a voxel."""
         b, _ = bold_and_mask(zooms=(4.0, 4.0, 8.0))
-        assert fd_threshold_from_voxel_size(b) == pytest.approx(0.17 * 4.0)
+        assert fd_threshold_from_voxel_size(b) == pytest.approx(0.17 * 4.0 / 10.0)
+
+    def test_threshold_is_in_the_same_units_as_fd(self, bold_and_mask):
+        """The regression this guards: a header-unit cut vs real-mm FD is 10x
+        too lenient, so nothing is ever flagged."""
+        b, _ = bold_and_mask(zooms=(4.0, 4.0, 8.0))
+        # Motion of exactly one threshold's worth, in scaled space.
+        thr = fd_threshold_from_voxel_size(b)
+        motion = np.zeros((3, 6))
+        motion[1, 3] = thr * 10.0 * 1.5          # 1.5x the cut, in header units
+        fd = calculate_framewise_displacement(motion)
+        assert fd[0] > thr, "real-mm FD must be comparable to the threshold"
 
     def test_scaling_the_header_scales_the_threshold(self, bold_and_mask):
         """The whole point: 10x-scaled headers get a 10x-scaled cut, for free."""
@@ -114,11 +126,15 @@ class TestFdThreshold:
     def test_human_geometry_lands_near_the_power_default(self, bold_and_mask):
         """3mm human voxels should give ~0.5mm, the value the literature uses."""
         b, _ = bold_and_mask(zooms=(3.0, 3.0, 3.0))
-        assert fd_threshold_from_voxel_size(b) == pytest.approx(0.51, abs=0.02)
+        # Human data is not 10x-scaled, so it uses voxel_scale=1.0 -- the same
+        # value its FD would be computed with.
+        assert (fd_threshold_from_voxel_size(b, voxel_scale=1.0)
+                == pytest.approx(0.51, abs=0.02))
 
     def test_fraction_is_overridable(self, bold_and_mask):
         b, _ = bold_and_mask(zooms=(4.0, 4.0, 8.0))
-        assert fd_threshold_from_voxel_size(b, fraction=0.5) == pytest.approx(2.0)
+        assert (fd_threshold_from_voxel_size(b, fraction=0.5)
+                == pytest.approx(0.2))
 
     def test_default_fraction_is_the_documented_one(self):
         assert FD_VOXEL_FRACTION == 0.17
