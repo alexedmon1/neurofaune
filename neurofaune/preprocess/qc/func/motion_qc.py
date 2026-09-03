@@ -215,16 +215,26 @@ FD_VOXEL_FRACTION = 0.17
 def fd_threshold_from_voxel_size(
     bold_file: Path,
     fraction: float = FD_VOXEL_FRACTION,
+    voxel_scale: float = 10.0,
 ) -> float:
-    """Framewise-displacement threshold in the image header's own units.
+    """Framewise-displacement threshold in REAL (unscaled) mm.
 
     Uses the mean in-plane voxel dimension: FD is dominated by in-plane motion,
     and the through-plane dimension of these acquisitions is far coarser (8.0 vs
     4.0 header units for this cohort's BOLD), so including it would roughly
     double the threshold for no principled reason.
+
+    The result is divided by ``voxel_scale`` so it lands in the same units as
+    :func:`calculate_framewise_displacement`, which returns real mm. Without
+    that division the threshold is a header-unit number tested against real-mm
+    FD -- 10x too lenient on 10x-scaled rodent headers, which made
+    ``pct_bad_volumes`` identically 0.000 across a 92-session cohort whose
+    median session actually exceeds the cut on 4.2% of its volumes. Pass
+    ``voxel_scale=1.0`` for unscaled (e.g. human) data, matching the value
+    passed to :func:`calculate_framewise_displacement`.
     """
     zooms = nib.load(bold_file).header.get_zooms()[:3]
-    return fraction * float(np.mean(zooms[:2]))
+    return fraction * float(np.mean(zooms[:2])) / voxel_scale
 
 
 def generate_motion_qc_report(
@@ -258,8 +268,9 @@ def generate_motion_qc_report(
     output_dir : Path
         Output directory for QC report
     threshold_fd : float, optional
-        Framewise displacement threshold for flagging, in the image header's own
-        units. Default None derives it from the voxel size via
+        Framewise displacement threshold for flagging, in REAL (unscaled) mm --
+        the units calculate_framewise_displacement returns. Default None
+        derives it from the voxel size via
         :func:`fd_threshold_from_voxel_size`, which is the only form that is
         correct for both human-scale and 10x-scaled rodent headers. Pass a
         number to override.
@@ -287,15 +298,20 @@ def generate_motion_qc_report(
     motion_params = np.loadtxt(motion_params_file)
     n_volumes = motion_params.shape[0]
     
-    # Calculate metrics
-    fd = calculate_framewise_displacement(motion_params)
+    # Calculate metrics. One voxel_scale for both the FD estimate and the
+    # threshold it is tested against -- they were previously derived with
+    # different scalings, making the cut 10x too lenient (see
+    # fd_threshold_from_voxel_size).
+    voxel_scale = 10.0
+    fd = calculate_framewise_displacement(motion_params, voxel_scale=voxel_scale)
     dvars = calculate_dvars(bold_file, mask_file)
     # Cross-session comparison needs the standardized form; the raw one is kept
     # because the per-session plots and any existing consumer are in its units.
     dvars_std = calculate_dvars(bold_file, mask_file, normalize=True)
 
     if threshold_fd is None:
-        threshold_fd = fd_threshold_from_voxel_size(bold_file)
+        threshold_fd = fd_threshold_from_voxel_size(bold_file,
+                                                    voxel_scale=voxel_scale)
 
     # Calculate summary statistics
     mean_fd = np.mean(fd)
@@ -303,8 +319,7 @@ def generate_motion_qc_report(
     n_bad_volumes = np.sum(fd > threshold_fd)
     pct_bad_volumes = (n_bad_volumes / len(fd)) * 100
     
-    # Correct translations for 10x voxel scaling (MCFLIRT reports in scaled space)
-    voxel_scale = 10.0
+    # Translations are in scaled space too (MCFLIRT estimates there)
     mean_abs_displacement = np.mean(np.abs(motion_params[:, 3:]), axis=0) / voxel_scale
     max_abs_displacement = np.max(np.abs(motion_params[:, 3:]), axis=0) / voxel_scale
 
