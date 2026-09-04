@@ -114,6 +114,19 @@ def main():
     _, labels_df = load_parcellation(args.parcellation, args.labels_csv)
     labels_df = normalise_labels(labels_df, spec)
 
+    # Export the resolved structure -> label-id sets. This is the interface other
+    # tools consume so the group rules stay defined in exactly one place: murinet
+    # builds its searchlight masks and composite radiomics ROIs from this file
+    # rather than carrying a second copy of the rule engine.
+    structure_labels = {
+        name: sorted(resolve_labels(labels_df, rule))
+        for name, rule in spec['structures'].items()
+    }
+    labels_path = args.output_dir / 'structure_labels.json'
+    with open(labels_path, 'w') as fh:
+        json.dump(structure_labels, fh, indent=2)
+    logger.info('Wrote %s (%d structures)', labels_path, len(structure_labels))
+
     ribbon_ids = set()
     if args.thickness:
         ribbon_ids = resolve_labels(labels_df, spec['structures'][RIBBON_STRUCTURE])
@@ -179,6 +192,7 @@ def main():
         'tissue_sources': sorted(set(sources.values())),
         'thickness': bool(thickness_rows),
         'outputs': written,
+        'structure_labels': str(labels_path),
     }
     summary_path = args.output_dir / 'morphometry_summary.json'
     with open(summary_path, 'w') as fh:
