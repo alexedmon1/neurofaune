@@ -604,3 +604,82 @@ def merge_phenotype(
     )
 
     return merged
+
+
+def discover_sigma_images(
+    derivatives_root: Path,
+    metric: str,
+    session_filter: Optional[str] = None,
+    valid_cohorts: Optional[set] = None,
+) -> list[dict]:
+    """Discover SIGMA-space NIfTIs for a given metric.
+
+    Kept here after the MVPA move: building design matrices is still
+    neurofaune's job (scripts/prepare_mvpa_designs.py), and it needs to know
+    which subjects have a given metric in atlas space. Complements
+    :func:`discover_sigma_metrics`, which takes a modality and several metrics.
+
+    `valid_cohorts` restricts which session labels are accepted. It defaults to
+    None (accept any), rather than the study-specific set this function previously
+    hardcoded -- a library function should not know one study's cohort names.
+    Callers that need the restriction pass it explicitly.
+
+    Scans derivatives_root/sub-*/ses-*/dwi/ for files matching
+    ``sub-{subject}_{session}_space-SIGMA_{metric}.nii.gz``.
+    Skips ``ses-unknown`` sessions.
+
+    Args:
+        derivatives_root: Path to derivatives directory.
+        metric: DTI metric name (e.g. 'FA', 'MD').
+        session_filter: If set, only include this session (e.g. 'ses-p60').
+
+    Returns:
+        Sorted list of dicts with keys: subject, session, cohort, image_path.
+    """
+    derivatives_root = Path(derivatives_root)
+    results = []
+
+    for subject_dir in sorted(derivatives_root.iterdir()):
+        if not subject_dir.is_dir() or not subject_dir.name.startswith("sub-"):
+            continue
+        subject = subject_dir.name
+
+        for session_dir in sorted(subject_dir.iterdir()):
+            if not session_dir.is_dir() or not session_dir.name.startswith("ses-"):
+                continue
+            session = session_dir.name
+            cohort = session.replace("ses-", "")
+
+            # Skip unknown cohort
+            if valid_cohorts is not None and cohort not in valid_cohorts:
+                continue
+
+            # Apply session filter
+            if session_filter and session != session_filter:
+                continue
+
+            # Determine modality subdirectory from metric name; anything not
+            # MSME-derived is assumed to live under dwi/.
+            msme_metrics = {"T2", "MWF", "IWF", "CSFF"}
+            if metric in msme_metrics:
+                modality_dir = session_dir / "msme"
+            else:
+                modality_dir = session_dir / "dwi"
+            if not modality_dir.is_dir():
+                continue
+
+            # Look for the SIGMA-space metric file
+            sigma_file = modality_dir / f"{subject}_{session}_space-SIGMA_{metric}.nii.gz"
+            if sigma_file.exists():
+                results.append({
+                    "subject": subject,
+                    "session": session,
+                    "cohort": cohort,
+                    "image_path": sigma_file,
+                })
+
+    logger.info(
+        "Discovered %d SIGMA-space %s images in %s",
+        len(results), metric, derivatives_root,
+    )
+    return results

@@ -114,7 +114,8 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 3. Anatomical (T2w)        → N4, skull strip, segment, build templates, register
 4. Other Modalities        → DTI, fMRI, MSME (each registers directly to template)
    MR Spectroscopy         → reads raw Bruker, not BIDS; self-contained under mrs/
-5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo), MVPA
+5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo)
+                             (MVPA/searchlight → murinet)
 6. Network (ROI-based)     → ROI extraction, CovNet, classification, regression, MCCA
 7. Reporting               → Unified dashboard across all analysis types
 ```
@@ -150,7 +151,7 @@ This creates the directory structure, generates `config.yaml` with all preproces
 ├── derivatives/                 # Preprocessed outputs (per subject/session)
 ├── templates/                   # Age-specific templates
 ├── transforms/                  # Cross-modal transforms
-├── analysis/                    # Voxelwise group analyses (TBSS, VBM, fMRI, MVPA)
+├── analysis/                    # Voxelwise group analyses (TBSS, VBM, fMRI)
 ├── network/                     # ROI-based analyses (covnet, classification, MCCA)
 ├── qc/                          # Quality control reports
 └── work/                        # Temporary files (deletable)
@@ -877,26 +878,29 @@ uv run python scripts/run_vbm_analysis.py \
     --n-permutations 5000
 ```
 
-### MVPA (Multi-Voxel Pattern Analysis)
+### MVPA (Multi-Voxel Pattern Analysis) — moved to murinet
 
-Whole-brain decoding and searchlight mapping. Supports both categorical group designs and continuous regression targets (ordinal dose or AUC). `prepare_mvpa_designs.py` needs neuroaider (see Prerequisites).
+Whole-brain decoding and searchlight mapping now live in **murinet**, the sibling
+ML/AI repo. neurofaune keeps the mass-univariate side (randomise, TBSS, VBM, cluster
+and effect-size reporting); anything that trains or cross-validates a model is
+murinet's.
+
+Design directories built here are read directly by `murinet.design`, so the *same*
+design drives the mass-univariate and the multivariate analyses:
 
 ```bash
-# Paths come from --config, or individually via --derivatives-dir /
-# --design-dir / --output-dir. There is no --study-root.
-uv run python scripts/run_mvpa_analysis.py \
-    --config config.yaml \
-    --output-dir /path/to/analysis/mvpa \
-    --metrics FA --n-permutations 1000
-
-# Prepare AUC regression designs
-uv run python scripts/prepare_mvpa_designs.py \
-    --study-tracker /path/to/tracker.csv \
-    --derivatives-root /path/to/derivatives \
-    --output-dir /path/to/analysis/mvpa/designs \
-    --metrics FA MD AD RD \
-    --target auc --auc-csv /path/to/auc_lookup.csv
+# in the murinet checkout, pointed at a design built here
+uv run python -m murinet.searchlight --config <cfg>                # sliding sphere
+uv run python -m murinet.searchlight --config <cfg> --whole-brain  # whole volume
+uv run python -m murinet.searchlight --config <cfg> --coverage     # plan the maps first
 ```
+
+`prepare_mvpa_designs.py` still lives here and still needs neuroaider (see
+Prerequisites) — building designs is a neurofaune job; consuming them is murinet's.
+
+Note the version removed from here cross-validated with `StratifiedKFold`/`KFold` and
+never passed `groups=`, so an animal contributing several sessions could land in
+train and test at once. murinet's replacement groups folds on animal.
 
 ---
 

@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 178 across 10 stages.
+**Entry points:** 176 across 10 stages.
 
 
 ## analysis
@@ -20,8 +20,6 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 | `select_manual_components` | `neurofaune.analysis.func.melodic_clean` | Build classification result from a manually supplied component list. | — |
 | `compute_reho_map` | `neurofaune.analysis.func.reho` | Compute ReHo (Regional Homogeneity) map for whole brain. | — |
 | `compute_reho_zscore` | `neurofaune.analysis.func.reho` | Standardize ReHo map to z-scores within the brain mask. | — |
-| `run_searchlight` | `neurofaune.analysis.mvpa.searchlight` | Run searchlight analysis with optional FWER correction. | — |
-| `run_whole_brain_decoding` | `neurofaune.analysis.mvpa.whole_brain` | Run whole-brain decoding with PCA + permutation testing. | — |
 | `extract_clusters` | `neurofaune.analysis.stats.cluster_report` | Extract significant clusters from corrected p-value map. | — |
 | `compute_cohens_d_map` | `neurofaune.analysis.stats.effect_size` | Compute Cohen's d map from a t-statistic map. | — |
 | `compute_contrast_variance_factors` | `neurofaune.analysis.stats.effect_size` | Compute c'(X'X)^{-1}c for each contrast row. | — |

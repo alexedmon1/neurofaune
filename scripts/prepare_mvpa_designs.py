@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'neuroaider'))
 
 from neuroaider import DesignHelper
-from neurofaune.analysis.mvpa.data_loader import discover_sigma_images
+from neurofaune.network.roi_extraction import discover_sigma_images
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,7 +97,11 @@ def discover_and_merge(
     # Discover subjects that have all requested metrics in SIGMA space
     all_subjects = {}
     for metric in metrics:
-        images = discover_sigma_images(derivatives_root, metric)
+        # p30/p60/p90 are this study's cohorts; the library no longer
+        # hardcodes them.
+        images = discover_sigma_images(
+            derivatives_root, metric, valid_cohorts={'p30', 'p60', 'p90'}
+        )
         for info in images:
             key = f"{info['subject']}_{info['session']}"
             if key not in all_subjects:

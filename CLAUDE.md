@@ -147,7 +147,7 @@ results = run_anatomical_preprocessing(
 ├── derivatives/sub-{subject}/       # Preprocessed outputs by modality
 ├── templates/{modality}/{cohort}/   # Age-specific templates
 ├── transforms/sub-{subject}/        # Transform registry
-├── analysis/                        # Voxelwise group analyses (TBSS, fALFF, ReHo, MVPA)
+├── analysis/                        # Voxelwise group analyses (TBSS, VBM, fALFF, ReHo)
 ├── network/                         # ROI/atlas-based analyses
 │   ├── covnet/{test}/{modality}/{metric}/ # Covariance network analysis
 │   ├── classification/{dwi,msme,func}/ # Multivariate classification
@@ -228,6 +228,21 @@ gives **0.27 GM / 0.57 WM**.
 It also shows up downstream: group decoding from composite volumes (murinet, 34
 animals, cuprizone vs control) went from balanced accuracy 0.746 (p=0.016) to 0.887
 (p=0.001) purely by switching which posteriors morphometry integrated.
+
+### Multivariate analysis lives in murinet
+
+neurofaune owns the **mass-univariate** side: `randomise`, TBSS, VBM, cluster
+extraction and effect-size maps. Anything that trains or cross-validates a model --
+searchlight, whole-brain decoding, ROI classification -- lives in **murinet**, which
+reads this package's outputs. `analysis/mvpa/` was removed for that reason; it also
+cross-validated with StratifiedKFold/KFold and never passed `groups=`, so an animal
+with several sessions could appear in train and test at once. (No MVPA results on
+disk were produced by the affected code path -- the only outputs found were already
+marked corrupted from an unrelated 2026-05 event.)
+
+Designs built here for VBM/TBSS are read directly by `murinet.design`, so the same
+design drives the mass-univariate and multivariate analyses and they cannot disagree
+about group membership.
 
 ### Morphometry vs ROI extraction
 
