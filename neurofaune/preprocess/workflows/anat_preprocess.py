@@ -700,19 +700,36 @@ def segment_brain_tissue_atropos(
     mrf_smoothing_factor: float = 0.1,
     mrf_radius: Optional[List[int]] = None,
     tissue_confidence_threshold: float = 0.35,
+    atlas_dseg: Optional[Path] = None,
+    atlas_labels: Optional[Path] = None,
+    atlas_tissue_priors: Optional[Dict[str, Path]] = None,
+    prior_weight: float = 0.25,
+    mask_from_atlas: bool = True,
 ) -> Dict[str, Path]:
     """Standalone Atropos tissue segmentation, decoupled from skull stripping.
 
-    Runs a 3-class Atropos segmentation *inside the provided brain mask* to
-    produce GM/WM/CSF probability maps. Used when the skull-strip method
-    (e.g. bet4animal) does not yield reusable posteriors, so tissue segmentation
-    (needed for aCompCor nuisance regressors and WM-focused analyses) no longer
-    depends on how the brain was extracted.
+    Runs a 3-class Atropos segmentation to produce GM/WM/CSF probability maps.
+    Used when the skull-strip method (e.g. bet4animal) does not yield reusable
+    posteriors, so tissue segmentation (needed for aCompCor nuisance regressors
+    and WM-focused analyses) no longer depends on how the brain was extracted.
 
-    Classes are labeled by MEAN T2w INTENSITY within each class (robust to the
-    non-deterministic ordering of Atropos+KMeans): on T2w, WM is darkest, GM
-    intermediate, CSF brightest. The brain mask (not the skull-strip method)
-    bounds the segmentation.
+    Two modes:
+
+    **KMeans (default when no atlas is supplied).** Segments inside `mask_file`
+    and labels classes by MEAN T2w INTENSITY within each class, which is robust to
+    the non-deterministic ordering of Atropos+KMeans: on T2w, WM is darkest, GM
+    intermediate, CSF brightest.
+
+    **Atlas-prior (when `atlas_dseg`, `atlas_labels` and `atlas_tissue_priors` are
+    given).** Initialises from spatial priors derived from the atlas and painted
+    onto the subject's warped parcellation (see
+    :mod:`neurofaune.atlas.tissue_priors` for why the priors are *not* resampled),
+    and — with `mask_from_atlas` — bounds the segmentation by the parcellation
+    rather than the skull-strip mask. Both matter: measured on the cuprizone
+    cohort, the KMeans path scores the corpus callosum 0.65 GM / 0.16 WM, i.e. it
+    calls white matter grey, while the atlas-prior path gives 0.61 WM / 0.25 GM.
+    Class order comes from the prior numbering, so the intensity heuristic becomes
+    a cross-check rather than the source of truth.
     """
     import os
     from nipype.interfaces.ants import Atropos
@@ -737,6 +754,32 @@ def segment_brain_tissue_atropos(
 
     seg_work = Path(output_dir) / 'tissue_atropos'
     seg_work.mkdir(parents=True, exist_ok=True)
+
+    use_priors = bool(atlas_dseg and atlas_labels and atlas_tissue_priors)
+    prior_pattern = None
+    if use_priors:
+        from neurofaune.atlas.tissue_priors import (
+            TISSUE_ORDER,
+            build_atlas_extent_mask,
+            compute_label_tissue_fractions,
+            build_native_priors,
+        )
+
+        fractions = compute_label_tissue_fractions(Path(atlas_labels), atlas_tissue_priors)
+        prior_pattern = build_native_priors(
+            Path(atlas_dseg), fractions, seg_work / 'priors'
+        )
+        if mask_from_atlas:
+            # The skull-strip mask is generous and its surplus is scored as CSF;
+            # the parcellation is the anatomically bounded alternative.
+            mask_file = build_atlas_extent_mask(
+                Path(atlas_dseg), seg_work / 'build_atlas_extent_mask.nii.gz'
+            )
+            mask_img = nib.load(str(mask_file))
+            mask_data = mask_img.get_fdata()
+        print(f"Using atlas-derived priors (weight={prior_weight}), "
+              f"mask={'atlas extent' if mask_from_atlas else 'brain mask'}")
+
     cwd = os.getcwd()
     try:
         os.chdir(seg_work)
@@ -749,7 +792,12 @@ def segment_brain_tissue_atropos(
         atropos.inputs.convergence_threshold = convergence
         atropos.inputs.mrf_smoothing_factor = mrf_smoothing_factor
         atropos.inputs.mrf_radius = mrf_radius
-        atropos.inputs.initialization = 'KMeans'
+        if use_priors:
+            atropos.inputs.initialization = 'PriorProbabilityImages'
+            atropos.inputs.prior_image = prior_pattern
+            atropos.inputs.prior_weighting = prior_weight
+        else:
+            atropos.inputs.initialization = 'KMeans'
         atropos.inputs.save_posteriors = True
         result = atropos.run()
     finally:
@@ -761,9 +809,23 @@ def segment_brain_tissue_atropos(
     # Label classes by mask-weighted mean image intensity (ascending):
     # T2w WM (darkest) < GM < CSF (brightest).
     ordered, mean_int, order = _order_tissue_by_intensity(post_arrays, img_data, mask_data)
-    wm_data, gm_data, csf_data = ordered[0], ordered[1], ordered[2]
     print(f"  Class intensity order (asc): WM={mean_int[order[0]]:.1f} "
           f"GM={mean_int[order[1]]:.1f} CSF={mean_int[order[2]]:.1f}")
+
+    if use_priors:
+        # With priors the posterior order is the prior order, so use it directly and
+        # treat the intensity heuristic as a cross-check rather than the answer.
+        by_tissue = dict(zip(TISSUE_ORDER, post_arrays))
+        csf_data, gm_data, wm_data = (
+            by_tissue['CSF'], by_tissue['GM'], by_tissue['WM']
+        )
+        expected = [TISSUE_ORDER.index(t) for t in ('WM', 'GM', 'CSF')]
+        if order != expected:
+            print(f"  NOTE: intensity ordering {order} disagrees with the prior "
+                  f"ordering {expected}; trusting the priors. Check the T2w contrast "
+                  "if this recurs.")
+    else:
+        wm_data, gm_data, csf_data = ordered[0], ordered[1], ordered[2]
 
     return _finalize_tissue_maps(
         wm_data, gm_data, csf_data, mask_img, mask_data,

@@ -70,7 +70,9 @@ neurofaune/
 ├── config.py                 # YAML config loader with variable substitution
 ├── atlas/                    # SIGMA atlas management
 │   ├── manager.py            # AtlasManager class for atlas access
-│   └── slice_extraction.py   # Modality-specific slice extraction
+│   ├── slice_extraction.py   # Modality-specific slice extraction
+│   ├── tissue_priors.py      # Atlas-derived Atropos priors (see note below)
+│   └── groups/               # Composite structure definitions per atlas
 ├── preprocess/
 │   ├── workflows/            # Main preprocessing pipelines
 │   │   ├── anat_preprocess.py   # T2w anatomical
@@ -204,6 +206,42 @@ setup_study_atlas(
 ```
 
 This avoids resampling every image to atlas orientation.
+
+### Tissue segmentation priors
+
+`segment_brain_tissue_atropos` (in `preprocess/workflows/anat_preprocess.py`) takes
+optional atlas priors. **Do not get these into subject space by resampling the SIGMA
+tissue maps** — a geometric resample uses only the two affines and so skips the
+registration; measured on the cuprizone cohort a resampled WM prior reaches 0.20
+inside the corpus callosum where it should be ~0.9.
+
+Instead `atlas/tissue_priors.py` reduces the tissue maps to a **per-label
+composition** in atlas space and paints it onto the subject's already-warped
+parcellation, which is aligned by construction and needs no transform chain. Pair it
+with `mask_from_atlas=True`: a skull-strip mask is deliberately generous (2774 mm³
+against 2156 mm³ of labelled brain on that cohort) and the surplus is scored as CSF.
+
+The difference is not cosmetic. KMeans inside the brain mask scores the corpus
+callosum **0.65 GM / 0.16 WM** — it calls white matter grey. The atlas-prior path
+gives **0.27 GM / 0.57 WM**.
+
+### Morphometry vs ROI extraction
+
+`network/roi_extraction.py` answers "what is the mean of this metric in this region".
+`network/morphometry.py` answers "how much tissue is there", which needs partial-
+volume weighting by a tissue posterior (`sum_v P_tissue(v) * voxel_mm3`, not a voxel
+count — rodent anatomicals are ~6x anisotropic so through-plane partial volume is
+severe) and an anatomical rollup into composite structures.
+
+SIGMA's `Matter` column is **not** used to derive tissue volumes: it is a coarse
+territory annotation that files the entire brainstem, pons and thalamus as "White
+Matter". Label sets say *where*; the subject's posterior says how much of what.
+Composite structures follow FreeSurfer's aseg conventions — cortex and cerebellum get
+a GM/WM split, discrete subcortical nuclei get a total volume, because on rodent T2 a
+three-class model puts myelin-dense nuclei in the WM class (thalamus 89% WM).
+
+Morphometry is native-space only. In atlas space every subject shares one mask, so
+per-region volumes are identical by construction.
 
 ## Key Design Constraints
 

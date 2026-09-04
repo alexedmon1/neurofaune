@@ -1,10 +1,10 @@
 # neurofaune capabilities
 
-_Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit by hand — run `make capabilities`.
+_Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit by hand — run `make capabilities`.
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 169 across 10 stages.
+**Entry points:** 178 across 10 stages.
 
 
 ## analysis
@@ -28,6 +28,7 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 | `compute_partial_etasq_from_fstat` | `neurofaune.analysis.stats.effect_size` | Compute partial eta-squared map from F-statistic. | — |
 | `compute_partial_etasq_from_tstat` | `neurofaune.analysis.stats.effect_size` | Compute partial eta-squared map from t-statistic. | — |
 | `run_randomise` | `neurofaune.analysis.stats.randomise_wrapper` | Execute FSL randomise with specified parameters. | — |
+| `compute_icc_2_1` | `neurofaune.analysis.stats.reliability` | ICC(2,1) for a subjects-by-measurements matrix. | — |
 | `warp_metric_to_sigma` | `neurofaune.analysis.tbss.prepare_tbss` | Warp a DTI metric map to SIGMA study-space using the full transform chain. | `atlas.study_space`, `paths.study_root` |
 | `build_coverage_mask` | `neurofaune.analysis.tbss.prepare_template_tbss` | Intersect WM mask with per-voxel subject coverage. | — |
 | `warp_atlas_to_template` | `neurofaune.analysis.tbss.prepare_template_tbss` | Warp SIGMA atlas assets to per-cohort template space. | — |
@@ -42,6 +43,9 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 |---|---|---|---|
 | `extract_modality_slices` | `neurofaune.atlas.slice_extraction` | Extract slices for a specific modality based on configuration. | — |
 | `extract_slices` | `neurofaune.atlas.slice_extraction` | Extract contiguous slices from a 3D image along specified axis. | — |
+| `build_atlas_extent_mask` | `neurofaune.atlas.tissue_priors` | Binary mask of the labelled brain, for use instead of the brain mask. | — |
+| `build_native_priors` | `neurofaune.atlas.tissue_priors` | Write ``prior_01..prior_0N`` next to each other and return the ANTs pattern. | — |
+| `compute_label_tissue_fractions` | `neurofaune.atlas.tissue_priors` | Each atlas region's mean tissue composition, normalised to sum to 1. | — |
 
 ## network
 
@@ -68,10 +72,15 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 | `compute_metric_curve` | `neurofaune.network.graph_theory` | Compute a single metric across a range of densities. | — |
 | `compute_spearman_matrices` | `neurofaune.network.matrices` | Compute Spearman correlation matrices for each group. | — |
 | `run_mcca` | `neurofaune.network.mcca` | Fit regularised Multiset Canonical Correlation Analysis. | — |
+| `compute_asymmetry_index` | `neurofaune.network.morphometry` | Per-region-pair ``(L-R)/(0.5*(L+R))``, one row per measure. | — |
+| `compute_region_volumes` | `neurofaune.network.morphometry` | Per-region volumes, unweighted and (when posteriors are given) per tissue. | — |
+| `compute_structure_volumes` | `neurofaune.network.morphometry` | Composite-structure volumes, one row per (structure, tissue). | — |
+| `compute_subject_morphometry` | `neurofaune.network.morphometry` | All morphometry tables for one subject-session. | — |
 | `run_regression` | `neurofaune.network.regression` | LOOCV regression with SVR, Ridge, and PLS + permutation test. | — |
 | `compute_territory_means` | `neurofaune.network.roi_extraction` | Aggregate region means into territory-level means, weighted by voxel count. | — |
 | `extract_all_subjects` | `neurofaune.network.roi_extraction` | Extract ROI means for all subjects, one DataFrame per metric. | — |
 | `extract_roi_means` | `neurofaune.network.roi_extraction` | Compute mean metric value within each labeled ROI, over COVERED voxels only. | — |
+| `compute_subject_thickness` | `neurofaune.network.thickness` | Per-cortical-region plane-restricted thickness for one subject-session. | — |
 
 ## preprocess (qc)
 

@@ -1,0 +1,164 @@
+# FreeSurfer-aseg-style composite structures for the SIGMA InVivo rat atlas.
+#
+# Each structure resolves to a SET OF ATLAS LABEL IDS (where to measure) plus a
+# TISSUE CLASS (what to count there). Volume is then the partial-volume integral
+#
+#     volume(structure) = sum over the label set of P_tissue(voxel) * voxel_mm3
+#
+# so the atlas geometry says *where* and the subject's own tissue posterior says
+# *how much of what*. This is deliberate: SIGMA's `Matter` column is a coarse
+# territory annotation, not a tissue segmentation — it assigns the entire
+# brainstem, pons and thalamus to "White Matter" — so it is used only for
+# region-level bookkeeping, never to derive a tissue volume.
+#
+# Selector keys, all optional and ANDed together:
+#   territories / systems / matter   keep rows whose LUT column is in this list
+#   exclude_territories / exclude_systems / exclude_ids   drop matching rows
+#   include_ids       union in these label ids regardless of the other selectors
+#   all_labels: true  every non-zero label in the atlas
+#   dilate: <n>       dilate the resulting mask by n voxels (in-plane only)
+#   tissue            GM | WM | CSF | any | a list of these — which posterior to
+#                     integrate. `any` is an unweighted voxel count of the label set.
+#
+# WHICH TISSUE TO ASK FOR. On rodent T2 a three-class intensity model puts the
+# myelin-dense subcortical nuclei in the WM class: measured here, Thalamus.L/R is
+# 89% WM and the brainstem 87% WM. That is a real property of the contrast, not a
+# label error, and no relabelling fixes it. FreeSurfer's aseg has the same problem
+# and resolves it by convention: cortex and cerebellum get a GM/WM split, while
+# discrete subcortical structures get a TOTAL volume. This file follows that
+# convention, and asks for `[any, GM]` on the nuclei so both columns exist — use
+# `any` to compare against aseg, `GM` only if you have a reason to.
+
+
+lut_columns:
+  id: Labels
+  name: Region of interest
+  hemisphere: Hemisphere
+  matter: Matter
+  territory: Territories
+  system: System
+
+# SIGMA's LUT has inconsistent free text; normalise before matching.
+normalize_lut_text: true
+aliases:
+  Olfactive Bulb: Olfactory Bulb          # splits one structure across two spellings
+  Hippocampus Fomation: Hippocampus Formation
+  Spinocerebellar Pathway: Spinocerebellar Pathway   # strips a trailing space
+
+structures:
+
+  # --- cortex: GM-weighted, as in aseg -------------------------------------
+  # SIGMA files hippocampus and amygdala under the Cortex territory. FreeSurfer's
+  # aseg counts both as subcortical, so they are moved there to keep the
+  # cortical/subcortical split comparable to the human convention.
+  cortical_gm:
+    territories: [Cortex]
+    exclude_systems: [Hippocampus Formation, Amygdala]
+    tissue: GM
+
+  # --- subcortical structures: total volume (aseg convention) ---------------
+  subcortical:
+    territories: [Basal ganglia, Diencephalon, Forebrain]
+    systems: [Hippocampus Formation, Amygdala]
+    combine: union
+    tissue: [any, GM]
+
+  hippocampus:
+    systems: [Hippocampus Formation]
+    tissue: [any, GM]
+
+  amygdala:
+    systems: [Amygdala]
+    tissue: [any, GM]
+
+  # The thalamus proper is a single large label (1131/1132, ~50 mm3) that SIGMA
+  # files under Fiber tract / White Matter. Excluding the Fiber tract territory —
+  # the obvious rule — would drop the whole structure and leave only a handful of
+  # small periphery nuclei, so the two ids are named explicitly.
+  thalamus:
+    include_ids: [1131, 1132]
+    tissue: [any, GM]
+
+  striatum:
+    systems: [Striatal System, Pallidum]
+    tissue: [any, GM]
+
+  olfactory_bulb:
+    territories: [Olfactory Bulb]
+    tissue: [any, GM]
+
+  # --- cerebellum and brainstem --------------------------------------------
+  cerebellum_gm:
+    territories: [Cerebellum]
+    tissue: GM
+
+  cerebellum_wm:
+    territories: [Cerebellum]
+    tissue: WM
+
+  cerebellum:
+    territories: [Cerebellum]
+    tissue: any
+
+  brainstem:
+    territories: [Brainstem, Mesencephalon]
+    tissue: any
+
+  # --- white matter --------------------------------------------------------
+  # Total WM is the WM posterior integrated over the WHOLE brain, not over SIGMA's
+  # "White Matter" rows: the label set only has to bound the brain and the
+  # posterior does the tissue discrimination. This is what keeps SIGMA's
+  # brainstem/pons/thalamus mislabels out of the WM total. It still reads high
+  # (~30% of parenchyma against ~10-15% histologically) because of the T2
+  # three-class limitation noted above — track it longitudinally, do not quote it
+  # as an absolute white-matter fraction.
+  white_matter:
+    all_labels: true
+    tissue: WM
+
+  # The named tracts, for regional WM. corpus_callosum is the cuprizone target.
+  corpus_callosum:
+    systems: [Corpus Callosum]
+    tissue: [WM, any]
+
+  internal_capsule:
+    systems: [Internal Capsule]
+    tissue: [WM, any]
+
+  fiber_tracts:
+    territories: [Fiber tract]
+    systems: [Corpus Callosum, Internal Capsule, Inter Hemispheric Commisures]
+    combine: union
+    tissue: [WM, any]
+
+  # --- CSF -----------------------------------------------------------------
+  # SIGMA's Ventricular.System ROI (~7.6 mm3) is the right order for a rat but is
+  # a template-average outline. Dilating it and integrating the subject's CSF
+  # posterior lets the measure grow with ventriculomegaly while staying anchored
+  # to the ventricles rather than drifting into subarachnoid CSF. At 0.8 mm slice
+  # thickness the ventricles are near-subvoxel through-plane, so read this as a
+  # sensitive index of enlargement, not an accurate absolute volume.
+  ventricles:
+    territories: [CSF]
+    dilate: 2
+    tissue: CSF
+
+  # Total CSF includes cisternal and subarachnoid space, so it is NOT a
+  # ventricular measure and the two are not comparable.
+  total_csf:
+    all_labels: true
+    tissue: CSF
+
+  # --- totals ---------------------------------------------------------------
+  # `any` is the full labelled extent; GM + WM is the parenchymal volume.
+  total_brain:
+    all_labels: true
+    tissue: [any, GM, WM]
+
+  # Denominator for head-size normalisation. There is no skull measurement in this
+  # data, so intracranial volume cannot be estimated the way FreeSurfer's eTIV is;
+  # total_brain is used instead and every ratio is labelled as such.
+  supratentorial:
+    all_labels: true
+    exclude_territories: [Cerebellum, Brainstem, Spinal Cord]
+    tissue: [any, GM, WM]
