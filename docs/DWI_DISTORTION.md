@@ -105,12 +105,49 @@ cross-correlation for its SyN stage, which assumes matching contrast, so a
 naive nonlinear upgrade can warp white matter badly while reporting success.
 Prefer one of:
 
-1. **Register the b0 rather than FA.** The b0 is T2-weighted, so it matches
-   T2w-template contrast directly; apply the resulting transform to FA/MD/AD/RD.
-2. **Build a study FA template** and register FA→FA-template within-modality,
-   then register that template to SIGMA once.
-3. **Use mutual information** for the SyN stage if registering FA to T2w
-   directly is unavoidable.
+1. **Build a study FA template** and register FA→FA-template within-modality,
+   then register that template to SIGMA once. This removes the contrast problem
+   rather than compensating for it, and optimises white-matter correspondence
+   directly — which is what TBSS skeletonisation and connectome node placement
+   both depend on:
+
+   ```python
+   from neurofaune.templates.builder import build_dwi_template
+
+   build_dwi_template(
+       derivatives_dir=Path("/study/derivatives"),
+       output_dir=Path("/study/templates/dwi/p60"),
+       cohort="p60", study_code="CPZ",
+       exclude=qc_exclusions,   # a blurred template degrades every subject
+       max_subjects=35,
+   )
+   ```
+
+   With an FA template as the target, `metric="CC"` becomes valid and is
+   sharper than MI.
+
+2. **Register the b0 rather than FA.** The b0 is T2-weighted, so it matches
+   T2w-template contrast directly. Cheap, and needs no new template:
+
+   ```python
+   register_fa_to_template(..., moving_file=mean_b0, transform_type="s")
+   ```
+
+3. **Use mutual information** if registering FA to a T2w template
+   nonlinearly is unavoidable. This is the default (`metric="MI"`), and
+   neurofaune drops to a direct `antsRegistration` call to honour it, because
+   `antsRegistrationSyN.sh` cannot.
+
+Enable the deformable path per study rather than in code:
+
+```yaml
+diffusion:
+  registration:
+    transform_type: "a"   # 's' for rigid + affine + SyN
+    metric: "MI"          # 'CC' only when the target is an FA template
+```
+
+The default remains affine, so existing studies are unaffected until they opt in.
 
 See `docs/ATLAS_GUIDE.md` for the `modality → cohort template → SIGMA` chain
 these transforms feed.

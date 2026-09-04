@@ -43,6 +43,62 @@ from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.provenance import write_provenance, write_dataset_description
 
 
+def _build_syn_registration_cmd(
+    fixed: Path,
+    moving: Path,
+    output_prefix: Path,
+    metric: str = 'MI',
+    n_cores: int = 4,
+) -> List[str]:
+    """Build a rigid + affine + SyN ``antsRegistration`` call with a chosen metric.
+
+    ``antsRegistrationSyN.sh`` is not usable here: its SyN stage is fixed to
+    cross-correlation and it has no metric flag (confirmed against ANTs 2.6.3),
+    so it cannot register FA to a T2w template without chasing the inverted
+    white-matter contrast. Mutual information is the default because it is
+    valid whether or not the two images share contrast.
+    """
+    metric = metric.upper()
+    if metric == 'MI':
+        lin = f'MI[{fixed},{moving},1,32,Regular,0.25]'
+        syn = f'MI[{fixed},{moving},1,32]'
+    elif metric == 'CC':
+        # Only valid within modality (e.g. FA against an FA template).
+        lin = f'MI[{fixed},{moving},1,32,Regular,0.25]'
+        syn = f'CC[{fixed},{moving},1,4]'
+    else:
+        raise ValueError(f"metric must be 'MI' or 'CC', got {metric!r}")
+
+    return [
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--float', '1',
+        '--output', f'[{output_prefix},{output_prefix}Warped.nii.gz,'
+                    f'{output_prefix}InverseWarped.nii.gz]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '0',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        # Center of mass: partial-coverage DWI sits at an arbitrary Z offset
+        # relative to a whole-brain template.
+        '--initial-moving-transform', f'[{fixed},{moving},1]',
+        '--transform', 'Rigid[0.1]',
+        '--metric', lin,
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+        '--transform', 'Affine[0.1]',
+        '--metric', lin,
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+        '--transform', 'SyN[0.1,3,0]',
+        '--metric', syn,
+        '--convergence', '[100x70x50x20,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+    ]
+
+
 def register_fa_to_template(
     fa_file: Path,
     template_file: Path,
@@ -50,15 +106,67 @@ def register_fa_to_template(
     subject: str,
     session: str,
     work_dir: Path,
-    n_cores: int = 4
+    n_cores: int = 4,
+    transform_type: str = 'a',
+    moving_file: Optional[Path] = None,
+    metric: str = 'MI',
 ) -> Dict[str, Any]:
     """
-    Register FA directly to the cohort template.
+    Register FA (or another DWI-space volume) to the cohort template.
 
-    Registers FA to the age-matched template volume using affine registration,
-    letting ANTs center-of-mass initialization handle the Z-offset for partial
-    coverage DWI. This produces better SIGMA atlas overlap than the old
-    FA→T2w→Template chain.
+    Center-of-mass initialization handles the Z-offset from partial-coverage
+    DWI. Registering to the cohort template rather than to SIGMA directly is
+    deliberate: subject→template is a small deformation between similar brains,
+    while template→SIGMA is one large cross-population deformation solved once
+    on an averaged image. See ``neurofaune.templates.sigma_warp``.
+
+    **On going nonlinear.** ``transform_type='a'`` (the default) is affine and
+    is what this function has always done. Nonlinear is available but the
+    choice of moving image matters more than it looks:
+
+    - Registering **FA to a T2w template is cross-contrast with an inverted
+      intensity relationship** — white matter is bright in FA and dark in T2w.
+      ``antsRegistrationSyN.sh`` uses cross-correlation for its SyN stage and
+      exposes no metric flag, so a nonlinear run through it will chase that
+      mismatch, deform white matter, and still exit 0. This function therefore
+      drops to an explicit ``antsRegistration`` call with **mutual
+      information** (the default here) whenever a deformable stage is
+      requested.
+    - Better still, register **within modality**: build an FA template with
+      :func:`neurofaune.templates.builder.build_dwi_template` and point
+      ``template_file`` at it, or pass a b0 as ``moving_file`` against a T2w
+      template. Both avoid the contrast problem rather than compensating for it.
+
+    See ``docs/DWI_DISTORTION.md`` §3.
+
+    Parameters
+    ----------
+    fa_file : Path
+        FA map from DTI fitting. Used as the moving image unless
+        ``moving_file`` is given; either way the transform is named
+        ``FA_to_template_*`` and applies to every DWI-space volume.
+    template_file : Path
+        Cohort template. A T2w template implies a cross-contrast registration;
+        an FA template does not.
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject, session : str
+        BIDS identifiers.
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+    transform_type : str
+        ``'a'`` affine only (default, unchanged behaviour), ``'s'`` rigid +
+        affine + SyN. Anything containing ``'s'`` triggers the deformable path.
+    moving_file : Path, optional
+        Use this instead of ``fa_file`` as the moving image. Pass a mean b0 to
+        register against a T2w template in matched contrast.
+    metric : str
+        Similarity metric for the deformable path: ``'MI'`` (default, safe
+        across contrasts) or ``'CC'`` (sharper, but only valid when moving and
+        fixed share contrast, e.g. FA against an FA template). Ignored when
+        ``transform_type='a'``.
 
     Parameters
     ----------
@@ -80,36 +188,48 @@ def register_fa_to_template(
     Returns
     -------
     dict
-        Dictionary with transform paths and metadata
+        Dictionary with transform paths and metadata. ``warp_transform`` is
+        present only when a deformable stage ran.
     """
     print("\n" + "="*60)
     print("FA to Template Registration")
     print("="*60)
 
+    moving = Path(moving_file) if moving_file is not None else fa_file
+
     # Load images to get info
-    fa_img = nib.load(fa_file)
+    fa_img = nib.load(moving)
     template_img = nib.load(template_file)
-    print(f"\n  FA: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
+    print(f"\n  Moving: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
     print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
 
-    # Register FA directly to template - let ANTs find optimal alignment
-    print("\nRunning ANTs Affine registration (FA → Template)...")
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
     output_prefix = transforms_dir / 'FA_to_template_'
 
-    # Use antsRegistrationSyN.sh with affine only
-    cmd = [
-        'antsRegistrationSyN.sh',
-        '-d', '3',
-        '-f', str(template_file),
-        '-m', str(fa_file),
-        '-o', str(output_prefix),
-        '-n', str(n_cores),
-        '-t', 'a'  # Affine only
-    ]
+    deformable = 's' in transform_type.lower()
+    if not deformable:
+        print("\nRunning ANTs Affine registration (moving → Template)...")
+        cmd = [
+            'antsRegistrationSyN.sh',
+            '-d', '3',
+            '-f', str(template_file),
+            '-m', str(moving),
+            '-o', str(output_prefix),
+            '-n', str(n_cores),
+            '-t', 'a'  # Affine only
+        ]
+    else:
+        # antsRegistrationSyN.sh hardcodes CC for its SyN stage and exposes no
+        # metric flag, so it cannot be used safely across contrasts. Build the
+        # antsRegistration call directly instead.
+        print(f"\nRunning ANTs SyN registration (moving → Template, {metric})...")
+        cmd = _build_syn_registration_cmd(
+            fixed=template_file, moving=moving,
+            output_prefix=output_prefix, metric=metric, n_cores=n_cores,
+        )
 
-    print(f"  Moving: {fa_file.name}")
+    print(f"  Moving: {moving.name}")
     print(f"  Fixed: {template_file.name}")
 
     result = subprocess.run(
@@ -142,10 +262,28 @@ def register_fa_to_template(
         if slices_with_fa:
             print(f"  FA covers template slices {slices_with_fa[0]}-{slices_with_fa[-1]} ({len(slices_with_fa)} slices)")
 
+    # A deformable run also emits 1Warp / 1InverseWarp. Downstream consumers
+    # (warp_dti_to_sigma, atlas propagation) must pass the warp alongside the
+    # affine or the nonlinear part is silently discarded.
+    warp_transform = Path(str(output_prefix) + '1Warp.nii.gz')
+    inverse_warp = Path(str(output_prefix) + '1InverseWarp.nii.gz')
+    if deformable and not warp_transform.exists():
+        raise RuntimeError(
+            f"deformable registration requested (transform_type={transform_type!r}) "
+            f"but no warp was produced at {warp_transform}"
+        )
+    if warp_transform.exists():
+        print(f"  Warp transform: {warp_transform.name}")
+
     return {
         'affine_transform': affine_transform,
+        'warp_transform': warp_transform if warp_transform.exists() else None,
+        'inverse_warp': inverse_warp if inverse_warp.exists() else None,
         'warped_fa': warped_fa if warped_fa.exists() else None,
         'template_file': template_file,
+        'transform_type': transform_type,
+        'metric': metric if deformable else None,
+        'moving_file': moving,
         'fa_shape': fa_img.shape,
         'template_shape': template_img.shape,
     }
@@ -933,6 +1071,15 @@ def run_dwi_preprocessing(
                 print("="*80)
 
                 try:
+                    # Affine by default, preserving long-standing behaviour.
+                    # Set diffusion.registration.transform_type: 's' to go
+                    # nonlinear -- see docs/DWI_DISTORTION.md for why the
+                    # metric and the choice of moving image matter when the
+                    # template is T2w rather than FA.
+                    reg_transform_type = get_config_value(
+                        config, 'diffusion.registration.transform_type', default='a')
+                    reg_metric = get_config_value(
+                        config, 'diffusion.registration.metric', default='MI')
                     registration_results = register_fa_to_template(
                         fa_file=fa_file,
                         template_file=template_file,
@@ -940,7 +1087,9 @@ def run_dwi_preprocessing(
                         subject=subject,
                         session=session,
                         work_dir=work_dir,
-                        n_cores=4
+                        n_cores=4,
+                        transform_type=reg_transform_type,
+                        metric=reg_metric,
                     )
 
                     # Save registration metadata to JSON

@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 168 across 10 stages.
+**Entry points:** 169 across 10 stages.
 
 
 ## analysis
@@ -121,9 +121,9 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 | `segment_brain_tissue_atropos` | `neurofaune.preprocess.workflows.anat_preprocess` | Standalone Atropos tissue segmentation, decoupled from skull stripping. | — |
 | `fit_dti` | `neurofaune.preprocess.workflows.dwi_preprocess` | Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit. | — |
 | `register_fa_to_t2w` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA to T2w within the same subject. | — |
-| `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA directly to the cohort template. | — |
+| `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA (or another DWI-space volume) to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
-| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
+| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
 | `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
 | `extract_brain_from_bold` | `neurofaune.preprocess.workflows.func_preprocess` | Extract brain from BOLD image using BET. | — |
 | `extract_confounds` | `neurofaune.preprocess.workflows.func_preprocess` | Extract confound regressors from motion parameters. | — |
@@ -161,6 +161,7 @@ _Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit b
 | `propagate_atlas_to_anat` | `neurofaune.templates.anat_registration` | Propagate SIGMA atlas to T2w space through the transform chain. | — |
 | `register_anat_to_sigma_direct` | `neurofaune.templates.anat_registration` | Register T2w directly to SIGMA (no study template). | — |
 | `register_anat_to_template` | `neurofaune.templates.anat_registration` | Register preprocessed T2w to cohort template. | — |
+| `build_dwi_template` | `neurofaune.templates.builder` | Build a study FA (or other DWI scalar) template for one cohort. | — |
 | `build_template` | `neurofaune.templates.builder` | Build template using ANTs multivariate template construction. | — |
 | `extract_mean_bold` | `neurofaune.templates.builder` | Extract mean or median timepoint from 4D BOLD data. | — |
 | `register_template_to_sigma` | `neurofaune.templates.builder` | Register study template to SIGMA atlas (T2w only). | — |
