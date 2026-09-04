@@ -131,3 +131,46 @@ def check_paths(paths):
 
 if __name__ == "__main__":
     main()
+
+
+@main.command("check-deps")
+@click.option("--group", "groups", multiple=True,
+              help="feature area(s) to check, e.g. tractography (repeatable; default: all)")
+@click.option("--config", type=click.Path(exists=True, path_type=Path),
+              help="study YAML; honours tractography.mrtrix_bin when resolving tools")
+@click.option("--no-versions", is_flag=True, help="skip version probing (faster)")
+@click.option("--strict", is_flag=True, help="exit non-zero if any required tool is missing")
+def check_deps(groups, config, no_versions, strict):
+    """Report which external tools (FSL, ANTs, MRtrix3) are installed.
+
+    `uv sync` installs the Python side only; the neuroimaging suites neurofaune
+    drives cannot come from PyPI. Without this, a missing binary surfaces as a
+    FileNotFoundError from inside a workflow, naming one command and offering no
+    route to getting it. Run this first on a new machine:
+
+        neurofaune check-deps                        # everything
+        neurofaune check-deps --group tractography   # just MRtrix3 + FSL tracking
+        neurofaune check-deps --strict               # CI gate
+    """
+    from neurofaune.utils.dependencies import (
+        check_dependencies, format_report, missing_packages,
+    )
+
+    extra_paths = []
+    if config:
+        import yaml
+        from neurofaune.config import get_config_value
+        cfg = yaml.safe_load(config.read_text()) or {}
+        configured = get_config_value(cfg, "tractography.mrtrix_bin", default=None)
+        if configured:
+            extra_paths.append(str(configured))
+
+    results = check_dependencies(
+        groups=list(groups) or None,
+        probe_versions=not no_versions,
+        extra_paths=extra_paths or None,
+    )
+    click.echo(format_report(results, color=True))
+
+    if strict and missing_packages(results):
+        raise SystemExit(1)

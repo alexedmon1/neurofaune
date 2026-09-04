@@ -284,6 +284,51 @@ diffusion:
       use_amico: true  # 100x faster than DIPY
       min_shells: 2
 
+  # DWI -> cohort template registration.
+  #
+  # The chain is always modality -> cohort template -> SIGMA (see
+  # neurofaune.templates.sigma_warp). Registering each subject straight to
+  # SIGMA would make every subject independently solve the same large
+  # cross-population deformation, and the variance in how each solves it lands
+  # in the group statistics.
+  registration:
+    # 'a'    = affine only (default)
+    # 's'    = rigid + affine + SyN
+    # 'both' = run both, independently, and keep both. Use this to evaluate
+    #          whether nonlinear actually improves white-matter overlap on your
+    #          data before committing to it -- you get two sets of
+    #          space-SIGMA outputs to compare rather than having to pick blind
+    #          and re-run. Costs one extra linear registration per session.
+    #
+    # Before enabling 's' against a T2w template, read docs/DWI_DISTORTION.md.
+    # FA and T2w have an INVERTED white-matter contrast, and
+    # antsRegistrationSyN.sh drives its SyN stage with cross-correlation and
+    # exposes no metric flag, so a naive nonlinear run deforms white matter
+    # while exiting 0. neurofaune therefore calls antsRegistration directly
+    # with the metric below whenever a deformable stage is requested.
+    #
+    # Better than either: build an FA template with
+    # neurofaune.templates.builder.build_dwi_template and register FA to that
+    # (within modality, so 'CC' becomes valid and white-matter correspondence
+    # is optimised directly -- what TBSS and connectome node placement need).
+    transform_type: "a"
+
+    # Similarity metric for the deformable stage only.
+    #   MI - valid across contrasts (FA -> T2w template). Safe default.
+    #   CC - sharper, but ONLY valid within modality (FA -> FA template).
+    metric: "MI"
+
+    # With transform_type 'both', which set is the CANONICAL one. The canonical
+    # set is written as space-SIGMA_{metric}.nii.gz -- the name
+    # network.roi_extraction.discover_sigma_metrics globs for, i.e. the one
+    # that gets analysed. The other is written as
+    # space-SIGMA_desc-{affine|syn}_{metric}.nii.gz, so it sits alongside for
+    # comparison without entering the analysis glob or double-counting.
+    #
+    # Flip this to 'syn' to promote the nonlinear outputs to the analysed set;
+    # no analysis code changes. Ignored unless transform_type is 'both'.
+    canonical: "affine"
+
   # BEDPOSTX (for tractography)
   bedpostx:
     enabled: false
@@ -608,3 +653,81 @@ qc:
     # DTI metrics (reasonable ranges for rodents)
     fa_range: [0, 1]
     md_range: [0, 0.003]  # mm²/s
+
+# ---------------------------------------------------------------------------
+# Structural connectivity (neurofaune.tractography)
+# ---------------------------------------------------------------------------
+tractography:
+  # Directory containing the MRtrix3 binaries. Leave blank to resolve from
+  # MRTRIX_BIN or PATH. MRtrix3 is not an FSL/ANTs-style system dependency for
+  # this package -- only the tractography module needs it.
+  #   micromamba create -p <prefix>/mrtrix3 -c mrtrix3 -c conda-forge mrtrix3
+  mrtrix_bin: ""
+
+  # Refuse acquisitions that cannot support a fibre orientation distribution.
+  # A 6-direction scheme supports only lmax=2, which is angularly equivalent
+  # to a tensor: connectome edges from such data are model artifact. Set false
+  # to allow tensor-grade data through with a warning (FSL path only).
+  require_csd: true
+
+  # Fibre orientation distributions (MSMT-CSD when multi-shell).
+  fod:
+    # Cap on the WM spherical harmonic order. The actual order used is the
+    # smaller of this and what the gradient scheme determines.
+    max_lmax: 8
+    # mtnormalise. Required for any cross-subject comparison of FOD amplitude
+    # (fixel-based analysis, group connectome contrasts).
+    normalise: true
+
+  # Streamline generation.
+  tckgen:
+    algorithm: "iFOD2"          # iFOD2 (probabilistic) or SD_STREAM
+    n_streamlines: "1M"
+    cutoff: 0.05                # FOD amplitude termination threshold
+    backtrack: true             # ACT backtracking
+    seed_strategy: "auto"       # auto | gmwmi | mask
+    # Lengths in REAL mm. Rodent data is stored 10x scaled (bids.voxel_scale),
+    # so these are converted before being handed to MRtrix.
+    step_mm: null               # null -> half the smallest voxel dimension
+    min_length_mm: null
+    max_length_mm: null
+
+  # SIFT2. Without it, edges are raw streamline counts, which carry length and
+  # geometry bias that does not cancel in a group contrast.
+  sift2:
+    enabled: true
+
+  # Anatomically-constrained tractography. The 5TT is assembled from the
+  # anatomical workflow's Atropos posteriors -- MRtrix's 5ttgen fsl relies on
+  # FAST/FIRST and their human priors do not transfer to rodents.
+  act:
+    enabled: true
+    # Split grey matter into cortical / subcortical using the propagated
+    # atlas. Without it ACT tends to truncate streamlines in deep structures.
+    use_atlas_subcortical_split: true
+
+  # Connectome assembly.
+  connectome:
+    symmetric: true
+    scale_invnodevol: false
+    assignment_radius_mm: 0.4   # real mm
+    # Drop nodes lying less than this fraction inside the DWI field of view.
+    # Out-of-FOV nodes otherwise enter the matrix as structural zeros, which
+    # shift group means rather than reading as missing. Measured in native
+    # anatomical space -- measuring in DWI space under-detects clipped nodes.
+    min_coverage: 0.5
+
+  # Fixel-based analysis.
+  fixel:
+    template_voxel_size_mm: 0.125   # real mm
+    n_permutations: 5000
+
+  # FSL ball-and-sticks path (single-shell studies, or cross-checking MRtrix).
+  fsl:
+    # null -> derived from the volume count. Ball-and-N-sticks has 2+3N free
+    # parameters; a configured value the data cannot constrain is reduced.
+    n_fibres: null
+    model: 2
+    use_gpu: true
+    n_samples: 5000
+    distance_correction: true

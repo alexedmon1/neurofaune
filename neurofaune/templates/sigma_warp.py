@@ -148,6 +148,8 @@ def warp_maps_to_sigma(
     interpolation: str = "Linear",
     suffix_style: str = "metric",
     force: bool = False,
+    moving_to_template_warp: Optional[Path] = None,
+    desc: Optional[str] = None,
 ) -> Dict[str, Path]:
     """Warp scalar maps (or a 4D timeseries) from modality space into SIGMA.
 
@@ -176,6 +178,18 @@ def warp_maps_to_sigma(
     force : bool
         Rewrite outputs that already exist. Default False SKIPS them, which is
         wrong after an upstream refit -- pass True whenever the inputs changed.
+    moving_to_template_warp : Path, optional
+        Subject warp, when the modality->template registration was deformable.
+        Must be the matched pair of ``moving_to_template``: a warp combined
+        with the affine from a *different* registration run yields a wrong
+        chain that still produces plausible-looking output.
+    desc : str, optional
+        BIDS ``desc-`` entity for the outputs (``metric`` style only), e.g.
+        ``'syn'`` giving ``..._space-SIGMA_desc-syn_FA.nii.gz``. ``None``
+        writes the canonical ``..._space-SIGMA_FA.nii.gz`` that
+        ``neurofaune.network.roi_extraction.discover_sigma_metrics`` globs for.
+        Use a desc for a variant produced for comparison rather than analysis --
+        it keeps the variant out of the analysis glob rather than doubling it.
 
     Returns
     -------
@@ -191,6 +205,8 @@ def warp_maps_to_sigma(
     if tpl_to_sigma_warp is not None:
         chain.append(str(tpl_to_sigma_warp))
     chain.append(str(tpl_to_sigma_affine))
+    if moving_to_template_warp is not None:
+        chain.append(str(moving_to_template_warp))
     chain.append(str(moving_to_template))
 
     out: Dict[str, Path] = {}
@@ -201,7 +217,8 @@ def warp_maps_to_sigma(
                      if name == "bold"
                      else f"{subject}_{session}_space-SIGMA_desc-{name}_bold.nii.gz")
         else:
-            fname = f"{subject}_{session}_space-SIGMA_{name}.nii.gz"
+            stem = f"desc-{desc}_{name}" if desc else name
+            fname = f"{subject}_{session}_space-SIGMA_{stem}.nii.gz"
         dst = output_dir / fname
 
         if not src.exists():

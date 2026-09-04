@@ -482,3 +482,138 @@ def save_template_metadata(
     print(f"Subject list saved to: {subjects_file}")
 
     return metadata_file
+
+
+def build_dwi_template(
+    derivatives_dir: Path,
+    output_dir: Path,
+    cohort: str,
+    study_code: str = "Study",
+    metric_name: str = "FA",
+    subjects: Optional[List[str]] = None,
+    sessions: Optional[List[str]] = None,
+    exclude: Optional[List[Tuple[str, str]]] = None,
+    n_iterations: int = 4,
+    n_cores: int = 8,
+    max_subjects: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a study FA (or other DWI scalar) template for one cohort.
+
+    Why this exists: the cohort templates a study normally builds are
+    anatomical (T2w), so registering FA to them is cross-contrast with an
+    *inverted* intensity relationship — white matter is bright in FA and dark
+    in T2w. That makes a nonlinear FA→template registration unreliable, since
+    ``antsRegistrationSyN.sh`` drives its SyN stage with cross-correlation and
+    offers no metric flag. The usual symptom is deformable registration that
+    exits 0 while visibly distorting white matter, which is a good reason to
+    have concluded that nonlinear "doesn't work" and fallen back to affine.
+
+    An FA template removes the problem rather than compensating for it:
+    FA→FA-template is within-modality, so cross-correlation is valid and the
+    registration optimises white-matter correspondence directly — which is what
+    TBSS skeletonisation and connectome node placement both depend on. The
+    template itself is then registered to SIGMA once, preserving the
+    ``modality → cohort template → SIGMA`` chain (see
+    :mod:`neurofaune.templates.sigma_warp`).
+
+    Parameters
+    ----------
+    derivatives_dir : Path
+        ``{study_root}/derivatives``. Scanned for
+        ``{subject}/{session}/dwi/{subject}_{session}_{metric_name}.nii.gz``.
+    output_dir : Path
+        Destination, conventionally ``{study_root}/templates/dwi/{cohort}``.
+    cohort : str
+        Cohort label, used for naming and metadata (e.g. ``'p60'``).
+    study_code : str
+        Short study code for the template filename (e.g. ``'CPZ'``).
+    metric_name : str
+        DWI scalar to build from. ``'FA'`` is the right default: it has the
+        strongest white-matter contrast, which is what the registration needs
+        to lock onto.
+    subjects, sessions : list of str, optional
+        Restrict to these. ``None`` means all discovered.
+    exclude : list of (subject, session), optional
+        Pairs to skip — pass your QC exclusions here. Motion-corrupted scans
+        blur a template, and a template is used by every subject, so one bad
+        input degrades the whole cohort rather than one session.
+    max_subjects : int, optional
+        Cap the number of inputs. ANTs template construction scales poorly and
+        30-40 well-chosen scans give a better template than 90 mixed-quality
+        ones.
+
+    Returns
+    -------
+    dict
+        ``template``, ``inputs``, ``n_inputs``, ``metadata``, ``work_dir``.
+
+    Examples
+    --------
+    >>> res = build_dwi_template(
+    ...     derivatives_dir=Path('/study/derivatives'),
+    ...     output_dir=Path('/study/templates/dwi/p60'),
+    ...     cohort='p60', study_code='CPZ', n_cores=8,
+    ... )
+    >>> res['template']
+    """
+    derivatives_dir = Path(derivatives_dir)
+    output_dir = Path(output_dir)
+    excluded = {(s, ss) for s, ss in (exclude or [])}
+
+    inputs: List[Path] = []
+    used: List[str] = []
+    for subj_dir in sorted(derivatives_dir.glob('sub-*')):
+        if subjects and subj_dir.name not in subjects:
+            continue
+        for ses_dir in sorted(subj_dir.glob('ses-*')):
+            if sessions and ses_dir.name not in sessions:
+                continue
+            if (subj_dir.name, ses_dir.name) in excluded:
+                continue
+            cand = (
+                ses_dir / 'dwi'
+                / f'{subj_dir.name}_{ses_dir.name}_{metric_name}.nii.gz'
+            )
+            if cand.exists():
+                inputs.append(cand)
+                used.append(f'{subj_dir.name}_{ses_dir.name}')
+
+    if len(inputs) < 3:
+        raise ValueError(
+            f"need at least 3 {metric_name} maps to build a template, found "
+            f"{len(inputs)} under {derivatives_dir}"
+        )
+    if max_subjects is not None and len(inputs) > max_subjects:
+        # Even stride rather than truncation, so a cap does not silently select
+        # one end of an alphabetically- or chronologically-ordered cohort.
+        step = len(inputs) / max_subjects
+        keep = [int(i * step) for i in range(max_subjects)]
+        inputs = [inputs[i] for i in keep]
+        used = [used[i] for i in keep]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = output_dir / f'tpl-{study_code}{cohort}_{metric_name}_'
+    print(f"Building {metric_name} template for cohort {cohort} "
+          f"from {len(inputs)} scans")
+
+    results = build_template(
+        input_files=inputs,
+        output_prefix=prefix,
+        n_iterations=n_iterations,
+        n_cores=n_cores,
+    )
+
+    metadata = save_template_metadata(
+        template_dir=output_dir,
+        cohort=cohort,
+        modality=f'dwi-{metric_name}',
+        subjects_used=used,
+    )
+
+    return {
+        'template': results.get('template'),
+        'inputs': inputs,
+        'n_inputs': len(inputs),
+        'metadata': metadata,
+        'work_dir': results.get('work_dir'),
+    }

@@ -1,10 +1,10 @@
 # neurofaune capabilities
 
-_Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit by hand — run `make capabilities`.
+_Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit by hand — run `make capabilities`.
 
-**CLI subcommands:** `bids`, `capabilities`, `check-paths`
+**CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 153 across 9 stages.
+**Entry points:** 169 across 10 stages.
 
 
 ## analysis
@@ -121,9 +121,9 @@ _Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit b
 | `segment_brain_tissue_atropos` | `neurofaune.preprocess.workflows.anat_preprocess` | Standalone Atropos tissue segmentation, decoupled from skull stripping. | — |
 | `fit_dti` | `neurofaune.preprocess.workflows.dwi_preprocess` | Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit. | — |
 | `register_fa_to_t2w` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA to T2w within the same subject. | — |
-| `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA directly to the cohort template. | — |
+| `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA (or another DWI-space volume) to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
-| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
+| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.registration.canonical`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
 | `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
 | `extract_brain_from_bold` | `neurofaune.preprocess.workflows.func_preprocess` | Extract brain from BOLD image using BET. | — |
 | `extract_confounds` | `neurofaune.preprocess.workflows.func_preprocess` | Extract confound regressors from motion parameters. | — |
@@ -161,6 +161,7 @@ _Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit b
 | `propagate_atlas_to_anat` | `neurofaune.templates.anat_registration` | Propagate SIGMA atlas to T2w space through the transform chain. | — |
 | `register_anat_to_sigma_direct` | `neurofaune.templates.anat_registration` | Register T2w directly to SIGMA (no study template). | — |
 | `register_anat_to_template` | `neurofaune.templates.anat_registration` | Register preprocessed T2w to cohort template. | — |
+| `build_dwi_template` | `neurofaune.templates.builder` | Build a study FA (or other DWI scalar) template for one cohort. | — |
 | `build_template` | `neurofaune.templates.builder` | Build template using ANTs multivariate template construction. | — |
 | `extract_mean_bold` | `neurofaune.templates.builder` | Extract mean or median timepoint from 4D BOLD data. | — |
 | `register_template_to_sigma` | `neurofaune.templates.builder` | Register study template to SIGMA atlas (T2w only). | — |
@@ -187,6 +188,26 @@ _Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit b
 | `extract_coronal_slice_template` | `neurofaune.templates.slice_registration` | Extract a coronal slice from the template. | — |
 | `propagate_labels_slice_wise` | `neurofaune.templates.slice_registration` | Propagate atlas labels to template space using slice-wise transforms. | — |
 | `register_2d_slices` | `neurofaune.templates.slice_registration` | Register two 2D slices using affine transformation. | — |
+
+## tractography
+
+| function | module | summary | config keys |
+|---|---|---|---|
+| `build_connectome` | `neurofaune.tractography.connectome` | Build a structural connectivity matrix from a tractogram. | — |
+| `compute_node_coverage` | `neurofaune.tractography.connectome` | Fraction of each parcellation node lying inside the DWI field of view. | — |
+| `build_5tt_from_probseg` | `neurofaune.tractography.fivett` | Assemble an MRtrix-compatible 5TT image from Atropos tissue posteriors. | — |
+| `warp_5tt` | `neurofaune.tractography.fivett` | Resample a 5TT image into another space with ANTs, then renormalise. | — |
+| `build_fod_template` | `neurofaune.tractography.fixel` | Build a study-specific FOD template with ``population_template``. | — |
+| `compute_fixel_metrics` | `neurofaune.tractography.fixel` | Compute FD, log(FC) and FDC for one subject in template fixel space. | — |
+| `compute_group_response` | `neurofaune.tractography.fixel` | Average per-subject response functions into one group response. | — |
+| `register_fod_to_template` | `neurofaune.tractography.fixel` | Register one subject's FOD to the template, keeping both warps. | — |
+| `run_fixel_stats` | `neurofaune.tractography.fixel` | Run connectivity-based fixel enhancement statistics. | — |
+| `build_roi_seed_masks` | `neurofaune.tractography.fsl` | Split a parcellation into one binary mask per node for network tracking. | — |
+| `run_bedpostx` | `neurofaune.tractography.fsl` | Fit the ball-and-sticks model with BEDPOSTX. | — |
+| `run_probtrackx_connectome` | `neurofaune.tractography.fsl` | Run probtrackx2 in network mode to produce a connectivity matrix. | — |
+| `convert_to_mif` | `neurofaune.tractography.mrtrix` | Convert FSL-format DWI (+ gradient table) to a single MRtrix ``.mif``. | — |
+| `run_msmt_csd` | `neurofaune.tractography.mrtrix` | Estimate tissue responses and fit FODs for one session. | — |
+| `run_tractography` | `neurofaune.tractography.tractogram` | Generate a tractogram from a WM FOD, optionally ACT-constrained. | — |
 
 ## utils
 

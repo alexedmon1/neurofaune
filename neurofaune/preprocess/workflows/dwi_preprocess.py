@@ -43,6 +43,140 @@ from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.provenance import write_provenance, write_dataset_description
 
 
+def _sigma_warp_variants(
+    registration_results: Dict[str, Any],
+    canonical: str = 'affine',
+) -> List[Dict[str, Any]]:
+    """Decide which transform set(s) to warp with, and how to name each.
+
+    ``register_fa_to_template(transform_type='both')`` yields two *independent*
+    registrations. Each has its own affine, and a warp is only valid alongside
+    the affine from the same run -- crossing them produces a chain that still
+    runs and still looks plausible. This function keeps those pairings intact.
+
+    The canonical variant is written without a ``desc-`` entity, so it is the
+    one ``roi_extraction.discover_sigma_metrics`` finds. Flipping ``canonical``
+    to ``'syn'`` promotes the nonlinear outputs to the analysed set without any
+    change to analysis code.
+
+    Returns
+    -------
+    list of dict
+        ``{'affine': Path, 'warp': Path|None, 'desc': str|None}``, canonical
+        first.
+    """
+    if canonical not in ('affine', 'syn'):
+        raise ValueError(
+            f"diffusion.registration.canonical must be 'affine' or 'syn', "
+            f"got {canonical!r}"
+        )
+
+    affine_set = (
+        {'affine': registration_results.get('affine_transform'),
+         'warp': None, 'name': 'affine'}
+        if registration_results.get('affine_transform') else None
+    )
+    syn_set = (
+        {'affine': registration_results.get('syn_affine_transform'),
+         'warp': registration_results.get('warp_transform'), 'name': 'syn'}
+        if registration_results.get('warp_transform') else None
+    )
+
+    available = [v for v in (affine_set, syn_set) if v]
+    if not available:
+        raise RuntimeError("no usable DWI->template transform in registration results")
+
+    # Fall back gracefully: asking for a canonical set that was not produced
+    # should not drop the outputs entirely.
+    if not any(v['name'] == canonical for v in available):
+        canonical = available[0]['name']
+
+    ordered = sorted(available, key=lambda v: v['name'] != canonical)
+    return [
+        {'affine': v['affine'], 'warp': v['warp'],
+         'desc': None if v['name'] == canonical else v['name']}
+        for v in ordered
+    ]
+
+
+def _run_registration(cmd: List[str], label: str) -> None:
+    """Run an ANTs registration command, raising with captured output on failure."""
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    if result.returncode != 0:
+        print(f"  ERROR: {label} registration failed!")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        raise RuntimeError(f"FA to Template {label} registration failed")
+
+
+def _report_coverage(warped: Path) -> None:
+    """Report which template slices the warped partial-coverage volume reaches."""
+    if not warped.exists():
+        return
+    print(f"  Warped: {warped.name}")
+    data = nib.load(warped).get_fdata()
+    slices = [z for z in range(data.shape[2]) if np.sum(data[:, :, z] > 0.1) > 1000]
+    if slices:
+        print(f"  Covers template slices {slices[0]}-{slices[-1]} ({len(slices)} slices)")
+
+
+def _build_syn_registration_cmd(
+    fixed: Path,
+    moving: Path,
+    output_prefix: Path,
+    metric: str = 'MI',
+    n_cores: int = 4,
+) -> List[str]:
+    """Build a rigid + affine + SyN ``antsRegistration`` call with a chosen metric.
+
+    ``antsRegistrationSyN.sh`` is not usable here: its SyN stage is fixed to
+    cross-correlation and it has no metric flag (confirmed against ANTs 2.6.3),
+    so it cannot register FA to a T2w template without chasing the inverted
+    white-matter contrast. Mutual information is the default because it is
+    valid whether or not the two images share contrast.
+    """
+    metric = metric.upper()
+    if metric == 'MI':
+        lin = f'MI[{fixed},{moving},1,32,Regular,0.25]'
+        syn = f'MI[{fixed},{moving},1,32]'
+    elif metric == 'CC':
+        # Only valid within modality (e.g. FA against an FA template).
+        lin = f'MI[{fixed},{moving},1,32,Regular,0.25]'
+        syn = f'CC[{fixed},{moving},1,4]'
+    else:
+        raise ValueError(f"metric must be 'MI' or 'CC', got {metric!r}")
+
+    return [
+        'antsRegistration',
+        '--dimensionality', '3',
+        '--float', '1',
+        '--output', f'[{output_prefix},{output_prefix}Warped.nii.gz,'
+                    f'{output_prefix}InverseWarped.nii.gz]',
+        '--interpolation', 'Linear',
+        '--use-histogram-matching', '0',
+        '--winsorize-image-intensities', '[0.005,0.995]',
+        # Center of mass: partial-coverage DWI sits at an arbitrary Z offset
+        # relative to a whole-brain template.
+        '--initial-moving-transform', f'[{fixed},{moving},1]',
+        '--transform', 'Rigid[0.1]',
+        '--metric', lin,
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+        '--transform', 'Affine[0.1]',
+        '--metric', lin,
+        '--convergence', '[1000x500x250x100,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+        '--transform', 'SyN[0.1,3,0]',
+        '--metric', syn,
+        '--convergence', '[100x70x50x20,1e-6,10]',
+        '--shrink-factors', '8x4x2x1',
+        '--smoothing-sigmas', '3x2x1x0vox',
+    ]
+
+
 def register_fa_to_template(
     fa_file: Path,
     template_file: Path,
@@ -50,15 +184,67 @@ def register_fa_to_template(
     subject: str,
     session: str,
     work_dir: Path,
-    n_cores: int = 4
+    n_cores: int = 4,
+    transform_type: str = 'a',
+    moving_file: Optional[Path] = None,
+    metric: str = 'MI',
 ) -> Dict[str, Any]:
     """
-    Register FA directly to the cohort template.
+    Register FA (or another DWI-space volume) to the cohort template.
 
-    Registers FA to the age-matched template volume using affine registration,
-    letting ANTs center-of-mass initialization handle the Z-offset for partial
-    coverage DWI. This produces better SIGMA atlas overlap than the old
-    FA→T2w→Template chain.
+    Center-of-mass initialization handles the Z-offset from partial-coverage
+    DWI. Registering to the cohort template rather than to SIGMA directly is
+    deliberate: subject→template is a small deformation between similar brains,
+    while template→SIGMA is one large cross-population deformation solved once
+    on an averaged image. See ``neurofaune.templates.sigma_warp``.
+
+    **On going nonlinear.** ``transform_type='a'`` (the default) is affine and
+    is what this function has always done. Nonlinear is available but the
+    choice of moving image matters more than it looks:
+
+    - Registering **FA to a T2w template is cross-contrast with an inverted
+      intensity relationship** — white matter is bright in FA and dark in T2w.
+      ``antsRegistrationSyN.sh`` uses cross-correlation for its SyN stage and
+      exposes no metric flag, so a nonlinear run through it will chase that
+      mismatch, deform white matter, and still exit 0. This function therefore
+      drops to an explicit ``antsRegistration`` call with **mutual
+      information** (the default here) whenever a deformable stage is
+      requested.
+    - Better still, register **within modality**: build an FA template with
+      :func:`neurofaune.templates.builder.build_dwi_template` and point
+      ``template_file`` at it, or pass a b0 as ``moving_file`` against a T2w
+      template. Both avoid the contrast problem rather than compensating for it.
+
+    See ``docs/DWI_DISTORTION.md`` §3.
+
+    Parameters
+    ----------
+    fa_file : Path
+        FA map from DTI fitting. Used as the moving image unless
+        ``moving_file`` is given; either way the transform is named
+        ``FA_to_template_*`` and applies to every DWI-space volume.
+    template_file : Path
+        Cohort template. A T2w template implies a cross-contrast registration;
+        an FA template does not.
+    output_dir : Path
+        Study root directory (transforms saved to transforms/{subject}/{session}/)
+    subject, session : str
+        BIDS identifiers.
+    work_dir : Path
+        Working directory for intermediate files
+    n_cores : int
+        Number of CPU cores for ANTs
+    transform_type : str
+        ``'a'`` affine only (default, unchanged behaviour), ``'s'`` rigid +
+        affine + SyN. Anything containing ``'s'`` triggers the deformable path.
+    moving_file : Path, optional
+        Use this instead of ``fa_file`` as the moving image. Pass a mean b0 to
+        register against a T2w template in matched contrast.
+    metric : str
+        Similarity metric for the deformable path: ``'MI'`` (default, safe
+        across contrasts) or ``'CC'`` (sharper, but only valid when moving and
+        fixed share contrast, e.g. FA against an FA template). Ignored when
+        ``transform_type='a'``.
 
     Parameters
     ----------
@@ -80,75 +266,109 @@ def register_fa_to_template(
     Returns
     -------
     dict
-        Dictionary with transform paths and metadata
+        Dictionary with transform paths and metadata. ``warp_transform`` is
+        present only when a deformable stage ran.
     """
     print("\n" + "="*60)
     print("FA to Template Registration")
     print("="*60)
 
-    # Load images to get info
-    fa_img = nib.load(fa_file)
-    template_img = nib.load(template_file)
-    print(f"\n  FA: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
-    print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
+    moving = Path(moving_file) if moving_file is not None else fa_file
 
-    # Register FA directly to template - let ANTs find optimal alignment
-    print("\nRunning ANTs Affine registration (FA → Template)...")
+    # Load images to get info
+    fa_img = nib.load(moving)
+    template_img = nib.load(template_file)
+    print(f"\n  Moving: {fa_img.shape} voxels, {fa_img.header.get_zooms()[:3]} mm")
+    print(f"  Template: {template_img.shape} voxels, {template_img.header.get_zooms()[:3]} mm")
+    print(f"  Moving file: {moving.name}")
+    print(f"  Fixed file: {template_file.name}")
+
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
-    output_prefix = transforms_dir / 'FA_to_template_'
 
-    # Use antsRegistrationSyN.sh with affine only
-    cmd = [
-        'antsRegistrationSyN.sh',
-        '-d', '3',
-        '-f', str(template_file),
-        '-m', str(fa_file),
-        '-o', str(output_prefix),
-        '-n', str(n_cores),
-        '-t', 'a'  # Affine only
-    ]
+    want = transform_type.lower()
+    if want not in ('a', 's', 'both'):
+        raise ValueError(
+            f"transform_type must be 'a', 's' or 'both', got {transform_type!r}"
+        )
+    run_affine = want in ('a', 'both')
+    run_syn = want in ('s', 'both')
 
-    print(f"  Moving: {fa_file.name}")
-    print(f"  Fixed: {template_file.name}")
-
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
-    )
-
-    if result.returncode != 0:
-        print(f"  ERROR: Registration failed!")
-        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
-        raise RuntimeError("FA to Template registration failed")
-
-    # Check outputs
-    affine_transform = Path(str(output_prefix) + '0GenericAffine.mat')
-    warped_fa = Path(str(output_prefix) + 'Warped.nii.gz')
-
-    if not affine_transform.exists():
-        raise RuntimeError(f"Expected transform not found: {affine_transform}")
-
-    print(f"  Affine transform: {affine_transform.name}")
-    if warped_fa.exists():
-        print(f"  Warped FA: {warped_fa.name}")
-
-        # Report which template slices have FA coverage
-        warped_data = nib.load(warped_fa).get_fdata()
-        slices_with_fa = [z for z in range(warped_data.shape[2])
-                         if np.sum(warped_data[:, :, z] > 0.1) > 1000]
-        if slices_with_fa:
-            print(f"  FA covers template slices {slices_with_fa[0]}-{slices_with_fa[-1]} ({len(slices_with_fa)} slices)")
-
-    return {
-        'affine_transform': affine_transform,
-        'warped_fa': warped_fa if warped_fa.exists() else None,
+    results: Dict[str, Any] = {
         'template_file': template_file,
+        'transform_type': transform_type,
+        'metric': metric if run_syn else None,
+        'moving_file': moving,
         'fa_shape': fa_img.shape,
         'template_shape': template_img.shape,
     }
+
+    if run_affine:
+        # Canonical prefix, unchanged since this function was affine-only.
+        affine_prefix = transforms_dir / 'FA_to_template_'
+        print("\nRunning ANTs Affine registration (moving -> Template)...")
+        _run_registration(
+            [
+                'antsRegistrationSyN.sh',
+                '-d', '3',
+                '-f', str(template_file),
+                '-m', str(moving),
+                '-o', str(affine_prefix),
+                '-n', str(n_cores),
+                '-t', 'a',
+            ],
+            label='affine',
+        )
+        affine_transform = Path(str(affine_prefix) + '0GenericAffine.mat')
+        if not affine_transform.exists():
+            raise RuntimeError(f"Expected transform not found: {affine_transform}")
+        warped_affine = Path(str(affine_prefix) + 'Warped.nii.gz')
+        print(f"  Affine transform: {affine_transform.name}")
+        _report_coverage(warped_affine)
+        results.update({
+            'affine_transform': affine_transform,
+            'warped_fa': warped_affine if warped_affine.exists() else None,
+        })
+
+    if run_syn:
+        # A separate prefix, so running both does not overwrite. The SyN run
+        # emits its OWN affine, and that affine is a matched pair with its warp
+        # -- pairing the standalone affine above with this warp would be wrong,
+        # so they are returned under distinct keys.
+        syn_prefix = transforms_dir / 'FA_to_template_desc-SyN_'
+        print(f"\nRunning ANTs SyN registration (moving -> Template, {metric})...")
+        _run_registration(
+            _build_syn_registration_cmd(
+                fixed=template_file, moving=moving,
+                output_prefix=syn_prefix, metric=metric, n_cores=n_cores,
+            ),
+            label='SyN',
+        )
+        syn_affine = Path(str(syn_prefix) + '0GenericAffine.mat')
+        syn_warp = Path(str(syn_prefix) + '1Warp.nii.gz')
+        syn_inverse = Path(str(syn_prefix) + '1InverseWarp.nii.gz')
+        warped_syn = Path(str(syn_prefix) + 'Warped.nii.gz')
+        if not syn_warp.exists():
+            raise RuntimeError(
+                f"deformable registration requested (transform_type={transform_type!r}) "
+                f"but no warp was produced at {syn_warp}"
+            )
+        print(f"  SyN affine: {syn_affine.name}")
+        print(f"  SyN warp:   {syn_warp.name}")
+        _report_coverage(warped_syn)
+        results.update({
+            'syn_affine_transform': syn_affine,
+            'warp_transform': syn_warp,
+            'inverse_warp': syn_inverse,
+            'warped_fa_syn': warped_syn if warped_syn.exists() else None,
+        })
+
+    results.setdefault('affine_transform', None)
+    results.setdefault('warp_transform', None)
+    results.setdefault('inverse_warp', None)
+    results.setdefault('syn_affine_transform', None)
+    results.setdefault('warped_fa', None)
+    return results
 
 
 def warp_dti_to_sigma(
@@ -160,6 +380,8 @@ def warp_dti_to_sigma(
     output_dir: Path,
     subject: str,
     session: str,
+    fa_to_template_warp: Optional[Path] = None,
+    desc: Optional[str] = None,
 ) -> Dict[str, Path]:
     """
     Warp DTI metric maps to SIGMA atlas space.
@@ -186,13 +408,25 @@ def warp_dti_to_sigma(
     session : str
         Session ID
 
+    fa_to_template_warp : Path, optional
+        Subject warp from a deformable DWI->template registration. Must be the
+        matched pair of ``fa_to_template_affine`` -- pairing a warp with the
+        affine from a *different* registration run silently produces a wrong
+        chain, so pass ``syn_affine_transform`` and ``warp_transform`` together.
+    desc : str, optional
+        BIDS ``desc-`` entity for the outputs, e.g. ``'syn'`` giving
+        ``..._space-SIGMA_desc-syn_FA.nii.gz``. ``None`` (default) writes the
+        canonical ``..._space-SIGMA_FA.nii.gz``, which is what
+        ``neurofaune.network.roi_extraction.discover_sigma_metrics`` globs for.
+        Use a desc for a variant you want to compare against but not analyse.
+
     Returns
     -------
     dict
         Mapping of metric name to SIGMA-space output path
     """
     print("\n" + "="*60)
-    print("Warp DTI Metrics to SIGMA Space")
+    print(f"Warp DTI Metrics to SIGMA Space{f' (desc-{desc})' if desc else ''}")
     print("="*60)
 
     # Build transform chain (ANTs applies in reverse order: last listed = first applied)
@@ -200,6 +434,8 @@ def warp_dti_to_sigma(
     if tpl_to_sigma_warp is not None and tpl_to_sigma_warp.exists():
         transforms.append(str(tpl_to_sigma_warp))
     transforms.append(str(tpl_to_sigma_affine))
+    if fa_to_template_warp is not None and Path(fa_to_template_warp).exists():
+        transforms.append(str(fa_to_template_warp))
     transforms.append(str(fa_to_template_affine))
 
     print(f"\n  Transform chain ({len(transforms)} transforms):")
@@ -210,7 +446,8 @@ def warp_dti_to_sigma(
     sigma_outputs = {}
 
     for metric, input_path in metric_files.items():
-        output_path = output_dir / f'{subject}_{session}_space-SIGMA_{metric}.nii.gz'
+        suffix = f'desc-{desc}_{metric}' if desc else metric
+        output_path = output_dir / f'{subject}_{session}_space-SIGMA_{suffix}.nii.gz'
 
         if output_path.exists():
             print(f"\n  {metric}: already exists, skipping")
@@ -933,6 +1170,15 @@ def run_dwi_preprocessing(
                 print("="*80)
 
                 try:
+                    # Affine by default, preserving long-standing behaviour.
+                    # Set diffusion.registration.transform_type: 's' to go
+                    # nonlinear -- see docs/DWI_DISTORTION.md for why the
+                    # metric and the choice of moving image matter when the
+                    # template is T2w rather than FA.
+                    reg_transform_type = get_config_value(
+                        config, 'diffusion.registration.transform_type', default='a')
+                    reg_metric = get_config_value(
+                        config, 'diffusion.registration.metric', default='MI')
                     registration_results = register_fa_to_template(
                         fa_file=fa_file,
                         template_file=template_file,
@@ -940,7 +1186,9 @@ def run_dwi_preprocessing(
                         subject=subject,
                         session=session,
                         work_dir=work_dir,
-                        n_cores=4
+                        n_cores=4,
+                        transform_type=reg_transform_type,
+                        metric=reg_metric,
                     )
 
                     # Save registration metadata to JSON
@@ -1043,16 +1291,31 @@ def run_dwi_preprocessing(
                     tpl_to_sigma_warp=targets["warp"],
                     force=True,
                 )
-                sigma_outputs = warp_maps_to_sigma(
-                    metric_files=metric_files,
-                    moving_to_template=registration_results['affine_transform'],
-                    sigma_template=targets["sigma_template"],
-                    output_dir=derivatives_dir,
-                    subject=subject, session=session,
-                    tpl_to_sigma_affine=targets["affine"],
-                    tpl_to_sigma_warp=targets["warp"],
-                    force=True,   # metrics were just refitted
-                )
+                # With transform_type='both' the registration produced two
+                # independent transform sets, so warp twice. Whichever is
+                # canonical gets the plain space-SIGMA_{metric} name that
+                # roi_extraction globs for; the other carries a desc- entity so
+                # it sits alongside for comparison without entering the
+                # analysis glob.
+                canonical = get_config_value(
+                    config, 'diffusion.registration.canonical', default='affine')
+                variants = _sigma_warp_variants(registration_results, canonical)
+                sigma_outputs = {}
+                for v in variants:
+                    produced = warp_maps_to_sigma(
+                        metric_files=metric_files,
+                        moving_to_template=v['affine'],
+                        moving_to_template_warp=v['warp'],
+                        sigma_template=targets["sigma_template"],
+                        output_dir=derivatives_dir,
+                        subject=subject, session=session,
+                        tpl_to_sigma_affine=targets["affine"],
+                        tpl_to_sigma_warp=targets["warp"],
+                        desc=v['desc'],
+                        force=True,   # metrics were just refitted
+                    )
+                    if v['desc'] is None:
+                        sigma_outputs = produced
             except Exception as e:
                 print(f"\n  SIGMA warping failed: {e}")
                 print("  Continuing without SIGMA outputs...")
