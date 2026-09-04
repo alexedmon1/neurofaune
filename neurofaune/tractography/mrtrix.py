@@ -75,12 +75,14 @@ def require_mrtrix(config: Optional[dict] = None) -> Path:
     """Return the MRtrix3 bin directory or raise with install guidance."""
     found = find_mrtrix_bin(config)
     if found is None:
+        from neurofaune.utils.dependencies import INSTALL_HINTS
+
         raise MRtrixNotFoundError(
-            "MRtrix3 not found. Install it, then set tractography.mrtrix_bin in "
-            "config.yaml (or export MRTRIX_BIN):\n"
-            "    micromamba create -p <prefix>/mrtrix3 -c mrtrix3 -c conda-forge mrtrix3\n"
-            "Neither PATH, MRTRIX_BIN, nor tractography.mrtrix_bin resolved to a "
-            "directory containing dwi2fod."
+            "MRtrix3 not found: neither tractography.mrtrix_bin, MRTRIX_BIN, nor "
+            "PATH resolved to a directory containing dwi2fod.\n\n"
+            f"{INSTALL_HINTS['MRtrix3']}\n\n"
+            "Check what is and is not installed with:\n"
+            "    neurofaune check-deps --group tractography"
         )
     return found
 

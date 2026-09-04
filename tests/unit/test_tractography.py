@@ -247,3 +247,68 @@ def test_compute_node_coverage_rejects_mismatched_grids(tmp_path):
     f = _write_image(tmp_path / "fov.nii.gz", np.ones((5, 5, 5)))
     with pytest.raises(ValueError, match="same grid"):
         compute_node_coverage(p, f)
+
+
+# --- dependency reporting ---------------------------------------------------
+
+def test_every_declared_package_has_install_guidance():
+    """A tool declared without a hint would report 'MISSING' and no way out."""
+    from neurofaune.utils.dependencies import DEPENDENCY_GROUPS, INSTALL_HINTS
+
+    declared = {t.package for tools in DEPENDENCY_GROUPS.values() for t in tools}
+    assert declared <= set(INSTALL_HINTS), (
+        f"packages without install guidance: {declared - set(INSTALL_HINTS)}"
+    )
+
+
+def test_check_dependencies_rejects_unknown_group():
+    from neurofaune.utils.dependencies import check_dependencies
+
+    with pytest.raises(ValueError, match="unknown dependency group"):
+        check_dependencies(groups=["not-a-group"])
+
+
+def test_optional_tools_are_not_reported_missing(tmp_path):
+    """An absent optional tool must not make the install look broken."""
+    from neurofaune.utils.dependencies import ToolStatus, Tool, missing_packages
+
+    results = {
+        "x": [
+            ToolStatus(Tool("nope-optional", "CUDA", "gpu", optional=True), found=False),
+            ToolStatus(Tool("nope-required", "MRtrix3", "fod"), found=False),
+        ]
+    }
+    assert missing_packages(results) == ["MRtrix3"]
+    assert results["x"][0].ok        # optional and absent is still OK
+    assert not results["x"][1].ok
+
+
+def test_extra_paths_resolve_tools_outside_path(tmp_path, monkeypatch):
+    """A configured tractography.mrtrix_bin is honoured even when PATH lacks it."""
+    from neurofaune.utils.dependencies import check_dependencies
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("dwi2response", "dwi2fod", "tckgen", "tcksift2",
+                 "tck2connectome", "fixelcfestats"):
+        exe = fake_bin / name
+        exe.write_text("#!/bin/sh\necho 3.0.8\n")
+        exe.chmod(0o755)
+
+    monkeypatch.setenv("PATH", "/nonexistent")
+    without = check_dependencies(groups=["tractography"], probe_versions=False)
+    assert all(not s.found for s in without["tractography"] if s.tool.package == "MRtrix3")
+
+    with_hint = check_dependencies(
+        groups=["tractography"], probe_versions=False, extra_paths=[str(fake_bin)]
+    )
+    assert all(s.found for s in with_hint["tractography"] if s.tool.package == "MRtrix3")
+
+
+def test_report_includes_install_hint_for_missing_package():
+    from neurofaune.utils.dependencies import ToolStatus, Tool, format_report
+
+    results = {"tractography": [ToolStatus(Tool("dwi2fod", "MRtrix3", "fod"), found=False)]}
+    report = format_report(results, color=False)
+    assert "MISSING" in report
+    assert "conda install -c mrtrix3 mrtrix3" in report

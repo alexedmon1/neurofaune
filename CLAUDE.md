@@ -219,7 +219,18 @@ If the system is already under heavy load (e.g., >80% memory used, multiple ANTs
 
 - **FSL 6.0+**: BET, eddy, MCFLIRT, MELODIC
 - **ANTs 2.3+**: Registration, N4 bias correction, Atropos segmentation
+- **MRtrix3 3.0+** (optional): only for `neurofaune.tractography` — MSMT-CSD,
+  tractography, connectomes, fixel-based analysis. Install with
+  `conda install -c mrtrix3 mrtrix3` (the channel is `mrtrix3`, not conda-forge).
+  Resolved from `tractography.mrtrix_bin` → `$MRTRIX_BIN` → `PATH`.
 - **CUDA** (optional): GPU-accelerated eddy correction
+
+None of these come from PyPI, so a successful `uv sync` says nothing about
+whether a workflow will run. Verify with `neurofaune check-deps` (add
+`--group tractography` to check just the connectivity tools, `--strict` to
+gate CI). Requirements and their install hints live together in
+`neurofaune/utils/dependencies.py` — add new external tools there so the CLI
+report, the README and the exception messages stay in sync.
 
 ## Configuration System
 

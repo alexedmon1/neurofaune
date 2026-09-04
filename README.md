@@ -7,7 +7,47 @@ Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles mu
 - Python 3.10+
 - [FSL 6.0+](https://fsl.fmrib.ox.ac.uk/fsl/)
 - [ANTs 2.3+](https://github.com/ANTsX/ANTs)
+- [MRtrix3 3.0+](https://www.mrtrix.org/download/) — **only** for structural connectivity (`neurofaune.tractography`: MSMT-CSD, tractography, connectomes, fixel-based analysis). Not needed for anatomical, functional, DTI-scalar, MSME or MRS workflows.
 - CUDA (optional, for GPU-accelerated eddy correction)
+
+These suites are not installable from PyPI, so `uv sync` succeeding does not
+mean the pipeline can run. Check what you actually have:
+
+```bash
+neurofaune check-deps                        # everything, grouped by feature area
+neurofaune check-deps --group tractography   # just the connectivity tools
+neurofaune check-deps --strict               # non-zero exit if anything required is missing
+```
+
+It reports each binary as found or missing and prints install commands for
+whatever is absent, so you do not have to discover the gap from a
+`FileNotFoundError` mid-workflow.
+
+### Installing MRtrix3
+
+Needed only if you are running structural connectivity. Any of these work:
+
+```bash
+conda install -c mrtrix3 mrtrix3    # no root, all platforms — recommended
+sudo apt install mrtrix3            # Ubuntu/Debian
+brew install mrtrix3                # macOS
+docker pull mrtrix3/mrtrix3         # container
+```
+
+Note the channel is `mrtrix3`, not `conda-forge` — conda-forge does not carry it.
+
+neurofaune finds MRtrix3 in this order: `tractography.mrtrix_bin` in your study
+config, then `$MRTRIX_BIN`, then `PATH`. Setting the config key is preferable
+for a study you intend to freeze, since the path is then recorded alongside the
+results rather than depending on the shell that happened to launch the run:
+
+```yaml
+tractography:
+  mrtrix_bin: "/path/to/mrtrix3/bin"   # blank -> fall back to MRTRIX_BIN, then PATH
+```
+
+Development and verification were done against MRtrix3 3.0.8; 3.0.0 is the
+earliest release providing every command used.
 - [neuroaider](https://github.com/alexedmon1/neuroaider) — **only** for FSL design-matrix scripts (`prepare_tbss_designs.py`, `prepare_tbss_dose_response_designs.py`, `prepare_vbm_designs.py`, `prepare_mvpa_designs.py`). Those wrappers import `DesignHelper` from a sibling clone (`../neuroaider` next to this repo). Voxelwise randomise itself does not need it.
 
 ```bash
