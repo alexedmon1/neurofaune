@@ -147,3 +147,85 @@ def test_build_dwi_template_caps_by_even_stride(tmp_path, monkeypatch):
     # Spread across the cohort, not the first four.
     assert names != [f"sub-{i:02d}" for i in range(4)]
     assert len(set(names)) == 4
+
+
+# --- producing both affine and nonlinear ------------------------------------
+
+from neurofaune.preprocess.workflows.dwi_preprocess import _sigma_warp_variants
+
+
+def _both_results():
+    return {
+        "affine_transform": Path("FA_to_template_0GenericAffine.mat"),
+        "syn_affine_transform": Path("FA_to_template_desc-SyN_0GenericAffine.mat"),
+        "warp_transform": Path("FA_to_template_desc-SyN_1Warp.nii.gz"),
+    }
+
+
+def test_both_yields_two_variants_canonical_first():
+    v = _sigma_warp_variants(_both_results(), canonical="affine")
+    assert len(v) == 2
+    assert v[0]["desc"] is None          # canonical carries no desc- entity
+    assert v[1]["desc"] == "syn"
+
+
+def test_syn_variant_uses_its_own_affine_not_the_standalone_one():
+    """A warp is only valid with the affine from the same registration run."""
+    r = _both_results()
+    v = _sigma_warp_variants(r, canonical="affine")
+    syn = next(x for x in v if x["desc"] == "syn")
+    assert syn["affine"] == r["syn_affine_transform"]
+    assert syn["affine"] != r["affine_transform"]
+    assert syn["warp"] == r["warp_transform"]
+
+
+def test_affine_variant_carries_no_warp():
+    v = _sigma_warp_variants(_both_results(), canonical="affine")
+    aff = v[0]
+    assert aff["warp"] is None
+
+
+def test_canonical_syn_promotes_nonlinear_to_the_analysed_name():
+    """Flipping canonical must not require analysis-code changes."""
+    r = _both_results()
+    v = _sigma_warp_variants(r, canonical="syn")
+    assert v[0]["desc"] is None
+    assert v[0]["affine"] == r["syn_affine_transform"]
+    assert v[0]["warp"] == r["warp_transform"]
+    assert v[1]["desc"] == "affine"
+
+
+def test_single_transform_set_is_canonical_and_undecorated():
+    v = _sigma_warp_variants({"affine_transform": Path("a.mat")}, canonical="affine")
+    assert len(v) == 1 and v[0]["desc"] is None
+
+
+def test_requesting_absent_canonical_falls_back_rather_than_dropping_outputs():
+    v = _sigma_warp_variants({"affine_transform": Path("a.mat")}, canonical="syn")
+    assert len(v) == 1
+    assert v[0]["desc"] is None          # still written under the analysed name
+
+
+def test_rejects_unknown_canonical():
+    with pytest.raises(ValueError, match="must be 'affine' or 'syn'"):
+        _sigma_warp_variants(_both_results(), canonical="nonlinear")
+
+
+def test_no_transforms_raises():
+    with pytest.raises(RuntimeError, match="no usable DWI->template transform"):
+        _sigma_warp_variants({}, canonical="affine")
+
+
+@pytest.mark.parametrize("bad", ["x", "syn2", "nonlinear", "affine_only"])
+def test_register_rejects_unknown_transform_type(bad, tmp_path, monkeypatch):
+    import nibabel as nib
+    from neurofaune.preprocess.workflows.dwi_preprocess import register_fa_to_template
+
+    img = tmp_path / "fa.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.float32), np.eye(4)), str(img))
+    with pytest.raises(ValueError, match="must be 'a', 's' or 'both'"):
+        register_fa_to_template(
+            fa_file=img, template_file=img, output_dir=tmp_path,
+            subject="sub-1", session="ses-1", work_dir=tmp_path,
+            transform_type=bad,
+        )

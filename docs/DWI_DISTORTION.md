@@ -143,11 +143,42 @@ Enable the deformable path per study rather than in code:
 ```yaml
 diffusion:
   registration:
-    transform_type: "a"   # 's' for rigid + affine + SyN
+    transform_type: "a"   # 'a' | 's' | 'both'
     metric: "MI"          # 'CC' only when the target is an FA template
+    canonical: "affine"   # with 'both': which set gets the analysed name
 ```
 
 The default remains affine, so existing studies are unaffected until they opt in.
+
+### Evaluating nonlinear without committing to it
+
+You do not have to choose up front. `transform_type: "both"` runs the affine
+and deformable registrations independently and keeps both, producing two sets
+of SIGMA-space outputs from one pass:
+
+```
+sub-X_ses-1_space-SIGMA_FA.nii.gz             <- canonical (analysed)
+sub-X_ses-1_space-SIGMA_desc-syn_FA.nii.gz    <- variant (comparison only)
+```
+
+The canonical set carries no `desc-` entity, which is the name
+`discover_sigma_metrics` globs for, so **only one set is ever analysed** — the
+variant sits alongside without double-counting. Set `canonical: "syn"` to
+promote the nonlinear outputs to the analysed set; the affine ones then become
+`desc-affine_` and no analysis code changes.
+
+Two things to know. The two registrations are genuinely independent, so the
+deformable run has its **own** affine — a warp is only valid alongside the
+affine from the same run, and pairing one run's warp with the other's affine
+yields a chain that still executes and still looks plausible. The code keeps
+those pairings intact; if you build chains by hand, don't cross them. And
+`both` costs one extra linear registration per session, which is small next to
+the SyN stage.
+
+A reasonable way to compare: run `both` on a handful of sessions, then apply
+the PE-versus-readout check from §2 to each set. It doubles as a
+registration-quality measure, since better white-matter correspondence shows up
+as smaller mismatch on both axes.
 
 See `docs/ATLAS_GUIDE.md` for the `modality → cohort template → SIGMA` chain
 these transforms feed.

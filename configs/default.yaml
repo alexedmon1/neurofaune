@@ -292,7 +292,13 @@ diffusion:
   # cross-population deformation, and the variance in how each solves it lands
   # in the group statistics.
   registration:
-    # 'a' = affine only (default). 's' = rigid + affine + SyN.
+    # 'a'    = affine only (default)
+    # 's'    = rigid + affine + SyN
+    # 'both' = run both, independently, and keep both. Use this to evaluate
+    #          whether nonlinear actually improves white-matter overlap on your
+    #          data before committing to it -- you get two sets of
+    #          space-SIGMA outputs to compare rather than having to pick blind
+    #          and re-run. Costs one extra linear registration per session.
     #
     # Before enabling 's' against a T2w template, read docs/DWI_DISTORTION.md.
     # FA and T2w have an INVERTED white-matter contrast, and
@@ -311,6 +317,17 @@ diffusion:
     #   MI - valid across contrasts (FA -> T2w template). Safe default.
     #   CC - sharper, but ONLY valid within modality (FA -> FA template).
     metric: "MI"
+
+    # With transform_type 'both', which set is the CANONICAL one. The canonical
+    # set is written as space-SIGMA_{metric}.nii.gz -- the name
+    # network.roi_extraction.discover_sigma_metrics globs for, i.e. the one
+    # that gets analysed. The other is written as
+    # space-SIGMA_desc-{affine|syn}_{metric}.nii.gz, so it sits alongside for
+    # comparison without entering the analysis glob or double-counting.
+    #
+    # Flip this to 'syn' to promote the nonlinear outputs to the analysed set;
+    # no analysis code changes. Ignored unless transform_type is 'both'.
+    canonical: "affine"
 
   # BEDPOSTX (for tractography)
   bedpostx:
