@@ -36,6 +36,24 @@ docker pull mrtrix3/mrtrix3         # container
 
 Note the channel is `mrtrix3`, not `conda-forge` — conda-forge does not carry it.
 
+Structural connectivity writes to its own study-root stage directory, so it can
+be archived or deleted wholesale and does not bloat `derivatives/`. Pass the
+**study root** as `output_dir` and the layout is derived for you:
+
+```
+{study_root}/
+├── tractography/{subject}/{session}/   FODs, responses, tractogram, SIFT2 weights,
+│                                       connectome matrix + node coverage + JSON
+├── tractography/{template,fixel,stats}/   group FOD template and FBA
+├── network/connectome/{atlas}/         group-stacked matrices (feed CovNet / NBS)
+└── work/{subject}/{session}/tractography/   discardable intermediates
+```
+
+Budget roughly **300 MB/session kept** and **390 MB discardable** at 1M
+streamlines (measured on 0.25 × 0.25 × 0.5 mm, 27-slice data) — about 27 GB and
+36 GB respectively across 92 sessions. The `work/` tree can be deleted once a
+stage is frozen.
+
 neurofaune finds MRtrix3 in this order: `tractography.mrtrix_bin` in your study
 config, then `$MRTRIX_BIN`, then `PATH`. Setting the config key is preferable
 for a study you intend to freeze, since the path is then recorded alongside the

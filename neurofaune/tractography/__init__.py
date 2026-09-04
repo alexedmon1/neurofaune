@@ -42,6 +42,15 @@ from neurofaune.tractography.fixel import (
     register_fod_to_template,
     run_fixel_stats,
 )
+from neurofaune.tractography.layout import (
+    connectome_dir,
+    fixel_dir,
+    session_dir,
+    stage_dir,
+    stats_dir,
+    template_dir,
+    work_dir,
+)
 from neurofaune.tractography.fsl import (
     ball_and_sticks_parameters,
     build_roi_seed_masks,
@@ -85,6 +94,14 @@ __all__ = [
     "register_fod_to_template",
     "compute_fixel_metrics",
     "run_fixel_stats",
+    # layout
+    "stage_dir",
+    "session_dir",
+    "work_dir",
+    "template_dir",
+    "fixel_dir",
+    "stats_dir",
+    "connectome_dir",
     # FSL path
     "run_bedpostx",
     "run_probtrackx_connectome",

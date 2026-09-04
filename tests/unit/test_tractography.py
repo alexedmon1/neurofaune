@@ -312,3 +312,47 @@ def test_report_includes_install_hint_for_missing_package():
     report = format_report(results, color=False)
     assert "MISSING" in report
     assert "conda install -c mrtrix3 mrtrix3" in report
+
+
+# --- output layout ----------------------------------------------------------
+
+def test_layout_places_tractography_at_study_root(tmp_path):
+    """The stage is a study-root directory, not a subdirectory of derivatives."""
+    from neurofaune.tractography.layout import session_dir, stage_dir, work_dir
+
+    root = tmp_path / "study"
+    assert stage_dir(root) == root / "tractography"
+    assert session_dir(root, "sub-7Z", "ses-1") == (
+        root / "tractography" / "sub-7Z" / "ses-1"
+    )
+    # Intermediates go under the study's existing work/ tree, so the whole
+    # tractography/ directory is the kept product and work/ is discardable.
+    assert work_dir(root, "sub-7Z", "ses-1") == (
+        root / "work" / "sub-7Z" / "ses-1" / "tractography"
+    )
+    assert "derivatives" not in str(session_dir(root, "sub-7Z", "ses-1"))
+
+
+def test_layout_group_directories(tmp_path):
+    from neurofaune.tractography.layout import (
+        connectome_dir, fixel_dir, stats_dir, template_dir,
+    )
+
+    root = tmp_path / "study"
+    assert template_dir(root) == root / "tractography" / "template"
+    assert fixel_dir(root) == root / "tractography" / "fixel"
+    assert stats_dir(root) == root / "tractography" / "stats"
+    # Connectomes feed the existing network machinery, so they live there.
+    assert connectome_dir(root) == root / "network" / "connectome" / "SIGMA"
+    assert connectome_dir(root, "custom") == root / "network" / "connectome" / "custom"
+
+
+def test_resolve_output_dir_respects_derive_flag(tmp_path):
+    from neurofaune.tractography.layout import resolve_output_dir
+
+    root = tmp_path / "study"
+    assert resolve_output_dir(root, "sub-1", "ses-1") == (
+        root / "tractography" / "sub-1" / "ses-1"
+    )
+    # derive=False is the escape hatch for tests and one-off exploration.
+    assert resolve_output_dir(root, "sub-1", "ses-1", derive=False) == root

@@ -24,6 +24,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from neurofaune.tractography.layout import resolve_output_dir, work_dir
 from neurofaune.tractography.mrtrix import _run, require_mrtrix
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ def run_tractography(
     force: bool = False,
     nthreads: Optional[int] = None,
     seed_strategy: str = "auto",
+    derive_layout: bool = True,
 ) -> Dict[str, Optional[Path]]:
     """Generate a tractogram from a WM FOD, optionally ACT-constrained.
 
@@ -59,7 +61,8 @@ def run_tractography(
         White-matter FOD from :func:`~neurofaune.tractography.mrtrix.run_msmt_csd`.
         Should be the ``mtnormalise``-normalised one for group work.
     output_dir : Path
-        Destination for the tractogram and SIFT2 weights.
+        The **study root**; the layout below it is derived. Pass
+        ``derive_layout=False`` to treat this as a literal destination.
     subject, session : str
         BIDS identifiers for naming.
     mask_file : Path, optional
@@ -99,18 +102,24 @@ def run_tractography(
         file, None unless ``sift2``).
     """
     bin_dir = require_mrtrix(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    session_out = resolve_output_dir(output_dir, subject, session, derive_layout)
+    scratch_out = (
+        work_dir(output_dir, subject, session) if derive_layout else session_out
+    )
+    session_out.mkdir(parents=True, exist_ok=True)
+    scratch_out.mkdir(parents=True, exist_ok=True)
     prefix = f"{subject}_{session}"
 
     out: Dict[str, Optional[Path]] = {
-        "tractogram": output_dir / f"{prefix}_desc-{algorithm}{n_streamlines}_tractogram.tck",
+        "tractogram": session_out
+        / f"{prefix}_desc-{algorithm}-{n_streamlines}_tractogram.tck",
         "weights": None,
         "gmwmi": None,
         "mu": None,
     }
     if sift2:
-        out["weights"] = output_dir / f"{prefix}_desc-SIFT2_weights.txt"
-        out["mu"] = output_dir / f"{prefix}_desc-SIFT2_mu.txt"
+        out["weights"] = session_out / f"{prefix}_desc-SIFT2_weights.txt"
+        out["mu"] = session_out / f"{prefix}_desc-SIFT2_mu.txt"
 
     if out["tractogram"].exists() and not force:
         logger.info("tractogram already exists for %s %s", subject, session)
@@ -136,7 +145,7 @@ def run_tractography(
     # --- Seeding ------------------------------------------------------------
     want_gmwmi = seed_strategy == "gmwmi" or (seed_strategy == "auto" and use_act)
     if want_gmwmi and use_act:
-        gmwmi = output_dir / f"{prefix}_desc-gmwmi_mask.mif"
+        gmwmi = session_out / f"{prefix}_desc-gmwmi_mask.mif"
         _run(
             ["5tt2gmwmi", str(fivett_file), str(gmwmi), "-force"],
             bin_dir, "5tt2gmwmi (seed interface)", nthreads,

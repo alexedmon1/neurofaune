@@ -24,6 +24,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
+from neurofaune.tractography.layout import resolve_output_dir, work_dir
 from neurofaune.tractography.mrtrix import _run, require_mrtrix
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ def build_connectome(
     config: Optional[dict] = None,
     force: bool = False,
     nthreads: Optional[int] = None,
+    derive_layout: bool = True,
 ) -> Dict[str, Path]:
     """Build a structural connectivity matrix from a tractogram.
 
@@ -144,7 +146,8 @@ def build_connectome(
     parcellation : Path
         Integer atlas **already resampled into DWI space** (nearest neighbour).
     output_dir : Path
-        Destination for the matrix and its sidecars.
+        The **study root**; the layout below it is derived. Pass
+        ``derive_layout=False`` to treat this as a literal destination.
     subject, session : str
         BIDS identifiers for naming.
     weights : Path, optional
@@ -180,15 +183,22 @@ def build_connectome(
         ``coverage`` (per-node CSV), ``assignments``, ``metadata`` (JSON).
     """
     bin_dir = require_mrtrix(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    session_out = resolve_output_dir(output_dir, subject, session, derive_layout)
+    scratch_out = (
+        work_dir(output_dir, subject, session) if derive_layout else session_out
+    )
+    session_out.mkdir(parents=True, exist_ok=True)
+    scratch_out.mkdir(parents=True, exist_ok=True)
     prefix = f"{subject}_{session}"
 
+    # The unlabelled matrix and the per-streamline endpoint assignments are
+    # intermediates: the labelled, coverage-filtered CSV is the product.
     out = {
-        "matrix": output_dir / f"{prefix}_desc-connectome_relmat.csv",
-        "matrix_raw": output_dir / f"{prefix}_desc-connectomeRaw_relmat.csv",
-        "coverage": output_dir / f"{prefix}_desc-nodeCoverage.csv",
-        "assignments": output_dir / f"{prefix}_desc-assignments.txt",
-        "metadata": output_dir / f"{prefix}_desc-connectome.json",
+        "matrix": session_out / f"{prefix}_desc-connectome_relmat.csv",
+        "matrix_raw": scratch_out / f"{prefix}_desc-connectomeRaw_relmat.csv",
+        "coverage": session_out / f"{prefix}_desc-nodeCoverage.csv",
+        "assignments": scratch_out / f"{prefix}_desc-assignments.txt",
+        "metadata": session_out / f"{prefix}_desc-connectome.json",
     }
     if out["matrix"].exists() and not force:
         logger.info("connectome already exists for %s %s", subject, session)

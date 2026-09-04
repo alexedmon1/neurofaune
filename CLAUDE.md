@@ -151,10 +151,26 @@ results = run_anatomical_preprocessing(
 │   ├── classification/{dwi,msme,func}/ # Multivariate classification
 │   ├── regression/{dwi,msme,func}/ #   Dose-response regression
 │   ├── mcca/                        #   Multi-modal CCA
+│   ├── connectome/{atlas}/          #   Group-stacked structural connectomes
 │   └── roi/                         #   ROI extractions (wide/long CSVs)
+├── tractography/                    # Structural connectivity stage (MRtrix3)
+│   ├── {subject}/{session}/         #   FODs, responses, tractogram, SIFT2, matrix
+│   ├── template/                    #   Group FOD template (FBA)
+│   ├── fixel/                       #   Group fixel metrics (FD / logFC / FDC)
+│   └── stats/                       #   fixelcfestats output
 ├── qc/sub-{subject}/                # Quality control reports
 └── work/                            # Temporary Nipype files (deletable)
+    └── {subject}/{session}/tractography/  # .mif duplicates, pre-norm FODs
 ```
+
+**Why `tractography/` is a study-root stage and not part of `derivatives/`:**
+at 1M streamlines it produces ~300 MB/session that is kept and ~390 MB that is
+not — an order of magnitude more than the scalar derivatives beside it. Keeping
+it separate leaves `derivatives/` small enough to sync and archive, lets the
+whole stage be deleted or moved in one operation, and avoids empty
+`tractography/` directories throughout the subject tree in the many studies that
+never run it (it is the only stage needing MRtrix3). Paths are derived in
+`neurofaune/tractography/layout.py` — never hardcode them.
 
 ### Slice Correspondence for Partial-Coverage Modalities
 DWI (11 slices) and fMRI (9 slices) don't cover the full brain (41 T2w slices). The slice correspondence system determines which T2w slices correspond to partial volumes:

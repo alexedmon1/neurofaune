@@ -39,6 +39,7 @@ from neurofaune.tractography.adequacy import (
     TractographyAdequacy,
     assess_tractography_adequacy,
 )
+from neurofaune.tractography.layout import resolve_output_dir, work_dir
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ def run_msmt_csd(
     force: bool = False,
     nthreads: Optional[int] = None,
     voxel_scale: float = 10.0,
+    derive_layout: bool = True,
 ) -> Dict[str, Path]:
     """Estimate tissue responses and fit FODs for one session.
 
@@ -169,7 +171,11 @@ def run_msmt_csd(
     dwi_file, bval_file, bvec_file, mask_file : Path
         Preprocessed DWI, its gradient table, and a brain mask.
     output_dir : Path
-        Destination for FODs and response functions.
+        The **study root**. Per the package's workflow convention the layout
+        below it is derived: kept outputs go to
+        ``{study_root}/tractography/{subject}/{session}/`` and intermediates to
+        ``{study_root}/work/{subject}/{session}/tractography/``. Pass
+        ``derive_layout=False`` to treat this as a literal destination.
     subject, session : str
         BIDS identifiers, used for output naming.
     config : dict, optional
@@ -187,6 +193,9 @@ def run_msmt_csd(
         Threads per MRtrix call.
     voxel_scale : float
         Header-to-real-mm divisor (see ``bids.voxel_scale``).
+    derive_layout : bool
+        Derive the study layout from ``output_dir``. Set False only for tests
+        or one-off exploration.
 
     Returns
     -------
@@ -196,7 +205,12 @@ def run_msmt_csd(
         ``mask_mif``, and ``adequacy``.
     """
     bin_dir = require_mrtrix(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    session_out = resolve_output_dir(output_dir, subject, session, derive_layout)
+    scratch_out = (
+        work_dir(output_dir, subject, session) if derive_layout else session_out
+    )
+    session_out.mkdir(parents=True, exist_ok=True)
+    scratch_out.mkdir(parents=True, exist_ok=True)
 
     if adequacy is None:
         adequacy = assess_tractography_adequacy(
@@ -208,19 +222,39 @@ def run_msmt_csd(
         wm_lmax = adequacy.wm_lmax
 
     prefix = f"{subject}_{session}"
-    out = {
-        "wm_fod": output_dir / f"{prefix}_model-{'MSMT' if adequacy.recommended_model == 'msmt_csd' else 'CSD'}_label-WM_fod.mif",
-        "gm_fod": output_dir / f"{prefix}_model-MSMT_label-GM_fod.mif",
-        "csf_fod": output_dir / f"{prefix}_model-MSMT_label-CSF_fod.mif",
-        "wm_response": output_dir / f"{prefix}_label-WM_response.txt",
-        "gm_response": output_dir / f"{prefix}_label-GM_response.txt",
-        "csf_response": output_dir / f"{prefix}_label-CSF_response.txt",
-        "dwi_mif": output_dir / f"{prefix}_desc-preproc_dwi.mif",
-        "mask_mif": output_dir / f"{prefix}_desc-brain_mask.mif",
-    }
+    model_tag = "MSMT" if adequacy.recommended_model == "msmt_csd" else "CSD"
 
-    if out["wm_fod"].exists() and not force:
+    # The un-normalised FODs and the .mif copy of the DWI are intermediates:
+    # the former is superseded by mtnormalise, the latter duplicates a NIfTI
+    # that already exists (~263 MB/session on this study's geometry).
+    out = {
+        "wm_fod": scratch_out / f"{prefix}_model-{model_tag}_label-WM_fod.mif",
+        "gm_fod": scratch_out / f"{prefix}_model-MSMT_label-GM_fod.mif",
+        "csf_fod": scratch_out / f"{prefix}_model-MSMT_label-CSF_fod.mif",
+        "wm_response": session_out / f"{prefix}_label-WM_response.txt",
+        "gm_response": session_out / f"{prefix}_label-GM_response.txt",
+        "csf_response": session_out / f"{prefix}_label-CSF_response.txt",
+        "dwi_mif": scratch_out / f"{prefix}_desc-preproc_dwi.mif",
+        "mask_mif": session_out / f"{prefix}_desc-brain_mask.mif",
+    }
+    # When normalising, the kept outputs are the normalised FODs in the session
+    # directory; resolve their names now so the existence check tests the right
+    # files rather than the intermediates.
+    final_wm = (
+        session_out / f"{prefix}_model-{model_tag}_label-WM_desc-norm_fod.mif"
+        if normalise
+        else out["wm_fod"]
+    )
+
+    if final_wm.exists() and not force:
         logger.info("FODs already exist for %s %s (use force=True)", subject, session)
+        if normalise:
+            out["wm_fod"] = final_wm
+            for tissue in ("gm", "csf"):
+                cand = session_out / (
+                    f"{prefix}_model-MSMT_label-{tissue.upper()}_desc-norm_fod.mif"
+                )
+                out[f"{tissue}_fod"] = cand if cand.exists() else None
         out["adequacy"] = adequacy
         return out
 
@@ -287,7 +321,9 @@ def run_msmt_csd(
         norm_paths = {}
         for t in tissues:
             src = out[f"{t}_fod"]
-            dst = src.with_name(src.name.replace("_fod.mif", "_desc-norm_fod.mif"))
+            # Normalised FODs are the kept product, so they land in the session
+            # directory even though their inputs live in work/.
+            dst = session_out / src.name.replace("_fod.mif", "_desc-norm_fod.mif")
             norm_paths[t] = dst
             args += [str(src), str(dst)]
         args += ["-mask", str(out["mask_mif"]), "-force"]
