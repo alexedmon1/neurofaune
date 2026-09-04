@@ -608,3 +608,81 @@ qc:
     # DTI metrics (reasonable ranges for rodents)
     fa_range: [0, 1]
     md_range: [0, 0.003]  # mm²/s
+
+# ---------------------------------------------------------------------------
+# Structural connectivity (neurofaune.tractography)
+# ---------------------------------------------------------------------------
+tractography:
+  # Directory containing the MRtrix3 binaries. Leave blank to resolve from
+  # MRTRIX_BIN or PATH. MRtrix3 is not an FSL/ANTs-style system dependency for
+  # this package -- only the tractography module needs it.
+  #   micromamba create -p <prefix>/mrtrix3 -c mrtrix3 -c conda-forge mrtrix3
+  mrtrix_bin: ""
+
+  # Refuse acquisitions that cannot support a fibre orientation distribution.
+  # A 6-direction scheme supports only lmax=2, which is angularly equivalent
+  # to a tensor: connectome edges from such data are model artifact. Set false
+  # to allow tensor-grade data through with a warning (FSL path only).
+  require_csd: true
+
+  # Fibre orientation distributions (MSMT-CSD when multi-shell).
+  fod:
+    # Cap on the WM spherical harmonic order. The actual order used is the
+    # smaller of this and what the gradient scheme determines.
+    max_lmax: 8
+    # mtnormalise. Required for any cross-subject comparison of FOD amplitude
+    # (fixel-based analysis, group connectome contrasts).
+    normalise: true
+
+  # Streamline generation.
+  tckgen:
+    algorithm: "iFOD2"          # iFOD2 (probabilistic) or SD_STREAM
+    n_streamlines: "1M"
+    cutoff: 0.05                # FOD amplitude termination threshold
+    backtrack: true             # ACT backtracking
+    seed_strategy: "auto"       # auto | gmwmi | mask
+    # Lengths in REAL mm. Rodent data is stored 10x scaled (bids.voxel_scale),
+    # so these are converted before being handed to MRtrix.
+    step_mm: null               # null -> half the smallest voxel dimension
+    min_length_mm: null
+    max_length_mm: null
+
+  # SIFT2. Without it, edges are raw streamline counts, which carry length and
+  # geometry bias that does not cancel in a group contrast.
+  sift2:
+    enabled: true
+
+  # Anatomically-constrained tractography. The 5TT is assembled from the
+  # anatomical workflow's Atropos posteriors -- MRtrix's 5ttgen fsl relies on
+  # FAST/FIRST and their human priors do not transfer to rodents.
+  act:
+    enabled: true
+    # Split grey matter into cortical / subcortical using the propagated
+    # atlas. Without it ACT tends to truncate streamlines in deep structures.
+    use_atlas_subcortical_split: true
+
+  # Connectome assembly.
+  connectome:
+    symmetric: true
+    scale_invnodevol: false
+    assignment_radius_mm: 0.4   # real mm
+    # Drop nodes lying less than this fraction inside the DWI field of view.
+    # Out-of-FOV nodes otherwise enter the matrix as structural zeros, which
+    # shift group means rather than reading as missing. Measured in native
+    # anatomical space -- measuring in DWI space under-detects clipped nodes.
+    min_coverage: 0.5
+
+  # Fixel-based analysis.
+  fixel:
+    template_voxel_size_mm: 0.125   # real mm
+    n_permutations: 5000
+
+  # FSL ball-and-sticks path (single-shell studies, or cross-checking MRtrix).
+  fsl:
+    # null -> derived from the volume count. Ball-and-N-sticks has 2+3N free
+    # parameters; a configured value the data cannot constrain is reduced.
+    n_fibres: null
+    model: 2
+    use_gpu: true
+    n_samples: 5000
+    distance_correction: true

@@ -1,10 +1,10 @@
 # neurofaune capabilities
 
-_Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit by hand — run `make capabilities`.
+_Generated from the code by `neurofaune capabilities` (v0.7.2a0)._ Do not edit by hand — run `make capabilities`.
 
 **CLI subcommands:** `bids`, `capabilities`, `check-paths`
 
-**Entry points:** 153 across 9 stages.
+**Entry points:** 168 across 10 stages.
 
 
 ## analysis
@@ -187,6 +187,26 @@ _Generated from the code by `neurofaune capabilities` (v0.7.1a0)._ Do not edit b
 | `extract_coronal_slice_template` | `neurofaune.templates.slice_registration` | Extract a coronal slice from the template. | — |
 | `propagate_labels_slice_wise` | `neurofaune.templates.slice_registration` | Propagate atlas labels to template space using slice-wise transforms. | — |
 | `register_2d_slices` | `neurofaune.templates.slice_registration` | Register two 2D slices using affine transformation. | — |
+
+## tractography
+
+| function | module | summary | config keys |
+|---|---|---|---|
+| `build_connectome` | `neurofaune.tractography.connectome` | Build a structural connectivity matrix from a tractogram. | — |
+| `compute_node_coverage` | `neurofaune.tractography.connectome` | Fraction of each parcellation node lying inside the DWI field of view. | — |
+| `build_5tt_from_probseg` | `neurofaune.tractography.fivett` | Assemble an MRtrix-compatible 5TT image from Atropos tissue posteriors. | — |
+| `warp_5tt` | `neurofaune.tractography.fivett` | Resample a 5TT image into another space with ANTs, then renormalise. | — |
+| `build_fod_template` | `neurofaune.tractography.fixel` | Build a study-specific FOD template with ``population_template``. | — |
+| `compute_fixel_metrics` | `neurofaune.tractography.fixel` | Compute FD, log(FC) and FDC for one subject in template fixel space. | — |
+| `compute_group_response` | `neurofaune.tractography.fixel` | Average per-subject response functions into one group response. | — |
+| `register_fod_to_template` | `neurofaune.tractography.fixel` | Register one subject's FOD to the template, keeping both warps. | — |
+| `run_fixel_stats` | `neurofaune.tractography.fixel` | Run connectivity-based fixel enhancement statistics. | — |
+| `build_roi_seed_masks` | `neurofaune.tractography.fsl` | Split a parcellation into one binary mask per node for network tracking. | — |
+| `run_bedpostx` | `neurofaune.tractography.fsl` | Fit the ball-and-sticks model with BEDPOSTX. | — |
+| `run_probtrackx_connectome` | `neurofaune.tractography.fsl` | Run probtrackx2 in network mode to produce a connectivity matrix. | — |
+| `convert_to_mif` | `neurofaune.tractography.mrtrix` | Convert FSL-format DWI (+ gradient table) to a single MRtrix ``.mif``. | — |
+| `run_msmt_csd` | `neurofaune.tractography.mrtrix` | Estimate tissue responses and fit FODs for one session. | — |
+| `run_tractography` | `neurofaune.tractography.tractogram` | Generate a tractogram from a WM FOD, optionally ACT-constrained. | — |
 
 ## utils
 
