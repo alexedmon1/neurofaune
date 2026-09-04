@@ -225,6 +225,10 @@ The difference is not cosmetic. KMeans inside the brain mask scores the corpus
 callosum **0.65 GM / 0.16 WM** — it calls white matter grey. The atlas-prior path
 gives **0.27 GM / 0.57 WM**.
 
+It also shows up downstream: group decoding from composite volumes (murinet, 34
+animals, cuprizone vs control) went from balanced accuracy 0.746 (p=0.016) to 0.887
+(p=0.001) purely by switching which posteriors morphometry integrated.
+
 ### Morphometry vs ROI extraction
 
 `network/roi_extraction.py` answers "what is the mean of this metric in this region".
