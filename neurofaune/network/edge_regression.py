@@ -322,7 +322,9 @@ def run_edge_regression(
     """
     cohort_label = cohort_filter if cohort_filter else "pooled"
 
-    df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
+    # Dose/sex-shaped module; declare them so they are not treated as ROIs.
+    df, roi_cols = load_and_prepare_data(
+        wide_csv, exclusion_csv, meta_cols=["dose", "sex"])
     df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()
 
     if cohort_filter:

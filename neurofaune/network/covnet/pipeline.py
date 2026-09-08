@@ -574,6 +574,7 @@ class CovNetAnalysis:
         factors: list[str] | None = None,
         descriptive_factors: list[str] | None = None,
         include: dict[str, list] | None = None,
+        meta_cols: list[str] | None = None,
     ) -> "CovNetAnalysis":
         """Load ROI data, compute territory means and correlation matrices.
 
@@ -636,7 +637,13 @@ class CovNetAnalysis:
 
         # Phase 1: Load and prepare data
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
-        df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
+        # Design columns must be declared, or they would be correlated as ROIs.
+        # Default to the grouping factors, which are metadata by definition.
+        declared = list(dict.fromkeys(
+            list(meta_cols or []) + list(factors or []) + list(descriptive_factors or [])
+        ))
+        df, roi_cols = load_and_prepare_data(
+            wide_csv, exclusion_csv, meta_cols=declared)
 
         # Optional sex filter (legacy convenience; harmless when absent)
         if sex is not None:

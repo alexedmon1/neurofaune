@@ -110,3 +110,67 @@ class TestErrors:
         silently return something plausible."""
         with pytest.raises(TypeError):
             define_groups(dose_frame, grouping="pnd_dose")
+
+
+class TestLoaderMetadataDeclaration:
+    """ROI columns are identified by exclusion, so anything undeclared is treated
+    as a brain region. The metadata set used to be hardcoded to one study's
+    columns, which silently turned other studies' design columns into ROIs."""
+
+    @staticmethod
+    def _wide(tmp_path, extra):
+        rows = []
+        for sub in ["sub-1", "sub-2", "sub-3", "sub-4"]:
+            for ses in ["ses-1", "ses-2"]:
+                r = dict(subject=sub, session=ses,
+                         Cortex_L=1.0 + len(rows), Cortex_R=2.0 + len(rows),
+                         territory_Cortex=1.5 + len(rows))
+                r.update({k: v(sub, ses) for k, v in extra.items()})
+                rows.append(r)
+        p = tmp_path / "roi_X_wide.csv"
+        pd.DataFrame(rows).to_csv(p, index=False)
+        return p
+
+    def test_undeclared_string_column_raises_and_names_itself(self, tmp_path):
+        from neurofaune.network.matrices import load_and_prepare_data
+        csv = self._wide(tmp_path, {"group": lambda s, e: "control" if s < "sub-3" else "treated"})
+        with pytest.raises(ValueError) as e:
+            load_and_prepare_data(csv)
+        msg = str(e.value)
+        assert "group" in msg and "meta_cols" in msg
+
+    def test_declared_columns_are_kept_off_the_roi_list(self, tmp_path):
+        from neurofaune.network.matrices import load_and_prepare_data
+        csv = self._wide(tmp_path, {
+            "group": lambda s, e: "control" if s < "sub-3" else "treated",
+            "timepoint": lambda s, e: "p60" if e == "ses-1" else "p90"})
+        df, roi_cols = load_and_prepare_data(csv, meta_cols=["group", "timepoint"])
+        assert "group" not in roi_cols and "timepoint" not in roi_cols
+        assert "group" in df.columns, "declared metadata must stay on the frame"
+        assert set(roi_cols) <= {"Cortex_L", "Cortex_R", "territory_Cortex"}
+
+    def test_structural_columns_need_no_declaration(self, tmp_path):
+        from neurofaune.network.matrices import load_and_prepare_data
+        csv = self._wide(tmp_path, {})
+        _, roi_cols = load_and_prepare_data(csv)
+        assert not {"subject", "session", "cohort"} & set(roi_cols)
+
+    def test_numeric_metadata_must_be_declared_explicitly(self, tmp_path):
+        """A numeric covariate cannot be distinguished from an ROI, so it is the
+        caller's job to declare it. This pins that it is NOT silently excluded."""
+        from neurofaune.network.matrices import load_and_prepare_data
+        csv = self._wide(tmp_path, {"age_days": lambda s, e: 60.0})
+        _, roi_cols = load_and_prepare_data(csv)
+        assert "age_days" in roi_cols
+        _, roi_cols2 = load_and_prepare_data(csv, meta_cols=["age_days"])
+        assert "age_days" not in roi_cols2
+
+    def test_declared_columns_feed_define_groups(self, tmp_path):
+        from neurofaune.network.matrices import load_and_prepare_data
+        csv = self._wide(tmp_path, {
+            "group": lambda s, e: "control" if s < "sub-3" else "treated",
+            "timepoint": lambda s, e: "p60" if e == "ses-1" else "p90"})
+        df, _ = load_and_prepare_data(csv, meta_cols=["group", "timepoint"])
+        cells = define_groups(df, factors=["timepoint", "group"])
+        assert sorted(cells) == ["p60_control", "p60_treated",
+                                 "p90_control", "p90_treated"]

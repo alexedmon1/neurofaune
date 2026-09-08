@@ -9,7 +9,7 @@ correlation matrices.
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -18,11 +18,16 @@ from scipy import stats
 logger = logging.getLogger(__name__)
 
 
+#: Columns this loader creates or requires structurally, in any study.
+STRUCTURAL_COLS = frozenset({"subject", "session", "cohort"})
+
+
 def load_and_prepare_data(
     wide_csv: Union[str, Path],
     exclusion_csv: Optional[Union[str, Path]] = None,
     max_zero_frac: float = 0.2,
     max_subject_zero_frac: float = 0.10,
+    meta_cols: Optional[Iterable[str]] = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Load ROI wide CSV, apply exclusions, and filter unreliable ROIs.
 
@@ -40,6 +45,14 @@ def load_and_prepare_data(
     max_subject_zero_frac : float
         Maximum fraction of ROIs allowed to be zero for a single subject.
         Subjects exceeding this are dropped (likely FOV coverage issues).
+    meta_cols : iterable of str, optional
+        Columns that are metadata, not ROI measurements -- the study's design
+        columns (``group``, ``timepoint``, ``dose``, ``sex``, ...) and any
+        numeric covariate (``age_days``, ``weight_g``, ...). ``subject``,
+        ``session`` and ``cohort`` are always excluded and need not be listed.
+        Non-numeric columns that are neither structural nor declared raise,
+        since they cannot be measurements; numeric ones cannot be detected and
+        MUST be declared or they are treated as ROIs.
         Default 0.10.
 
     Returns
@@ -67,11 +80,33 @@ def load_and_prepare_data(
         n_excluded = n_start - len(df)
         logger.info(f"Excluded {n_excluded} sessions ({len(df)} remaining)")
 
-    # Identify ROI columns (everything except metadata)
-    meta_cols = {"subject", "session", "dose", "sex", "cohort"}
-    # Also treat AUC and other non-ROI numeric columns as metadata
-    meta_cols.update(c for c in df.columns if c.startswith("AUC_") or c in ("auc", "log_auc"))
-    all_roi_cols = [c for c in df.columns if c not in meta_cols]
+    # Identify ROI columns by EXCLUSION, which means anything undeclared is
+    # treated as a brain region. That used to be a hardcoded set --
+    # {subject, session, dose, sex, cohort} -- so a study whose design columns
+    # were named anything else had them silently Spearman-correlated against
+    # real ROIs as though they were regions. Declared metadata is now the
+    # caller's to state, and anything left over that cannot be an ROI is an
+    # error rather than a silent corruption.
+    declared = set(STRUCTURAL_COLS) | set(meta_cols or ())
+    declared.update(c for c in df.columns
+                    if c.startswith("AUC_") or c in ("auc", "log_auc"))
+    candidates = [c for c in df.columns if c not in declared]
+
+    # An ROI column holds a measurement, so it must be numeric. A non-numeric
+    # leftover is a design/metadata column the caller forgot to declare -- name
+    # it rather than correlating a string column against the brain.
+    non_numeric = [c for c in candidates
+                   if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        raise ValueError(
+            f"load_and_prepare_data: column(s) {sorted(non_numeric)} are not "
+            f"numeric, so they cannot be ROI measurements, and they were not "
+            f"declared as metadata. Pass meta_cols={sorted(non_numeric)} (plus "
+            f"any numeric metadata such as age or weight, which cannot be "
+            f"detected automatically). Structural columns "
+            f"{sorted(STRUCTURAL_COLS)} are always excluded."
+        )
+    all_roi_cols = candidates
 
     # Separate region ROIs from territory ROIs
     region_cols = [c for c in all_roi_cols if not c.startswith("territory_")]
