@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 176 across 10 stages.
+**Entry points:** 177 across 10 stages.
 
 
 ## analysis
@@ -78,6 +78,7 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 | `compute_territory_means` | `neurofaune.network.roi_extraction` | Aggregate region means into territory-level means, weighted by voxel count. | — |
 | `extract_all_subjects` | `neurofaune.network.roi_extraction` | Extract ROI means for all subjects, one DataFrame per metric. | — |
 | `extract_roi_means` | `neurofaune.network.roi_extraction` | Compute mean metric value within each labeled ROI, over COVERED voxels only. | — |
+| `extract_roi_stats` | `neurofaune.network.roi_extraction` | Per-ROI distribution of a metric, not just its mean. | — |
 | `compute_subject_thickness` | `neurofaune.network.thickness` | Per-cortical-region plane-restricted thickness for one subject-session. | — |
 
 ## preprocess (qc)
