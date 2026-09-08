@@ -27,6 +27,7 @@ physical mm3.
 """
 
 import logging
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -121,6 +122,45 @@ def resolve_labels(labels_df: pd.DataFrame, rule: dict) -> set[int]:
             picked -= set(labels_df.loc[labels_df[_COLUMNS[canon]].isin(wanted), ids_col])
     picked -= set(rule.get("exclude_ids", []))
     return {int(i) for i in picked}
+
+
+def resolve_segmentation_partition(
+    labels_df: pd.DataFrame, spec: dict
+) -> OrderedDict:
+    """Ordered ``{class name: label ids}`` where every label belongs to exactly one.
+
+    The composite structures overlap by design, which makes them unusable as a
+    segmentation target. This walks ``segmentation_partition`` most-specific-first
+    and gives each atlas label to the first class that claims it, so
+    ``corpus_callosum`` takes its labels before ``fiber_tracts`` sees them.
+
+    Labels claimed by no class are returned under the ``_unassigned`` key rather
+    than silently dropped to background — on SIGMA that catches genuine annotation
+    gaps (the optic pathways are filed under Territory ``Spinal Cord``).
+    """
+    order = spec.get("segmentation_partition")
+    if not order:
+        raise KeyError("group file has no 'segmentation_partition' block")
+
+    taken: set = set()
+    partition: OrderedDict = OrderedDict()
+    for name in order:
+        if name not in spec["structures"]:
+            raise KeyError(f"segmentation_partition names {name!r}, which is not a "
+                           f"structure; available: {sorted(spec['structures'])}")
+        ids = sorted(resolve_labels(labels_df, spec["structures"][name]) - taken)
+        partition[name] = ids
+        taken.update(ids)
+        if not ids:
+            logger.warning("Partition class '%s' is empty: every one of its labels "
+                           "was already claimed by an earlier class", name)
+
+    unassigned = sorted(set(labels_df[_COLUMNS["id"]]) - taken)
+    if unassigned:
+        logger.warning("%d atlas label(s) belong to no partition class: %s",
+                       len(unassigned), unassigned[:10])
+    partition["_unassigned"] = unassigned
+    return partition
 
 
 def coarse_axis(zooms: Sequence[float]) -> int:

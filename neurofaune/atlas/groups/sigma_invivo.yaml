@@ -125,9 +125,13 @@ structures:
     systems: [Internal Capsule]
     tissue: [WM, any]
 
+  # `Fiber tract` appears as both a territory and a system, and they do not agree:
+  # the optic pathways (1121/1122) are System=Fiber tract but Territory=Spinal Cord,
+  # which is plainly an annotation error. Both are selected so they are not lost.
   fiber_tracts:
     territories: [Fiber tract]
-    systems: [Corpus Callosum, Internal Capsule, Inter Hemispheric Commisures]
+    systems: [Corpus Callosum, Internal Capsule, Inter Hemispheric Commisures,
+              Fiber tract]
     combine: union
     tissue: [WM, any]
 
@@ -162,3 +166,36 @@ structures:
     all_labels: true
     exclude_territories: [Cerebellum, Brainstem, Spinal Cord]
     tissue: [any, GM, WM]
+
+# --- segmentation target ------------------------------------------------------
+# The structures above OVERLAP by design: `total_brain`, `total_csf` and
+# `white_matter` are the same 234 labels differing only in which tissue posterior
+# is integrated, `cerebellum{,_gm,_wm}` likewise, and hippocampus/amygdala/
+# thalamus/striatum all sit inside `subcortical`. That is fine for volumes and for
+# ROI masks, and useless as a segmentation target, which needs each voxel to carry
+# exactly one class.
+#
+# `segmentation_partition` resolves that: an ORDERED list, most specific first,
+# first match wins. Each atlas label is assigned to the first class that claims it,
+# so `corpus_callosum` takes its labels before the broader `fiber_tracts` sees them
+# and `hippocampus` before `subcortical`. Reordering changes the target, so the
+# order is data, not incidental.
+#
+# Every class here is large enough for Dice to mean something — the smallest is the
+# ventricular system at ~500 voxels — which is the point: the full 234-region
+# parcellation contains 17 regions under 10 voxels where an overlap metric is
+# decided by where a single voxel landed.
+segmentation_partition:
+  - ventricles
+  - corpus_callosum
+  - internal_capsule
+  - hippocampus
+  - amygdala
+  - thalamus
+  - striatum
+  - cerebellum
+  - brainstem
+  - olfactory_bulb
+  - fiber_tracts
+  - cortical_gm
+  - subcortical

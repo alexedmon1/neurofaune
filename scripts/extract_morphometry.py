@@ -38,6 +38,7 @@ from neurofaune.network.morphometry import (  # noqa: E402
     load_structure_groups,
     normalise_labels,
     resolve_labels,
+    resolve_segmentation_partition,
 )
 from neurofaune.network.roi_extraction import load_parcellation  # noqa: E402
 
@@ -127,6 +128,21 @@ def main():
         json.dump(structure_labels, fh, indent=2)
     logger.info('Wrote %s (%d structures)', labels_path, len(structure_labels))
 
+    # The structures above overlap, so they cannot be a segmentation target. Export
+    # the disjoint partition separately: two files, two purposes, no ambiguity about
+    # which one a consumer should use.
+    partition_path = None
+    if spec.get('segmentation_partition'):
+        partition = resolve_segmentation_partition(labels_df, spec)
+        unassigned = partition.pop('_unassigned', [])
+        partition_path = args.output_dir / 'segmentation_classes.json'
+        with open(partition_path, 'w') as fh:
+            json.dump({'classes': list(partition.keys()),
+                       'labels': partition,
+                       'unassigned': unassigned}, fh, indent=2)
+        logger.info('Wrote %s (%d disjoint classes, %d unassigned label(s))',
+                    partition_path, len(partition), len(unassigned))
+
     ribbon_ids = set()
     if args.thickness:
         ribbon_ids = resolve_labels(labels_df, spec['structures'][RIBBON_STRUCTURE])
@@ -193,6 +209,7 @@ def main():
         'thickness': bool(thickness_rows),
         'outputs': written,
         'structure_labels': str(labels_path),
+        'segmentation_classes': str(partition_path) if partition_path else None,
     }
     summary_path = args.output_dir / 'morphometry_summary.json'
     with open(summary_path, 'w') as fh:
