@@ -482,7 +482,9 @@ class CovNetAnalysis:
         self.territory_cols: list[str] = []
         self.group_labels: list[str] = []
         self.group_sizes: dict[str, int] = {}
-        self.matrices_pnd_dose: dict[str, dict] = {}
+        self.matrices_primary: dict[str, dict] = {}
+        #: Columns that defined a cell for this run (legacy default: cohort x dose)
+        self.grouping_factors: list[str] = []
         self.matrices_full: dict[str, dict] = {}
         self.matrices_territory: dict[str, dict] = {}
         self.roi_to_territory: dict[str, str] = {}
@@ -569,6 +571,9 @@ class CovNetAnalysis:
         sex: str | None = None,
         config_path: Path | None = None,
         force: bool = False,
+        factors: list[str] | None = None,
+        descriptive_factors: list[str] | None = None,
+        include: dict[str, list] | None = None,
     ) -> "CovNetAnalysis":
         """Load ROI data, compute territory means and correlation matrices.
 
@@ -633,8 +638,10 @@ class CovNetAnalysis:
         logger.info(f"\n[Phase 1] Loading and preparing data for {metric}...")
         df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
 
-        # Optional sex filter
+        # Optional sex filter (legacy convenience; harmless when absent)
         if sex is not None:
+            if "sex" not in df.columns:
+                raise ValueError("sex= was given but the table has no 'sex' column")
             df = df[df["sex"] == sex].reset_index(drop=True)
             logger.info("Sex filter '%s': %d subjects remaining", sex, len(df))
 
@@ -664,33 +671,44 @@ class CovNetAnalysis:
         # Phase 3: Compute correlation matrices
         logger.info("[Phase 3] Computing correlation matrices...")
 
-        logger.info("  PND x dose grouping (region):")
-        groups_pnd_dose = define_groups(df, grouping="pnd_dose")
-        inst.matrices_pnd_dose = compute_spearman_matrices(
-            groups_pnd_dose, inst.region_cols
-        )
+        # Phase 3: correlation matrices.
+        #
+        # `factors` names the columns that define a cell. Left as None, the
+        # historical PND x dose / full presets are used, so existing callers are
+        # unchanged. Passing factors= makes this work for ANY design -- the
+        # presets require cohort/dose/sex columns and silently drop cohorts
+        # outside p30/p60/p90, which is why they are unusable elsewhere.
+        logger.info("[Phase 3] Computing correlation matrices...")
 
-        logger.info("  Full grouping (region, descriptive):")
-        groups_full = define_groups(df, grouping="full")
-        inst.matrices_full = compute_spearman_matrices(
-            groups_full, inst.region_cols
-        )
+        if not factors:
+            raise ValueError(
+                "CovNetAnalysis.prepare requires factors=[...] naming the columns "
+                "that define a cell, e.g. factors=['cohort', 'dose'] or "
+                "factors=['timepoint', 'group']. There is no default: a default "
+                "would encode one study's design into shared code, which is what "
+                "made this pipeline unusable outside the study it was written for."
+            )
+        primary = define_groups(df, factors=factors, include=include)
+        descriptive = (define_groups(df, factors=descriptive_factors, include=include)
+                       if descriptive_factors else primary)
+        inst.grouping_factors = list(factors)
 
-        logger.info("  PND x dose grouping (territory):")
+        inst.matrices_primary = compute_spearman_matrices(primary, inst.region_cols)
+        inst.matrices_full = compute_spearman_matrices(descriptive, inst.region_cols)
         inst.matrices_territory = compute_spearman_matrices(
-            groups_pnd_dose, inst.territory_cols
+            primary, inst.territory_cols
         )
 
         # Extract group arrays and metadata
-        inst.group_labels = sorted(groups_pnd_dose.keys())
-        inst.group_sizes = {k: len(v) for k, v in groups_pnd_dose.items()}
+        inst.group_labels = sorted(primary.keys())
+        inst.group_sizes = {k: len(v) for k, v in primary.items()}
         inst.group_arrays = {
             label: subset[inst.region_cols].values
-            for label, subset in groups_pnd_dose.items()
+            for label, subset in primary.items()
         }
         inst.territory_arrays = {
             label: subset[inst.territory_cols].values
-            for label, subset in groups_pnd_dose.items()
+            for label, subset in primary.items()
         }
 
         logger.info(f"Preparation complete for {metric}")
@@ -738,7 +756,7 @@ class CovNetAnalysis:
 
         # Correlation matrices as CSV
         mat_dir = data_dir / "matrices"
-        _save_matrices(self.matrices_pnd_dose, mat_dir, self.metric)
+        _save_matrices(self.matrices_primary, mat_dir, self.metric)
         _save_matrices(self.matrices_full, mat_dir, f"{self.metric}_full")
         _save_matrices(
             self.matrices_territory, mat_dir, f"{self.metric}_territory"
@@ -756,8 +774,8 @@ class CovNetAnalysis:
         fig_dir.mkdir(parents=True, exist_ok=True)
 
         plot_all_group_heatmaps(
-            self.matrices_pnd_dose,
-            fig_dir / "pnd_dose_heatmaps.png",
+            self.matrices_primary,
+            fig_dir / "primary_heatmaps.png",
             title_prefix=f"{self.metric} ",
         )
         plot_all_group_heatmaps(
@@ -771,7 +789,7 @@ class CovNetAnalysis:
             title_prefix=f"{self.metric} Territory ",
         )
 
-        for label, data in self.matrices_pnd_dose.items():
+        for label, data in self.matrices_primary.items():
             plot_correlation_heatmap(
                 data["corr"],
                 data["rois"],
@@ -825,12 +843,12 @@ class CovNetAnalysis:
 
         # Correlation matrices from CSV
         mat_dir = inst._test_dir("data") / "matrices"
-        inst.matrices_pnd_dose = _load_matrices(mat_dir / metric)
+        inst.matrices_primary = _load_matrices(mat_dir / metric)
         inst.matrices_full = _load_matrices(mat_dir / f"{metric}_full")
         inst.matrices_territory = _load_matrices(mat_dir / f"{metric}_territory")
 
         # Patch group sizes into loaded matrices
-        for matrices in (inst.matrices_pnd_dose, inst.matrices_territory):
+        for matrices in (inst.matrices_primary, inst.matrices_territory):
             for label, mat_data in matrices.items():
                 if label in inst.group_sizes:
                     mat_data["n"] = inst.group_sizes[label]
@@ -994,10 +1012,10 @@ class CovNetAnalysis:
             )
 
             ga, gb = result["group_a"], result["group_b"]
-            if ga in self.matrices_pnd_dose and gb in self.matrices_pnd_dose:
+            if ga in self.matrices_primary and gb in self.matrices_primary:
                 plot_difference_matrix(
-                    self.matrices_pnd_dose[ga]["corr"],
-                    self.matrices_pnd_dose[gb]["corr"],
+                    self.matrices_primary[ga]["corr"],
+                    self.matrices_primary[gb]["corr"],
                     self.region_cols,
                     sig_edges=sig_edges,
                     title=f"{self.metric} \u0394r: {ga} \u2212 {gb}",
@@ -1164,7 +1182,7 @@ class CovNetAnalysis:
 
         # Per-group density curves for all metrics
         curves_rows = []
-        for label, data in self.matrices_pnd_dose.items():
+        for label, data in self.matrices_primary.items():
             all_curves = compute_all_metrics(data["corr"], densities)
             for gm_name, values in all_curves.items():
                 for i, d in enumerate(densities):

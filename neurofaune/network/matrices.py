@@ -241,44 +241,79 @@ def bilateral_average(
 
 
 def define_groups(
-    df: pd.DataFrame, grouping: str = "pnd_dose"
+    df: pd.DataFrame,
+    factors: list[str],
+    include: dict[str, list] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Split DataFrame into experimental groups.
+    """Split a DataFrame into experimental groups.
+
+    Study-agnostic by construction: ``factors`` names the columns that define a
+    cell. Any number, any order, no required column names, no built-in filtering.
+
+        define_groups(df, factors=["timepoint", "group"])
+        define_groups(df, factors=["cohort", "dose", "sex"])
+        define_groups(df, factors=["dose"], include={"cohort": ["p60"]})
 
     Parameters
     ----------
     df : DataFrame
-        Must contain 'cohort', 'dose', and 'sex' columns.
-    grouping : str
-        Grouping strategy:
-        - ``'full'``: sex x PND x dose (24 groups) — descriptive only
-        - ``'pnd_dose'``: PND x dose (12 groups) — primary statistical
-        - ``'dose'``: dose only (4 groups) — maximum power
+        Session-level table containing at least the ``factors`` columns.
+    factors : list of str
+        Columns to group by, in label order. Labels join the values with ``_``.
+    include : dict, optional
+        Per-column whitelist, e.g. ``{"cohort": ["p60", "p90"]}``. Rows whose
+        value is not listed are dropped. Filtering is never implicit -- if you
+        want rows excluded, say so here.
 
     Returns
     -------
     groups : dict[str, DataFrame]
-        Mapping from group label to subset DataFrame.
-        Labels use format like "p60_control", "p60_low_M", etc.
+        Label -> subset, index reset.
+
+    Raises
+    ------
+    ValueError
+        If ``factors`` is empty, or names a column that is not present.
+
+    Notes
+    -----
+    This function previously took ``grouping="full"|"pnd_dose"|"dose"``, which
+    required ``cohort``/``dose``/``sex`` columns and silently dropped any row
+    whose cohort was not ``p30``/``p60``/``p90``. That encoded one study's design
+    into shared code and made the covnet pipeline unusable for every other study.
+    Callers migrate by naming the columns explicitly:
+
+        grouping="full"      ->  factors=["cohort", "dose", "sex"]
+        grouping="pnd_dose"  ->  factors=["cohort", "dose"]
+        grouping="dose"      ->  factors=["dose"]
+
+    and adding ``include={"cohort": ["p30", "p60", "p90"]}`` if the old cohort
+    whitelist was actually wanted rather than merely inherited.
     """
-    # Exclude unknown-cohort sessions
-    df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()
+    if not factors:
+        raise ValueError(
+            "define_groups requires factors=[...] naming the columns that "
+            "define a cell, e.g. factors=['timepoint', 'group']."
+        )
+    missing = [c for c in factors if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"define_groups: column(s) {missing} not in the DataFrame. "
+            f"Available: {sorted(df.columns)[:12]}..."
+        )
+
+    df = df.copy()
+    if include:
+        for col, allowed in include.items():
+            if col not in df.columns:
+                raise ValueError(f"include: column {col!r} not in the DataFrame")
+            df = df[df[col].isin(list(allowed))].copy()
 
     groups = {}
-    if grouping == "full":
-        for (cohort, dose, sex), subset in df.groupby(["cohort", "dose", "sex"]):
-            label = f"{cohort}_{dose}_{sex}"
-            groups[label] = subset.reset_index(drop=True)
-    elif grouping == "pnd_dose":
-        for (cohort, dose), subset in df.groupby(["cohort", "dose"]):
-            label = f"{cohort}_{dose}"
-            groups[label] = subset.reset_index(drop=True)
-    elif grouping == "dose":
-        for dose, subset in df.groupby("dose"):
-            label = str(dose)
-            groups[label] = subset.reset_index(drop=True)
-    else:
-        raise ValueError(f"Unknown grouping: {grouping!r}. Use 'full', 'pnd_dose', or 'dose'.")
+    for key, subset in df.groupby(factors, dropna=True):
+        if not isinstance(key, tuple):
+            key = (key,)
+        groups["_".join(str(k) for k in key)] = subset.reset_index(drop=True)
 
     for label, subset in sorted(groups.items()):
         logger.info(f"  Group {label}: n={len(subset)}")
