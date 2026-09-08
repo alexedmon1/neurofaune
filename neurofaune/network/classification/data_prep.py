@@ -35,12 +35,20 @@ def _load_filter_select(
     cohort_filter: Optional[str] = None,
     exclusion_csv: Optional[Union[str, Path]] = None,
     standardize: bool = True,
+    # Appended, not inserted: both call sites pass positionally, so adding a
+    # parameter mid-signature silently rebinds standardize= to it.
+    meta_cols: Optional[list] = None,
 ) -> dict:
     """Shared data loading, filtering, feature selection, and scaling.
 
     Returns dict with: df, X, feature_names, scaler.
     """
-    df, roi_cols = load_and_prepare_data(wide_csv, exclusion_csv)
+    # This module is dose/sex-shaped by design (it filters cohorts and targets
+    # dose), so it declares those as metadata. Generalising THIS layer -- the
+    # loaders -- is separate follow-up work; the declaration is what stops the
+    # columns being correlated as if they were ROIs.
+    df, roi_cols = load_and_prepare_data(
+        wide_csv, exclusion_csv, meta_cols=list(meta_cols or ("dose", "sex")))
 
     # Filter to known cohorts (drop ses-unknown)
     df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()

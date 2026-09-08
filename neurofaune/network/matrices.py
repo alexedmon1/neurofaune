@@ -9,7 +9,7 @@ correlation matrices.
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -18,11 +18,16 @@ from scipy import stats
 logger = logging.getLogger(__name__)
 
 
+#: Columns this loader creates or requires structurally, in any study.
+STRUCTURAL_COLS = frozenset({"subject", "session", "cohort"})
+
+
 def load_and_prepare_data(
     wide_csv: Union[str, Path],
     exclusion_csv: Optional[Union[str, Path]] = None,
     max_zero_frac: float = 0.2,
     max_subject_zero_frac: float = 0.10,
+    meta_cols: Optional[Iterable[str]] = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Load ROI wide CSV, apply exclusions, and filter unreliable ROIs.
 
@@ -40,6 +45,14 @@ def load_and_prepare_data(
     max_subject_zero_frac : float
         Maximum fraction of ROIs allowed to be zero for a single subject.
         Subjects exceeding this are dropped (likely FOV coverage issues).
+    meta_cols : iterable of str, optional
+        Columns that are metadata, not ROI measurements -- the study's design
+        columns (``group``, ``timepoint``, ``dose``, ``sex``, ...) and any
+        numeric covariate (``age_days``, ``weight_g``, ...). ``subject``,
+        ``session`` and ``cohort`` are always excluded and need not be listed.
+        Non-numeric columns that are neither structural nor declared raise,
+        since they cannot be measurements; numeric ones cannot be detected and
+        MUST be declared or they are treated as ROIs.
         Default 0.10.
 
     Returns
@@ -67,11 +80,33 @@ def load_and_prepare_data(
         n_excluded = n_start - len(df)
         logger.info(f"Excluded {n_excluded} sessions ({len(df)} remaining)")
 
-    # Identify ROI columns (everything except metadata)
-    meta_cols = {"subject", "session", "dose", "sex", "cohort"}
-    # Also treat AUC and other non-ROI numeric columns as metadata
-    meta_cols.update(c for c in df.columns if c.startswith("AUC_") or c in ("auc", "log_auc"))
-    all_roi_cols = [c for c in df.columns if c not in meta_cols]
+    # Identify ROI columns by EXCLUSION, which means anything undeclared is
+    # treated as a brain region. That used to be a hardcoded set --
+    # {subject, session, dose, sex, cohort} -- so a study whose design columns
+    # were named anything else had them silently Spearman-correlated against
+    # real ROIs as though they were regions. Declared metadata is now the
+    # caller's to state, and anything left over that cannot be an ROI is an
+    # error rather than a silent corruption.
+    declared = set(STRUCTURAL_COLS) | set(meta_cols or ())
+    declared.update(c for c in df.columns
+                    if c.startswith("AUC_") or c in ("auc", "log_auc"))
+    candidates = [c for c in df.columns if c not in declared]
+
+    # An ROI column holds a measurement, so it must be numeric. A non-numeric
+    # leftover is a design/metadata column the caller forgot to declare -- name
+    # it rather than correlating a string column against the brain.
+    non_numeric = [c for c in candidates
+                   if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        raise ValueError(
+            f"load_and_prepare_data: column(s) {sorted(non_numeric)} are not "
+            f"numeric, so they cannot be ROI measurements, and they were not "
+            f"declared as metadata. Pass meta_cols={sorted(non_numeric)} (plus "
+            f"any numeric metadata such as age or weight, which cannot be "
+            f"detected automatically). Structural columns "
+            f"{sorted(STRUCTURAL_COLS)} are always excluded."
+        )
+    all_roi_cols = candidates
 
     # Separate region ROIs from territory ROIs
     region_cols = [c for c in all_roi_cols if not c.startswith("territory_")]
@@ -241,44 +276,79 @@ def bilateral_average(
 
 
 def define_groups(
-    df: pd.DataFrame, grouping: str = "pnd_dose"
+    df: pd.DataFrame,
+    factors: list[str],
+    include: dict[str, list] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Split DataFrame into experimental groups.
+    """Split a DataFrame into experimental groups.
+
+    Study-agnostic by construction: ``factors`` names the columns that define a
+    cell. Any number, any order, no required column names, no built-in filtering.
+
+        define_groups(df, factors=["timepoint", "group"])
+        define_groups(df, factors=["cohort", "dose", "sex"])
+        define_groups(df, factors=["dose"], include={"cohort": ["p60"]})
 
     Parameters
     ----------
     df : DataFrame
-        Must contain 'cohort', 'dose', and 'sex' columns.
-    grouping : str
-        Grouping strategy:
-        - ``'full'``: sex x PND x dose (24 groups) — descriptive only
-        - ``'pnd_dose'``: PND x dose (12 groups) — primary statistical
-        - ``'dose'``: dose only (4 groups) — maximum power
+        Session-level table containing at least the ``factors`` columns.
+    factors : list of str
+        Columns to group by, in label order. Labels join the values with ``_``.
+    include : dict, optional
+        Per-column whitelist, e.g. ``{"cohort": ["p60", "p90"]}``. Rows whose
+        value is not listed are dropped. Filtering is never implicit -- if you
+        want rows excluded, say so here.
 
     Returns
     -------
     groups : dict[str, DataFrame]
-        Mapping from group label to subset DataFrame.
-        Labels use format like "p60_control", "p60_low_M", etc.
+        Label -> subset, index reset.
+
+    Raises
+    ------
+    ValueError
+        If ``factors`` is empty, or names a column that is not present.
+
+    Notes
+    -----
+    This function previously took ``grouping="full"|"pnd_dose"|"dose"``, which
+    required ``cohort``/``dose``/``sex`` columns and silently dropped any row
+    whose cohort was not ``p30``/``p60``/``p90``. That encoded one study's design
+    into shared code and made the covnet pipeline unusable for every other study.
+    Callers migrate by naming the columns explicitly:
+
+        grouping="full"      ->  factors=["cohort", "dose", "sex"]
+        grouping="pnd_dose"  ->  factors=["cohort", "dose"]
+        grouping="dose"      ->  factors=["dose"]
+
+    and adding ``include={"cohort": ["p30", "p60", "p90"]}`` if the old cohort
+    whitelist was actually wanted rather than merely inherited.
     """
-    # Exclude unknown-cohort sessions
-    df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()
+    if not factors:
+        raise ValueError(
+            "define_groups requires factors=[...] naming the columns that "
+            "define a cell, e.g. factors=['timepoint', 'group']."
+        )
+    missing = [c for c in factors if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"define_groups: column(s) {missing} not in the DataFrame. "
+            f"Available: {sorted(df.columns)[:12]}..."
+        )
+
+    df = df.copy()
+    if include:
+        for col, allowed in include.items():
+            if col not in df.columns:
+                raise ValueError(f"include: column {col!r} not in the DataFrame")
+            df = df[df[col].isin(list(allowed))].copy()
 
     groups = {}
-    if grouping == "full":
-        for (cohort, dose, sex), subset in df.groupby(["cohort", "dose", "sex"]):
-            label = f"{cohort}_{dose}_{sex}"
-            groups[label] = subset.reset_index(drop=True)
-    elif grouping == "pnd_dose":
-        for (cohort, dose), subset in df.groupby(["cohort", "dose"]):
-            label = f"{cohort}_{dose}"
-            groups[label] = subset.reset_index(drop=True)
-    elif grouping == "dose":
-        for dose, subset in df.groupby("dose"):
-            label = str(dose)
-            groups[label] = subset.reset_index(drop=True)
-    else:
-        raise ValueError(f"Unknown grouping: {grouping!r}. Use 'full', 'pnd_dose', or 'dose'.")
+    for key, subset in df.groupby(factors, dropna=True):
+        if not isinstance(key, tuple):
+            key = (key,)
+        groups["_".join(str(k) for k in key)] = subset.reset_index(drop=True)
 
     for label, subset in sorted(groups.items()):
         logger.info(f"  Group {label}: n={len(subset)}")
