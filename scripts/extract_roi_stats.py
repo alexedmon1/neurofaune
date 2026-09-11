@@ -174,6 +174,10 @@ def main():
         stats.insert(0, 'subject', subject)
         stats.insert(1, 'session', session)
         stats.insert(2, 'metric', metric)
+        # Self-describing: the same metric under a different coverage rule is a
+        # different measurement, and a consumer must not be able to merge them.
+        stats.insert(3, 'coverage_mode',
+                     'common' if args.common_coverage else 'per_session')
         frames.append(stats)
         if index % 25 == 0 or index == len(found):
             logger.info('  [%d/%d] %s %s %s', index, len(found), subject, session, metric)
@@ -190,8 +194,8 @@ def main():
     # Long format for the modelling side: one row per statistic.
     stat_columns = ['mean', 'sd', 'median'] + [f'p{int(q)}' for q in args.percentiles]
     long = wide.melt(
-        id_vars=['subject', 'session', 'metric', 'roi_name', 'label_id',
-                 'n_voxels', 'n_covered', 'coverage'],
+        id_vars=['subject', 'session', 'metric', 'coverage_mode', 'roi_name',
+                 'label_id', 'n_voxels', 'n_covered', 'coverage'],
         value_vars=[c for c in stat_columns if c in wide.columns],
         var_name='statistic', value_name='value')
     long_path = args.output_dir / f'roi_stats_{args.modality}{suffix}_long.csv'

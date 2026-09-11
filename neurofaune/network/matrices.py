@@ -19,7 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 #: Columns this loader creates or requires structurally, in any study.
-STRUCTURAL_COLS = frozenset({"subject", "session", "cohort"})
+#: ``total_brain_mm3`` travels with the structural-covariance input as the
+#: normalisation denominator. It is not a node -- correlating a global total
+#: against the parts it normalised would put the confound straight back into the
+#: network -- so it is excluded here rather than left to each caller's meta_cols.
+STRUCTURAL_COLS = frozenset({"subject", "session", "cohort", "total_brain_mm3"})
 
 
 def load_and_prepare_data(

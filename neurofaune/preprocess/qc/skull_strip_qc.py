@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -333,3 +334,87 @@ def skull_strip_html_section(
 
     html += '</div>\n'
     return html
+
+
+def plot_mask_comparison_mosaic(
+    original_data: np.ndarray,
+    masks: "Dict[str, np.ndarray]",
+    subject: str,
+    session: str,
+    figures_dir: Path,
+    colors: Optional[Dict[str, str]] = None,
+    max_cols: int = 8,
+    max_slices: int = 60,
+    axis: int = 2,
+) -> Path:
+    """Mosaic of the UNSTRIPPED image with two or more mask outlines overlaid.
+
+    Unlike :func:`plot_slicesdir_mosaic`, which shows the stripped result, this
+    keeps the full image visible and draws each mask as a contour. That is the view
+    needed to check a refinement: what matters is the tissue OUTSIDE the old
+    boundary -- an olfactory bulb the strip discarded is invisible in a mosaic of
+    the stripped image, because it was multiplied away.
+
+    Slices are chosen where the masks disagree most, so the frames shown are the
+    ones that carry the evidence rather than an even sample.
+    """
+    names = list(masks)
+    bools = {k: (v > 0) for k, v in masks.items()}
+    colors = colors or dict(zip(names, ['red', 'lime', 'cyan', 'yellow']))
+
+    # Rank slices by disagreement between the first two masks; fall back to extent.
+    if len(names) >= 2:
+        a, b = bools[names[0]], bools[names[1]]
+        disagree = (a ^ b).sum(axis=tuple(i for i in range(3) if i != axis))
+    else:
+        disagree = bools[names[0]].sum(axis=tuple(i for i in range(3) if i != axis))
+    candidates = np.where(disagree > 0)[0]
+    if candidates.size == 0:
+        candidates = np.arange(original_data.shape[axis])
+    if candidates.size > max_slices:
+        order = candidates[np.argsort(disagree[candidates])[::-1][:max_slices]]
+        slice_indices = np.sort(order)
+    else:
+        slice_indices = candidates
+
+    n_show = len(slice_indices)
+    n_cols = min(max_cols, n_show)
+    n_rows = int(np.ceil(n_show / n_cols))
+    vmax = (np.percentile(original_data[original_data > 0], 99)
+            if np.any(original_data > 0) else 1.0)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.0 * n_cols, 2.0 * n_rows))
+    axes = np.atleast_2d(axes)
+    if n_rows == 1 and n_cols == 1:
+        axes = axes.reshape(1, 1)
+
+    for idx, slice_idx in enumerate(slice_indices):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row, col]
+        img = np.rot90(np.take(original_data, slice_idx, axis=axis))
+        ax.imshow(img, cmap='gray', vmin=0, vmax=vmax, interpolation='nearest')
+        for name in names:
+            plane = np.rot90(np.take(bools[name], slice_idx, axis=axis))
+            if plane.any():
+                ax.contour(plane.astype(float), levels=[0.5],
+                           colors=colors[name], linewidths=0.8)
+        ax.text(0.02, 0.98, str(int(slice_idx)), transform=ax.transAxes,
+                fontsize=7, color='white', va='top', ha='left',
+                bbox=dict(boxstyle='round,pad=0.1', fc='black', alpha=0.5))
+        ax.axis('off')
+
+    for idx in range(n_show, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row, col].axis('off')
+
+    handles = [Line2D([0], [0], color=colors[n], lw=2, label=n) for n in names]
+    fig.legend(handles=handles, loc='lower center', ncol=len(names), frameon=False)
+    fig.suptitle(f'Brain mask comparison: {subject} {session} '
+                 f'(unstripped image, slices ranked by disagreement)',
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+
+    output_file = figures_dir / f'{subject}_{session}_mask_comparison_mosaic.png'
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    return output_file

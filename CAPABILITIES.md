@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 177 across 10 stages.
+**Entry points:** 180 across 10 stages.
 
 
 ## analysis
@@ -79,6 +79,7 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 | `extract_all_subjects` | `neurofaune.network.roi_extraction` | Extract ROI means for all subjects, one DataFrame per metric. | — |
 | `extract_roi_means` | `neurofaune.network.roi_extraction` | Compute mean metric value within each labeled ROI, over COVERED voxels only. | — |
 | `extract_roi_stats` | `neurofaune.network.roi_extraction` | Per-ROI distribution of a metric, not just its mean. | — |
+| `build_covnet_table` | `neurofaune.network.structural_covariance` | Join phenotype + total brain volume onto a node table and normalise. | — |
 | `compute_subject_thickness` | `neurofaune.network.thickness` | Per-cortical-region plane-restricted thickness for one subject-session. | — |
 
 ## preprocess (qc)
@@ -94,6 +95,8 @@ _Generated from the code by `neurofaune capabilities` (v0.8.0a0)._ Do not edit b
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `compute_brain_mask_qc` | `neurofaune.preprocess.utils.atlas_guided_strip` | Check a refined mask and say which gate failed. | — |
+| `segment_brain_atlas_guided` | `neurofaune.preprocess.utils.atlas_guided_strip` | Refined brain mask from the raw image, an atlas-derived seed and the labels. | — |
 | `select_best` | `neurofaune.preprocess.utils.bet4animal` | Pick the best candidate (pure function — unit-testable without FSL). | — |
 | `degibbs_dwi` | `neurofaune.preprocess.utils.dwi_denoise` | Remove Gibbs ringing from a 3-D/4-D image (slices along axis 2). Returns ``out_file``. | — |
 | `denoise_dwi_mppca` | `neurofaune.preprocess.utils.dwi_denoise` | MP-PCA denoise a 4-D DWI series. Returns ``out_file``. | — |

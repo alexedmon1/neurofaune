@@ -262,6 +262,33 @@ three-class model puts myelin-dense nuclei in the WM class (thalamus 89% WM).
 Morphometry is native-space only. In atlas space every subject shares one mask, so
 per-region volumes are identical by construction.
 
+### Structural covariance runs on covnet, not on new machinery
+
+`network/structural_covariance.py` reshapes the morphometry tables into the wide
+table `CovNetAnalysis` already reads (`scripts/run_covnet_morphometry.py` drives
+it). It adds no statistics. Two rules travel with it:
+
+- **Always remove global head size.** Regional volumes share one size factor, so a
+  raw-volume covariance matrix is a picture of how big the animals are — nearly
+  every edge positive. Default is to regress each node on total brain volume, sex
+  and cohort and correlate the residuals, pooled across the sample (within a group
+  only TBV varies, and fitting nuisance terms inside a cell of n≈10 costs more than
+  it removes).
+- **Node count is bounded by group size, not session count.** Every edge is a
+  correlation across the subjects *in one group*. Region-level SCN needs a much
+  larger cohort than the ~10-12 per cell these designs give.
+- **Nodes must not nest.** The composite structures overlap by design
+  (`subcortical` contains hippocampus/amygdala/thalamus/striatum, `fiber_tracts`
+  contains the named tracts, `cerebellum_any` is its own GM/WM split summed), which
+  is fine for volumes and fatal for a network — those edges are the label sets, not
+  the anatomy. `prune_overlapping_nodes` drops them from `structure_labels.json`,
+  leaving 12 nodes on the SIGMA InVivo group file.
+
+`define_groups` derives cohorts from the data rather than assuming p30/p60/p90, and
+raises when a filter leaves nothing — the comparison helpers likewise read the dose
+levels off the group labels. Do not reintroduce a hardcoded cohort or dose list;
+the package serves more than one study.
+
 ## Key Design Constraints
 
 1. **T2w is primary anatomical modality** (not T1w) - better rodent brain contrast

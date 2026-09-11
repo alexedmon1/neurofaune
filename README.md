@@ -708,6 +708,67 @@ paths:
     covnet: ${paths.study_root}/network/covnet
 ```
 
+**Cohorts** are read from the data. `CovNetAnalysis.prepare(cohorts=[...])` restricts
+the analysis; the default keeps every cohort present except `ses-unknown`, and an
+empty result raises rather than returning no groups. Pass `cohort_order=` when the
+timepoint names do not sort chronologically — cross-timepoint comparisons use that
+order to decide which cohort is "earlier".
+
+### Structural Covariance Networks
+
+The same machinery run on morphometry instead of a metric mean: correlate regional
+*volumes* across subjects within a group, then compare the resulting networks.
+`scripts/run_covnet_morphometry.py` bridges `extract_morphometry.py` to CovNet.
+
+```bash
+# 1. volumes (see "Composite morphometry" above)
+uv run python scripts/extract_morphometry.py \
+    --derivatives-dir /path/to/derivatives \
+    --parcellation /path/to/SIGMA_study_space/..._Atlas.nii.gz \
+    --labels-csv /path/to/SIGMA_..._Labels.csv \
+    --voxel-scale 10 --output-dir /path/to/network/morphometry
+
+# 2. structural covariance
+uv run python scripts/run_covnet_morphometry.py \
+    --morphometry-dir /path/to/network/morphometry \
+    --study-tracker /path/to/study_tracker.csv \
+    --config /path/to/config.yaml \
+    --exclusion-csv /path/to/exclusions/anat_exclusions.csv \
+    --tests abs-distance graph --n-perm 5000 --force
+```
+
+Two defaults are deliberate and worth understanding before overriding them:
+
+- **`--normalise residual`.** Regional volumes all scale with the animal, so a
+  covariance matrix built from raw volumes is dominated by one global size factor
+  and nearly every edge comes out strongly positive. Each node is regressed on
+  total brain volume, sex and cohort, and the residuals are correlated.
+  `--normalise proportion` divides by total brain volume instead; `--normalise none`
+  exists so the inflation can be demonstrated rather than asserted.
+- **`--nodes structures`**, not the 234 regions. Every edge is a correlation
+  *across subjects within one group*, so the sample size is the group size, not the
+  session count. At region level with n≈10–12 per cell the matrix is noise.
+  `--nodes regions --bilateral` halves the node count and is the next step up; full
+  unilateral region-level SCN needs a much larger cohort.
+
+Nodes that nest inside one another are pruned automatically, using the label sets
+`extract_morphometry.py` writes to `structure_labels.json`: `subcortical` contains
+hippocampus/amygdala/thalamus/striatum, `fiber_tracts` contains the named tracts,
+and `cerebellum_any` is the sum of its own GM/WM split — edges between a structure
+and its own parts are high because of the label sets, not the anatomy. Where a
+structure carries both a weighted and an unweighted measure, the aseg convention
+decides: a GM/WM split survives and loses its sum, a discrete nucleus keeps its
+total. On the SIGMA InVivo group file this leaves 12 nodes. `--allow-nested` keeps
+everything; every drop is logged with its reason.
+
+Phenotype comes from either `--participants` (a BIDS `participants.tsv`; the
+`--group-col` column becomes the grouping factor) or `--study-tracker` (the bpa-rat
+`irc.ID`/`dose.level` CSV).
+
+`--nodes thickness` uses the plane-restricted cortical thickness and inherits its
+exploratory status. `--export-only` writes the CovNet input table and a provenance
+JSON without running any test, which is the right first step on a new study.
+
 ### Edge Regression
 
 Edge-level regression testing whether pairwise ROI co-variation scales with a continuous covariate (e.g. log-AUC). Uses NBS-style component extraction with permutation FWER correction. This is appropriate **only for continuous targets** — for categorical group comparisons, use NBS instead. Results are saved under `network/edge_regression/`, separate from CovNet.
