@@ -62,9 +62,15 @@ INPLANE = np.ones((3, 3, 3), bool)
 INPLANE[:, :, ::2] = False
 
 DEFAULT_QC = {
-    'volume_mm3': (1700.0, 2600.0),   # plausible rat brain incl. surface CSF
+    # Physiological plausibility. Widened from an initial 1700-2600 after the first
+    # cohort run: the observed refined range was 2127-2624 mm3, so the old ceiling
+    # flagged a visually correct mask on a technicality.
+    'volume_mm3': (1700.0, 2700.0),
     'atlas_coverage': 0.95,           # fraction of the parcellation inside the mask
     'non_brain_mm3': 400.0,           # tissue well outside the parcellation
+    # Independent of the registration -- see the module docstring.
+    'tissue_fraction': 0.90,          # masked voxels carrying signal, not air
+    'dice_with_initial': 0.70,        # a refinement moves a boundary, not a brain
 }
 
 
@@ -166,14 +172,24 @@ def compute_brain_mask_qc(
     mask: np.ndarray,
     parcellation: np.ndarray,
     voxel_mm3: float,
+    raw: np.ndarray | None = None,
+    initial_mask: np.ndarray | None = None,
     thresholds: dict | None = None,
     anisotropy_axis: int = 2,
+    tissue_factor: float = 2.0,
 ) -> dict:
     """Check a refined mask and say which gate failed.
 
-    Necessary because the union step makes the mask follow the registration: a
-    misregistration produces a mask that looks plausible in isolation. These gates
-    catch it by comparing against the parcellation and against physiology.
+    Pass `raw` and `initial_mask` whenever they are available. Without them only
+    the parcellation-relative checks run, and those cannot see a misregistration --
+    they are computed against a parcellation that a bad registration would have
+    moved along with the mask. Shifting both together by 40 voxels leaves
+    `atlas_coverage` and `non_brain_mm3` exactly unchanged.
+
+    `tissue_fraction` is the share of masked voxels carrying signal above
+    background: a mask sitting partly on air fails it wherever the parcellation
+    went. `dice_with_initial` compares against the pre-existing mask -- a
+    refinement moves a boundary, so a low value means the brain relocated.
     """
     thresholds = {**DEFAULT_QC, **(thresholds or {})}
     atlas_extent = parcellation > 0
@@ -196,6 +212,32 @@ def compute_brain_mask_qc(
         failures.append(f'non-brain {non_brain:.0f} mm3 above '
                         f"{thresholds['non_brain_mm3']:.0f}")
 
-    return {'volume_mm3': volume, 'atlas_coverage': coverage,
-            'non_brain_mm3': non_brain, 'passed': not failures,
-            'failures': failures}
+    result = {'volume_mm3': volume, 'atlas_coverage': coverage,
+              'non_brain_mm3': non_brain,
+              'tissue_fraction': float('nan'), 'dice_with_initial': float('nan')}
+
+    if raw is not None and mask.any():
+        outside = raw[~mask & ~atlas_extent]
+        background = float(np.median(outside)) if outside.size else 0.0
+        if not np.isfinite(background) or background <= 0:
+            background = max(1e-6, float(np.percentile(raw, 5)))
+        fraction = float((raw[mask] > tissue_factor * background).mean())
+        result['tissue_fraction'] = fraction
+        if fraction < thresholds['tissue_fraction']:
+            failures.append(f'tissue fraction {fraction:.1%} below '
+                            f"{thresholds['tissue_fraction']:.0%} -- the mask "
+                            'covers voxels with no signal')
+
+    if initial_mask is not None:
+        initial = initial_mask > 0
+        total = mask.sum() + initial.sum()
+        dice = float(2 * (mask & initial).sum() / total) if total else float('nan')
+        result['dice_with_initial'] = dice
+        if np.isfinite(dice) and dice < thresholds['dice_with_initial']:
+            failures.append(f'Dice with the initial mask {dice:.2f} below '
+                            f"{thresholds['dice_with_initial']:.2f} -- the brain "
+                            'moved rather than the boundary')
+
+    result['passed'] = not failures
+    result['failures'] = failures
+    return result

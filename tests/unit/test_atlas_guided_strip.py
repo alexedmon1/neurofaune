@@ -112,7 +112,8 @@ def test_qc_flags_an_implausible_volume_and_says_so():
 def test_qc_flags_incomplete_atlas_coverage():
     """The failure the whole exercise exists to catch: brain left outside."""
     _, seed, parcellation = _scene()
-    half = seed.copy(); half[11:] = False
+    half = seed.copy()
+    half[11:] = False
     qc = compute_brain_mask_qc(half, parcellation, voxel_mm3=2.5,
                                thresholds={'volume_mm3': (0.0, 1e9)})
     assert not qc['passed']
@@ -139,3 +140,68 @@ def test_qc_reports_every_failure_not_just_the_first():
 def test_default_thresholds_span_a_plausible_rat_brain():
     lo, hi = DEFAULT_QC['volume_mm3']
     assert lo < 2200 < hi          # measured refined masks land ~2100-2400 mm3
+
+
+# --- registration-independent gates ------------------------------------------
+
+def test_parcellation_relative_gates_are_blind_to_misregistration():
+    """The failure this module can cause: mask and parcellation move together.
+
+    Both `atlas_coverage` and `non_brain_mm3` are measured against the
+    parcellation, so a registration error that moves both leaves them untouched.
+    This test exists so that blind spot is never mistaken for a clean bill.
+    """
+    raw, seed, parcellation = _scene()
+    mask = segment_brain_atlas_guided(raw, seed, parcellation)
+    good = compute_brain_mask_qc(mask, parcellation, voxel_mm3=2.5,
+                                 thresholds={'volume_mm3': (0.0, 1e9)})
+    shifted = compute_brain_mask_qc(np.roll(mask, 4, axis=0),
+                                    np.roll(parcellation, 4, axis=0), voxel_mm3=2.5,
+                                    thresholds={'volume_mm3': (0.0, 1e9)})
+    assert shifted['atlas_coverage'] == pytest.approx(good['atlas_coverage'])
+    assert shifted['non_brain_mm3'] == pytest.approx(good['non_brain_mm3'])
+
+
+def test_tissue_fraction_catches_a_mask_sitting_on_air():
+    """Registration-independent: it asks the image, not the parcellation."""
+    raw, seed, parcellation = _scene()
+    mask = segment_brain_atlas_guided(raw, seed, parcellation)
+    onto_air = np.roll(mask, 8, axis=0)
+    qc = compute_brain_mask_qc(onto_air, np.roll(parcellation, 8, axis=0),
+                               voxel_mm3=2.5, raw=raw,
+                               thresholds={'volume_mm3': (0.0, 1e9)})
+    assert qc['tissue_fraction'] < 0.9
+    assert any('tissue fraction' in f for f in qc['failures'])
+
+
+def test_dice_with_initial_catches_a_relocated_brain():
+    raw, seed, parcellation = _scene()
+    mask = segment_brain_atlas_guided(raw, seed, parcellation)
+    qc = compute_brain_mask_qc(np.roll(mask, 8, axis=0), parcellation, voxel_mm3=2.5,
+                               initial_mask=mask,
+                               thresholds={'volume_mm3': (0.0, 1e9),
+                                           'atlas_coverage': 0.0})
+    assert qc['dice_with_initial'] < 0.7
+    assert any('moved rather than the boundary' in f for f in qc['failures'])
+
+
+def test_optional_inputs_are_genuinely_optional():
+    """Callers without the raw image still get the parcellation-relative checks."""
+    raw, seed, parcellation = _scene()
+    mask = segment_brain_atlas_guided(raw, seed, parcellation)
+    qc = compute_brain_mask_qc(mask, parcellation, voxel_mm3=2.5,
+                               thresholds={'volume_mm3': (0.0, 1e9)})
+    assert np.isnan(qc['tissue_fraction']) and np.isnan(qc['dice_with_initial'])
+    assert qc['passed']
+
+
+def test_dice_threshold_sits_below_the_observed_range():
+    """0.70 is a catastrophe detector, not a quality score.
+
+    Across 92 real sessions Dice-vs-initial spanned 0.780-0.923 with no Tukey
+    outliers, and it correlates -0.98 with how much non-brain the ORIGINAL mask
+    carried -- i.e. it measures how bad the input was, not how good the output is
+    (correlation with the refined tissue fraction is -0.01). The threshold must
+    therefore sit below the whole observed range.
+    """
+    assert DEFAULT_QC['dice_with_initial'] < 0.78

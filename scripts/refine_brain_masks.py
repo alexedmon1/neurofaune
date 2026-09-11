@@ -154,8 +154,9 @@ def main():
 
         refined = segment_brain_atlas_guided(raw, seed, parcellation)
         voxel_mm3 = float(np.prod(dseg_img.header.get_zooms()[:3])) / 1000.0
-        qc = compute_brain_mask_qc(refined, parcellation, voxel_mm3)
-        before = compute_brain_mask_qc(current, parcellation, voxel_mm3)
+        qc = compute_brain_mask_qc(refined, parcellation, voxel_mm3,
+                                   raw=raw, initial_mask=current)
+        before = compute_brain_mask_qc(current, parcellation, voxel_mm3, raw=raw)
 
         name = 'desc-brain_mask' if args.apply else 'desc-refinedbrain_mask'
         out_p = anat / f'{sub}_{ses}_{name}.nii.gz'
@@ -175,6 +176,9 @@ def main():
                      'atlas_coverage_after': qc['atlas_coverage'],
                      'non_brain_before_mm3': before['non_brain_mm3'],
                      'non_brain_after_mm3': qc['non_brain_mm3'],
+                     'tissue_fraction_before': before['tissue_fraction'],
+                     'tissue_fraction_after': qc['tissue_fraction'],
+                     'dice_with_initial': qc['dice_with_initial'],
                      'qc_passed': qc['passed'],
                      'qc_failures': '; '.join(qc['failures']),
                      'mask': str(out_p), 'montage': montage})
@@ -207,6 +211,10 @@ def main():
                            'after_median': float(df.atlas_coverage_after.median())},
         'non_brain_mm3': {'before_median': float(df.non_brain_before_mm3.median()),
                           'after_median': float(df.non_brain_after_mm3.median())},
+        'tissue_fraction': {'before_median': float(df.tissue_fraction_before.median()),
+                            'after_median': float(df.tissue_fraction_after.median())},
+        'dice_with_initial': {'median': float(df.dice_with_initial.median()),
+                              'min': float(df.dice_with_initial.min())},
     }
     with open(args.output_dir / 'mask_refinement_summary.json', 'w') as fh:
         json.dump(summary, fh, indent=2)
@@ -223,6 +231,12 @@ def main():
     logger.info('non-brain median %.0f -> %.0f mm3',
                 summary['non_brain_mm3']['before_median'],
                 summary['non_brain_mm3']['after_median'])
+    logger.info('tissue fraction median %.1f%% -> %.1f%% (registration-independent)',
+                100 * summary['tissue_fraction']['before_median'],
+                100 * summary['tissue_fraction']['after_median'])
+    logger.info('Dice vs initial mask: median %.3f, min %.3f',
+                summary['dice_with_initial']['median'],
+                summary['dice_with_initial']['min'])
     if summary['n_qc_failed']:
         logger.warning('%d session(s) FAILED QC -- review their montages before '
                        'using them: %s', summary['n_qc_failed'],
