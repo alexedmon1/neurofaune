@@ -389,8 +389,15 @@ def refine_iterative(
                         100 * qc['atlas_coverage'], 100 * target_coverage)
             break
     else:
-        logger.info('  ran the full %d passes without reaching %.0f%% coverage',
-                    iterations, 100 * target_coverage)
+        if iterations > 1:
+            logger.info('  ran all %d passes without reaching %.0f%% coverage',
+                        iterations, 100 * target_coverage)
+        else:
+            # The default, and not a failure: coverage short of target at
+            # iterations=1 only means no further pass was allowed, and further
+            # passes do not help anyway.
+            logger.debug('  single pass, coverage %.1f%% (target %.0f%%)',
+                         100 * history[-1]['atlas_coverage'], 100 * target_coverage)
 
     eligible = [c for c in candidates if c[1]['gates_passed']]
     if not eligible:
