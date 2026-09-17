@@ -9,7 +9,7 @@ correlation matrices.
 import logging
 import re
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -279,6 +279,87 @@ def bilateral_average(
     return df_bilateral, bilateral_cols
 
 
+#: Dose tokens treated as the reference/control level, matched case-insensitively.
+CONTROL_TOKENS = frozenset(
+    {"c", "control", "ctrl", "ctl", "vehicle", "veh", "sham", "untreated", "naive", "0"}
+)
+
+#: Preferred ordering for common dose tokens; anything else sorts after, by name.
+DOSE_ORDER = ("l", "low", "m", "med", "medium", "h", "high")
+
+
+def _split_group_label(
+    label: str, cohorts: Sequence[str] | None = None
+) -> tuple[str, str]:
+    """Split ``"{cohort}_{dose}"`` back into its parts.
+
+    When the cohort values are known they are matched as a prefix (longest first),
+    which is exact even when a cohort or a dose name itself contains an underscore.
+    Without them the split falls back to the last underscore.
+    """
+    if cohorts:
+        for cohort in sorted(cohorts, key=len, reverse=True):
+            prefix = f"{cohort}_"
+            if label.startswith(prefix):
+                return cohort, label[len(prefix):]
+    cohort, _, dose = label.rpartition("_")
+    return cohort, dose
+
+
+def parse_group_labels(
+    group_labels: Sequence[str], cohorts: Sequence[str] | None = None
+) -> dict[str, tuple[str, str]]:
+    """Map each group label to its ``(cohort, dose)`` pair."""
+    return {label: _split_group_label(label, cohorts) for label in group_labels}
+
+
+def cohorts_from_labels(
+    group_labels: Sequence[str],
+    cohorts: Sequence[str] | None = None,
+    cohort_order: Sequence[str] | None = None,
+) -> list[str]:
+    """Cohorts present in `group_labels`, in comparison order.
+
+    Default order is the sorted cohort names, which gives p30 < p60 < p90 for the
+    PND convention. Pass `cohort_order` when the sorted order is not the temporal
+    order (e.g. ``["baseline", "week6", "week12"]``).
+    """
+    observed = {c for c, _ in parse_group_labels(group_labels, cohorts).values()}
+    if cohort_order is not None:
+        ordered = [c for c in cohort_order if c in observed]
+        missing = observed - set(ordered)
+        if missing:
+            logger.warning(
+                f"cohort_order omits {sorted(missing)}; appending them in sorted order"
+            )
+            ordered += sorted(missing)
+        return ordered
+    return sorted(observed)
+
+
+def dose_levels(
+    group_labels: Sequence[str], cohorts: Sequence[str] | None = None
+) -> tuple[str | None, list[str]]:
+    """Split the observed dose levels into ``(control, treatments)``.
+
+    The control level is whichever dose matches :data:`CONTROL_TOKENS`; everything
+    else is a treatment. This replaces the previous hardcoded ``C/L/M/H`` and
+    ``control/low/medium/high`` lists, which silently produced no comparisons for
+    any study using different level names.
+    """
+    doses = {d for _, d in parse_group_labels(group_labels, cohorts).values()}
+    control = next((d for d in sorted(doses) if str(d).lower() in CONTROL_TOKENS), None)
+    treatments = sorted(
+        doses - ({control} if control is not None else set()),
+        key=lambda d: (
+            DOSE_ORDER.index(str(d).lower()) if str(d).lower() in DOSE_ORDER
+            else len(DOSE_ORDER),
+            str(d),
+        ),
+    )
+    return control, treatments
+
+
 def define_groups(
     df: pd.DataFrame,
     factors: list[str],
@@ -455,42 +536,56 @@ def spearman_matrix(data: np.ndarray) -> np.ndarray:
     return corr
 
 
-def default_dose_comparisons(group_labels: list[str]) -> list[tuple[str, str]]:
-    """Generate default comparisons: each dose vs control within each PND.
+def default_dose_comparisons(
+    group_labels: list[str],
+    cohorts: Optional[Sequence[str]] = None,
+    cohort_order: Optional[Sequence[str]] = None,
+) -> list[tuple[str, str]]:
+    """Generate default comparisons: each dose vs control within each cohort.
 
-    Supports both abbreviated labels (p60_C, p60_L) and full dose names
-    (p60_control, p60_low).
+    Cohort and dose levels are read off `group_labels` rather than assumed, so
+    this works for any study naming scheme (``p30/p60/p90`` with ``C/L/M/H`` or
+    ``control/low/medium/high`` as before, but also ``baseline/week6`` with
+    ``sham/cuprizone``). The control level is whichever dose matches
+    :data:`CONTROL_TOKENS`.
 
     Parameters
     ----------
     group_labels : list[str]
         Available group labels.
+    cohorts : sequence of str, optional
+        Known cohort values, used to split labels exactly. Without them the
+        label is split at its last underscore.
+    cohort_order : sequence of str, optional
+        Explicit cohort ordering; defaults to sorted order.
 
     Returns
     -------
     comparisons : list of (str, str)
         Pairs of (treatment, control) group labels.
     """
+    parsed = parse_group_labels(group_labels, cohorts)
+    ordered_cohorts = cohorts_from_labels(group_labels, cohorts, cohort_order)
+    control, treatments = dose_levels(group_labels, cohorts)
+
+    if control is None:
+        logger.warning(
+            f"No control level found among doses "
+            f"{sorted({d for _, d in parsed.values()})}; "
+            f"recognised control tokens: {sorted(CONTROL_TOKENS)}"
+        )
+        return []
+
+    by_key = {(c, d): label for label, (c, d) in parsed.items()}
     comparisons = []
-    pnds = ["p30", "p60", "p90"]
-
-    dose_sets = [
-        {"control": "C", "doses": ["L", "M", "H"]},
-        {"control": "control", "doses": ["low", "medium", "high"]},
-    ]
-
-    for dose_set in dose_sets:
-        for pnd in pnds:
-            control = f"{pnd}_{dose_set['control']}"
-            if control not in group_labels:
-                continue
-            for dose in dose_set["doses"]:
-                treatment = f"{pnd}_{dose}"
-                if treatment in group_labels:
-                    comparisons.append((treatment, control))
-
-        if comparisons:
-            break
+    for cohort in ordered_cohorts:
+        control_label = by_key.get((cohort, control))
+        if control_label is None:
+            continue
+        for dose in treatments:
+            treatment_label = by_key.get((cohort, dose))
+            if treatment_label is not None:
+                comparisons.append((treatment_label, control_label))
 
     if not comparisons:
         logger.warning(
@@ -502,40 +597,37 @@ def default_dose_comparisons(group_labels: list[str]) -> list[tuple[str, str]]:
 
 def cross_timepoint_comparisons(
     group_labels: list[str],
+    cohorts: Optional[Sequence[str]] = None,
+    cohort_order: Optional[Sequence[str]] = None,
 ) -> list[tuple[str, str]]:
-    """Generate cross-PND comparisons within each dose level.
+    """Generate cross-cohort comparisons within each dose level.
 
-    For each dose (C/L/M/H or control/low/medium/high), produces all pairwise
-    PND comparisons (p30 vs p60, p30 vs p90, p60 vs p90).
+    For each dose (control included), produces all pairwise cohort comparisons
+    in cohort order — p30 vs p60, p30 vs p90, p60 vs p90 for the PND convention.
 
     Parameters
     ----------
     group_labels : list[str]
         Available group labels (e.g. ["p30_C", "p30_L", ..., "p90_H"]).
+    cohorts, cohort_order
+        See :func:`default_dose_comparisons`.
 
     Returns
     -------
     comparisons : list of (str, str)
         Pairs of group labels to compare.
     """
-    pnds = ["p30", "p60", "p90"]
-    dose_sets = [
-        ["C", "L", "M", "H"],
-        ["control", "low", "medium", "high"],
-    ]
+    parsed = parse_group_labels(group_labels, cohorts)
+    ordered_cohorts = cohorts_from_labels(group_labels, cohorts, cohort_order)
+    control, treatments = dose_levels(group_labels, cohorts)
+    doses = ([control] if control is not None else []) + treatments
 
-    # Detect which naming convention is used
-    doses = dose_sets[0]  # default
-    for candidate in dose_sets:
-        if any(f"{pnds[0]}_{d}" in group_labels for d in candidate):
-            doses = candidate
-            break
-
+    by_key = {(c, d): label for label, (c, d) in parsed.items()}
     comparisons = []
     for dose in doses:
-        groups_for_dose = [f"{p}_{dose}" for p in pnds if f"{p}_{dose}" in group_labels]
-        for i, ga in enumerate(groups_for_dose):
-            for gb in groups_for_dose[i + 1 :]:
+        present = [by_key[(c, dose)] for c in ordered_cohorts if (c, dose) in by_key]
+        for i, ga in enumerate(present):
+            for gb in present[i + 1:]:
                 comparisons.append((ga, gb))
 
     return comparisons
@@ -543,48 +635,49 @@ def cross_timepoint_comparisons(
 
 def cross_dose_timepoint_comparisons(
     group_labels: list[str],
+    cohorts: Optional[Sequence[str]] = None,
+    cohort_order: Optional[Sequence[str]] = None,
 ) -> list[tuple[str, str]]:
     """Generate cross-dose-cross-timepoint comparisons.
 
-    Pairs each dosed group at an earlier PND with controls at a later PND.
-    Tests whether BPA-exposed young animals resemble older controls
-    (accelerated maturation hypothesis).
+    Pairs each dosed group at an earlier cohort with controls at a later one.
+    Tests whether exposed young animals resemble older controls (accelerated
+    maturation hypothesis). "Earlier" and "later" follow the cohort order, which
+    is sorted order unless `cohort_order` says otherwise — pass it explicitly
+    whenever the timepoint names do not sort chronologically.
 
     Parameters
     ----------
     group_labels : list[str]
         Available group labels (e.g. ["p30_C", "p30_L", ..., "p90_H"]).
+    cohorts, cohort_order
+        See :func:`default_dose_comparisons`.
 
     Returns
     -------
     comparisons : list of (str, str)
         Pairs of (treatment, control) group labels. Treatment is a dosed
-        group at an earlier PND, control is a control group at a later PND.
+        group at an earlier cohort, control is a control group at a later one.
     """
-    pnds = ["p30", "p60", "p90"]
-    dose_sets = [
-        {"control": "C", "doses": ["L", "M", "H"]},
-        {"control": "control", "doses": ["low", "medium", "high"]},
-    ]
+    parsed = parse_group_labels(group_labels, cohorts)
+    ordered_cohorts = cohorts_from_labels(group_labels, cohorts, cohort_order)
+    control, treatments = dose_levels(group_labels, cohorts)
 
-    # Detect which naming convention is used
-    naming = dose_sets[0]  # default
-    for candidate in dose_sets:
-        if any(f"{pnds[0]}_{candidate['control']}" in group_labels
-               or f"{pnds[0]}_{d}" in group_labels for d in candidate["doses"]):
-            naming = candidate
-            break
+    if control is None:
+        logger.warning("No control level found; cross-dose-timepoint needs one")
+        return []
 
+    by_key = {(c, d): label for label, (c, d) in parsed.items()}
     comparisons = []
-    for i, early_pnd in enumerate(pnds):
-        for later_pnd in pnds[i + 1:]:
-            control_key = f"{later_pnd}_{naming['control']}"
-            if control_key not in group_labels:
+    for i, early in enumerate(ordered_cohorts):
+        for later in ordered_cohorts[i + 1:]:
+            control_label = by_key.get((later, control))
+            if control_label is None:
                 continue
-            for dose in naming["doses"]:
-                treatment_key = f"{early_pnd}_{dose}"
-                if treatment_key in group_labels:
-                    comparisons.append((treatment_key, control_key))
+            for dose in treatments:
+                treatment_label = by_key.get((early, dose))
+                if treatment_label is not None:
+                    comparisons.append((treatment_label, control_label))
 
     return comparisons
 

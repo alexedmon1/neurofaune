@@ -263,7 +263,15 @@ def test_build_covnet_table_averages_bilateral_pairs():
 
 
 def test_total_brain_volume_is_not_correlated_as_a_node(tmp_path):
-    """The denominator ships with the table for provenance; it must not be a node."""
+    """The denominator ships with the table for provenance; it must not be a node.
+
+    Design columns are declared via ``meta_cols`` -- the loader treats anything
+    undeclared and numeric as an ROI. The point of this test is that
+    ``total_brain_mm3`` needs no such declaration: it is in ``STRUCTURAL_COLS``,
+    because correlating a global total against the parts it normalised would put
+    the confound straight back into the network, and leaving that to each caller
+    to remember is how it gets forgotten.
+    """
     from neurofaune.network.matrices import load_and_prepare_data
 
     df = pd.DataFrame({
@@ -278,7 +286,7 @@ def test_total_brain_volume_is_not_correlated_as_a_node(tmp_path):
     csv = tmp_path / "roi_structures_volume_wide.csv"
     df.to_csv(csv, index=False)
 
-    _, roi_cols = load_and_prepare_data(csv)
+    _, roi_cols = load_and_prepare_data(csv, meta_cols=["dose", "sex"])
     assert TBV_COLUMN not in roi_cols
     assert sorted(roi_cols) == ["cerebellum_GM", "hippocampus_any"]
 
