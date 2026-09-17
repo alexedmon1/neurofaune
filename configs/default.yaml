@@ -156,6 +156,35 @@ anatomical:
     mrf_radius: [1, 1, 1]          # MRF neighborhood radius
     tissue_confidence_threshold: 0.35  # Min probability for tissue assignment in segmentation
     morphological_closing_iterations: 2  # Closing iterations for mask cleanup
+
+    # SECOND-PASS refinement, run after the initial strip and the registration it
+    # enables. Not a peer of the methods above: those run before any registration
+    # exists, this one needs one. Default on for T2w -- measured over 92 sessions
+    # the first-pass mask keeps a median 515 mm3 of non-brain while clipping ~28%
+    # of the olfactory bulb, and refinement takes tissue fraction 90.3% -> 98.9%.
+    refine:
+      method: "atlas_iterative"     # 'atlas_iterative' or 'none'
+      # Passes stop once the mask covers `target_coverage` of the parcellation from
+      # the ORIGINAL registration, held fixed. Convergence is deliberately NOT the
+      # stop rule: each pass registers to the previously stripped image, so a clipped
+      # mask teaches the next pass to clip further. On sub-10C/ses-1 three passes
+      # reached |dVolume| = 1 mm3 while olfactory-bulb retention fell 97.6% -> 75.9%.
+      # 1 by default because re-registration never once helped: over 16 sessions
+      # spanning the full range of initial mask quality, atlas coverage against the
+      # fixed reference fell at EVERY session and pass 1 was selected 16/16. The
+      # damage was largest where the initial mask was worst (sub-4C/ses-1, 98.5% ->
+      # 91.0%), because a one-shot SyN onto a badly stripped subject goes furthest
+      # wrong. Raise this only with a coverage table to justify it.
+      iterations: 1                 # cap on passes; >1 re-registers from pass 2 on
+      target_coverage: 0.99         # stop here; the best-covering pass is kept
+      tolerance_mm3: 25             # diagnostic only -- marks a pass as settled
+      tissue_factor: 2.0            # a voxel counts as tissue above this x background
+      qc:
+        volume_mm3: [1700, 2700]    # plausible rat brain incl. surface CSF
+        atlas_coverage: 0.95        # parcellation-relative -- blind to misregistration
+        non_brain_mm3: 400          # parcellation-relative -- same blind spot
+        tissue_fraction: 0.90       # registration-INDEPENDENT: masked voxels with signal
+        dice_with_initial: 0.70     # registration-INDEPENDENT: catastrophe detector only
     foreground_otsu_multiplier: 0.3     # Otsu threshold multiplier for foreground mask
     # Adaptive BET parameters (used in atropos_bet two-pass method)
     adaptive_bet:
@@ -235,6 +264,16 @@ diffusion:
   skull_strip:
     method: "atropos_bet"          # 'atropos_bet', 'atropos', 'bet', or 'auto'
     n_classes: 3                   # 3-class: brightest class = brain (proven for DWI b0)
+
+    # Off by default for non-anatomical modalities. The mechanism is modality-
+    # agnostic -- it needs a raw image, an atlas mask and a parcellation, nothing
+    # T2w-specific -- but it has only been validated on T2w. DWI, MSME and BOLD are
+    # thin slabs at lower resolution (13.5, 11.0 and 16.8 mm against the T2w's
+    # 32.8), so the atlas extent reaches well outside the acquisition and the
+    # tissue-fraction gate would need re-thresholding per modality before this can
+    # be trusted there.
+    refine:
+      method: "none"
 
   # Brain extraction method for DWI (legacy key, use skull_strip instead)
   brain_extraction:

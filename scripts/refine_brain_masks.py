@@ -44,8 +44,10 @@ from neurofaune.preprocess.qc.skull_strip_qc import (  # noqa: E402
     plot_mask_comparison_mosaic,
 )
 from neurofaune.preprocess.utils.atlas_guided_strip import (  # noqa: E402
+    DEFAULT_TARGET_COVERAGE,
+    DEFAULT_TOLERANCE_MM3,
     compute_brain_mask_qc,
-    segment_brain_atlas_guided,
+    refine_iterative,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -92,6 +94,57 @@ def warp_atlas_mask(atlas_mask, reference, transforms, invert, output):
     return output
 
 
+def _register_fn(args, anat, sub, ses, raw_p, work):
+    """Build register(mask) -> (atlas_mask, parcellation) for the iterative loop.
+
+    Brain-to-brain registration of the atlas onto the subject stripped with the
+    current mask. Well conditioned, unlike registering the atlas's full head to the
+    subject's -- that settles either on the brain or on a scaled-up fit to the wider
+    subject FOV, and repeats of the identical command returned 2243, 3956, 3986 and
+    2394 mm3.
+
+    Uses antsRegistrationSyN.sh rather than a Python binding, matching how
+    neurofaune drives ANTs elsewhere and avoiding a heavyweight dependency.
+    """
+    template = args.atlas_dir / 'SIGMA_InVivo_Brain_Template_Masked.nii.gz'
+    atlas_mask = args.atlas_dir / 'SIGMA_InVivo_Brain_Mask.nii.gz'
+    labels = args.atlas_dir / 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz'
+    raw_img = nib.load(str(raw_p))
+    raw = np.asarray(raw_img.dataobj, dtype=np.float32)
+    counter = {'n': 0}
+
+    def register(mask):
+        counter['n'] += 1
+        tag = f'{sub}_{ses}_it{counter["n"]}'
+        stripped = work / f'{tag}_stripped.nii.gz'
+        nib.save(nib.Nifti1Image((raw * mask).astype(np.float32), raw_img.affine,
+                                 raw_img.header), str(stripped))
+        prefix = work / f'{tag}_'
+        result = subprocess.run(
+            ['antsRegistrationSyN.sh', '-d', '3', '-f', str(stripped),
+             '-m', str(template), '-o', str(prefix), '-t', 's', '-n', '4'],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f'antsRegistrationSyN failed:\n{result.stderr[-600:]}')
+
+        transforms = [f'{prefix}1Warp.nii.gz', f'{prefix}0GenericAffine.mat']
+        out = {}
+        for name, source, interp in (('mask', atlas_mask, 'NearestNeighbor'),
+                                     ('labels', labels, 'GenericLabel')):
+            dest = work / f'{tag}_{name}.nii.gz'
+            command = ['antsApplyTransforms', '-d', '3', '-i', str(source),
+                       '-r', str(stripped), '-o', str(dest), '-n', interp, '--float', '1']
+            for t in transforms:
+                command += ['-t', t]
+            r2 = subprocess.run(command, capture_output=True, text=True)
+            if r2.returncode != 0:
+                raise RuntimeError(f'antsApplyTransforms failed:\n{r2.stderr[-400:]}')
+            out[name] = np.asarray(nib.load(str(dest)).dataobj)
+        return out['mask'] > 0.5, out['labels'].astype(np.int32)
+
+    return register
+
+
 def find_raw(bids_dir, sub, ses, shape):
     """The unstripped anatomical whose grid matches the derivatives."""
     for p in sorted((Path(bids_dir) / sub / ses / 'anat').glob(
@@ -113,8 +166,22 @@ def main():
                         help='overwrite desc-brain_mask (default: write '
                              'desc-refinedbrain_mask alongside and leave the original)')
     parser.add_argument('--limit', type=int, default=None)
+    parser.add_argument('--subjects', nargs='+', default=None,
+                        help='restrict to these subject ids (e.g. sub-4C sub-10C)')
     parser.add_argument('--montage-every', type=int, default=1,
                         help='write a comparison montage for every Nth session')
+    parser.add_argument('--iterations', type=int, default=1,
+                        help='alternate registration and refinement up to N times. '
+                             '1 (default) reuses the existing transform and does not '
+                             're-register. >1 re-registers between passes, which is '
+                             'what makes it converge -- refinement alone drifts '
+                             'outward. 3 is normally ample; the tolerance stops it '
+                             'sooner.')
+    parser.add_argument('--target-coverage', type=float, default=DEFAULT_TARGET_COVERAGE,
+                        help='stop once this fraction of the fixed reference '
+                             'parcellation is inside the mask')
+    parser.add_argument('--tolerance-mm3', type=float, default=DEFAULT_TOLERANCE_MM3,
+                        help='stop when the volume change falls below this')
     args = parser.parse_args()
 
     figures = args.output_dir / 'figures'
@@ -125,6 +192,9 @@ def main():
     sessions = sorted({(p.parent.parent.parent.name, p.parent.parent.name)
                        for p in args.derivatives_dir.glob(
                            'sub-*/ses-*/anat/*_atlas-*_dseg.nii.gz')})
+    if args.subjects:
+        wanted = set(args.subjects)
+        sessions = [(sub, ses) for sub, ses in sessions if sub in wanted]
     rows = []
     for i, (sub, ses) in enumerate(sessions, 1):
         anat = args.derivatives_dir / sub / ses / 'anat'
@@ -152,8 +222,15 @@ def main():
             tl, inv, work / f'{sub}_{ses}_seed.nii.gz')
         seed = np.asarray(nib.load(str(warped_p)).dataobj) > 0.5
 
-        refined = segment_brain_atlas_guided(raw, seed, parcellation)
         voxel_mm3 = float(np.prod(dseg_img.header.get_zooms()[:3])) / 1000.0
+        # One code path regardless of `iterations`: with a reference guide, pass 1
+        # refines against the existing transform chain and registers nothing, so
+        # `--iterations 1` is the plain single pass with a history attached.
+        refined, history = refine_iterative(
+            raw, seed, _register_fn(args, anat, sub, ses, raw_p, work),
+            voxel_mm3, reference_parcellation=parcellation, reference_guide=seed,
+            iterations=args.iterations, target_coverage=args.target_coverage,
+            tolerance_mm3=args.tolerance_mm3)
         qc = compute_brain_mask_qc(refined, parcellation, voxel_mm3,
                                    raw=raw, initial_mask=current)
         before = compute_brain_mask_qc(current, parcellation, voxel_mm3, raw=raw)
@@ -179,6 +256,17 @@ def main():
                      'tissue_fraction_before': before['tissue_fraction'],
                      'tissue_fraction_after': qc['tissue_fraction'],
                      'dice_with_initial': qc['dice_with_initial'],
+                     'n_iterations': len(history) if history else 1,
+                     # which pass was kept, and whether the last one was discarded
+                     # for contracting -- see refine_iterative's docstring
+                     'selected_iteration': next(
+                         (h['iteration'] for h in history if h['selected']), 1),
+                     'reached_target_coverage': (
+                         history[-1]['atlas_coverage'] >= args.target_coverage
+                         if history else None),
+                     'coverage_by_iteration': ';'.join(
+                         f"{h['atlas_coverage']:.4f}" for h in history),
+                     'n_registrations': sum(h['registered'] for h in history),
                      'qc_passed': qc['passed'],
                      'qc_failures': '; '.join(qc['failures']),
                      'mask': str(out_p), 'montage': montage})

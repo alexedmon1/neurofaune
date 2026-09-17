@@ -61,6 +61,20 @@ logger = logging.getLogger(__name__)
 INPLANE = np.ones((3, 3, 3), bool)
 INPLANE[:, :, ::2] = False
 
+# Named refinement methods, selected by `<modality>.skull_strip.refine.method`.
+# These are NOT peers of the first-pass methods (atropos/bet/ants): those run
+# before any registration exists, whereas a refinement needs one. A refinement
+# therefore always runs as a second stage, after the initial strip and the
+# registration it enables.
+REFINE_METHODS = ('atlas_iterative', 'none')
+DEFAULT_METHOD = 'atlas_iterative'
+
+# Stop on the volume increment, not on overlap. At ~2100 mm3 a 16 mm3 change is
+# Dice 0.991 against the previous pass, which reads as converged long before it is.
+DEFAULT_TOLERANCE_MM3 = 25.0
+DEFAULT_TARGET_COVERAGE = 0.99
+DEFAULT_ITERATIONS = 1
+
 DEFAULT_QC = {
     # Physiological plausibility. Widened from an initial 1700-2600 after the first
     # cohort run: the observed refined range was 2127-2624 mm3, so the old ceiling
@@ -241,3 +255,154 @@ def compute_brain_mask_qc(
     result['passed'] = not failures
     result['failures'] = failures
     return result
+
+
+def refine_iterative(
+    raw: np.ndarray,
+    initial_mask: np.ndarray,
+    register: "callable",
+    voxel_mm3: float,
+    reference_parcellation: np.ndarray,
+    reference_guide: np.ndarray | None = None,
+    iterations: int = DEFAULT_ITERATIONS,
+    target_coverage: float = DEFAULT_TARGET_COVERAGE,
+    tolerance_mm3: float = DEFAULT_TOLERANCE_MM3,
+    anisotropy_axis: int = 2,
+    qc_thresholds: dict | None = None,
+    **refine_kwargs,
+) -> tuple:
+    """Alternate registration and refinement, keeping the best-covering pass.
+
+    `register(mask) -> (atlas_mask, parcellation)` re-registers the atlas to the
+    subject stripped with `mask`, returning the atlas brain mask and parcellation
+    warped into subject space. Supplied by the caller so this stays independent of
+    which registration backend and which atlas are in use.
+
+    **The loop can converge onto a shrunken brain, so convergence is not the stop
+    rule.** Each pass registers to the *previously stripped* image, so anything the
+    last mask clipped is missing from the next pass's target and the atlas guide
+    follows the clipping inward. It is a contraction: it settles, but on the wrong
+    fixed point. Measured on `sub-10C/ses-1`, three passes reached |dVolume| = 1 mm3
+    -- textbook convergence -- while olfactory-bulb retention fell from 97.6% after
+    one pass to 75.9%, and atlas coverage from 99.0% to 95.2%. A second session,
+    `sub-2Z/ses-2`, moved the same way (97.9% -> 95.8%).
+
+    **Pass 1 re-uses the registration you already have.** `reference_guide` is the
+    atlas brain mask warped through the original transform chain -- the one that
+    produced `reference_parcellation`. Pass 1 refines against it and performs no
+    registration at all, so the loop is a strict superset of the single-pass
+    refinement and cannot do worse than it. Only passes 2+ call `register`. This is
+    not a shortcut: the original chain goes through the study template and is better
+    conditioned than a one-shot SyN of the atlas onto a mask-stripped subject, which
+    is what `register` can offer. On `sub-2Z/ses-1` refining against the chain
+    reaches 98.7% coverage while a fresh registration on the same session reaches
+    95.1%. Omit `reference_guide` only if no prior guide exists, in which case pass 1
+    registers like any other.
+
+    So the loop stops on **atlas coverage against a fixed reference parcellation**
+    and returns the pass that covered it best. Two conditions make that sound:
+
+    1. `reference_parcellation` must be the parcellation from the *original*
+       registration, held fixed across passes -- never the one `register` just
+       returned. Coverage is a ratio against the parcellation, and a parcellation
+       that shrinks along with the mask keeps that ratio high while the brain is
+       being clipped. Scored against its own re-registered parcellation the
+       `sub-10C` run above still looks fine; scored against the fixed one it drops
+       2.1 points, which is the signal.
+    2. Coverage rises monotonically with mask size -- a mask covering the whole
+       image scores 100% -- so it cannot select on its own. The best pass is chosen
+       among those that still pass the `non_brain_mm3` and `tissue_fraction` gates,
+       which is what penalises over-inclusion. If no pass clears them, the best
+       coverage is returned and a warning says nothing qualified.
+
+    `tolerance_mm3` no longer ends the loop; it only marks a pass `settled` in the
+    history, so a caller can tell "stopped because it stopped moving" apart from
+    "stopped because coverage was good enough".
+
+    **`iterations` defaults to 1, so by default nothing re-registers.** Over 16
+    sessions spanning the full range of initial mask quality, coverage against the
+    fixed reference fell at every single session and pass 1 was selected 16/16 --
+    30 registrations that changed no output. The degradation was worst where the
+    initial mask was worst (sub-4C/ses-1, 98.5% -> 91.0% over two passes), since a
+    one-shot SyN onto a badly stripped subject is furthest from the chain it
+    replaces. The loop is kept because the best-of-pass selection is what makes
+    raising `iterations` safe to try on new data, not because iterating pays here.
+
+    Returns
+    -------
+    (mask, history)
+        `history` is one dict per iteration with `volume_mm3`, `delta_mm3`,
+        `dice_with_previous`, `atlas_coverage`, `non_brain_mm3`,
+        `tissue_fraction`, `gates_passed`, `settled`, `registered` and `selected`,
+        so a caller can see which pass was kept and why the rest were not.
+    """
+    thresholds = {**DEFAULT_QC, **(qc_thresholds or {})}
+    mask = initial_mask > 0
+    previous_volume = float(mask.sum() * voxel_mm3)
+    history: list[dict] = []
+    candidates: list[tuple] = []
+
+    for step in range(1, int(iterations) + 1):
+        if step == 1 and reference_guide is not None:
+            atlas_mask, parcellation = reference_guide > 0, reference_parcellation
+        else:
+            atlas_mask, parcellation = register(mask)
+        nxt = segment_brain_atlas_guided(raw, atlas_mask, parcellation,
+                                         anisotropy_axis=anisotropy_axis,
+                                         **refine_kwargs)
+        volume = float(nxt.sum() * voxel_mm3)
+        total = nxt.sum() + mask.sum()
+        dice = float(2 * (nxt & mask).sum() / total) if total else float('nan')
+        delta = volume - previous_volume
+
+        # Scored against the FIXED reference, not `parcellation` -- see above.
+        qc = compute_brain_mask_qc(nxt, reference_parcellation, voxel_mm3, raw=raw,
+                                   anisotropy_axis=anisotropy_axis,
+                                   thresholds=thresholds)
+        gates_passed = bool(
+            qc['non_brain_mm3'] <= thresholds['non_brain_mm3']
+            and (not np.isfinite(qc['tissue_fraction'])
+                 or qc['tissue_fraction'] >= thresholds['tissue_fraction']))
+
+        entry = {'iteration': step,
+                 'registered': not (step == 1 and reference_guide is not None),
+                 'volume_mm3': volume, 'delta_mm3': delta,
+                 'dice_with_previous': dice,
+                 'atlas_coverage': qc['atlas_coverage'],
+                 'non_brain_mm3': qc['non_brain_mm3'],
+                 'tissue_fraction': qc['tissue_fraction'],
+                 'gates_passed': gates_passed,
+                 'settled': abs(delta) < tolerance_mm3,
+                 'selected': False}
+        history.append(entry)
+        candidates.append((nxt, entry))
+        logger.info('  iteration %d (%s): %.0f mm3 (%+.0f), coverage %.1f%%, '
+                    'tissue %.1f%%, non-brain %.0f mm3%s',
+                    step, 'prior transform' if not entry['registered'] else 're-registered',
+                    volume, delta, 100 * qc['atlas_coverage'],
+                    100 * qc['tissue_fraction'], qc['non_brain_mm3'],
+                    '' if gates_passed else '  [gates FAILED]')
+
+        mask, previous_volume = nxt, volume
+        if gates_passed and qc['atlas_coverage'] >= target_coverage:
+            logger.info('  coverage %.1f%% reached the %.0f%% target; stopping',
+                        100 * qc['atlas_coverage'], 100 * target_coverage)
+            break
+    else:
+        logger.info('  ran the full %d passes without reaching %.0f%% coverage',
+                    iterations, 100 * target_coverage)
+
+    eligible = [c for c in candidates if c[1]['gates_passed']]
+    if not eligible:
+        logger.warning('  no pass cleared the non-brain/tissue gates; keeping the '
+                       'best coverage anyway')
+        eligible = candidates
+    best_mask, best_entry = max(eligible, key=lambda c: c[1]['atlas_coverage'])
+    best_entry['selected'] = True
+    if best_entry['iteration'] != history[-1]['iteration']:
+        logger.info('  kept pass %d (coverage %.1f%%) over the final pass %d '
+                    '(%.1f%%) -- later passes contracted',
+                    best_entry['iteration'], 100 * best_entry['atlas_coverage'],
+                    history[-1]['iteration'], 100 * history[-1]['atlas_coverage'])
+
+    return best_mask, history
