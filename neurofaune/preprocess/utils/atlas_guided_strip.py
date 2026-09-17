@@ -278,14 +278,22 @@ def refine_iterative(
     warped into subject space. Supplied by the caller so this stays independent of
     which registration backend and which atlas are in use.
 
-    **The loop can converge onto a shrunken brain, so convergence is not the stop
-    rule.** Each pass registers to the *previously stripped* image, so anything the
-    last mask clipped is missing from the next pass's target and the atlas guide
-    follows the clipping inward. It is a contraction: it settles, but on the wrong
-    fixed point. Measured on `sub-10C/ses-1`, three passes reached |dVolume| = 1 mm3
-    -- textbook convergence -- while olfactory-bulb retention fell from 97.6% after
-    one pass to 75.9%, and atlas coverage from 99.0% to 95.2%. A second session,
-    `sub-2Z/ses-2`, moved the same way (97.9% -> 95.8%).
+    **Default `iterations=1`: measured over 16 sessions, re-registering never once
+    helped.** Every pass beyond the first lowered atlas coverage, without exception
+    -- pass 1 > pass 2 > pass 3 on 16 of 16 -- and the best-covering pass was pass 1
+    every time, for a median gain of exactly 0.0000. The worst case, `sub-4C/ses-1`,
+    ran 98.50% -> 90.95% -> 89.83%. Each pass registers to the *previously stripped*
+    image, so anything the last mask clipped is missing from the next pass's target
+    and the guide follows the clipping inward: a contraction that settles on the
+    wrong fixed point. A volume-convergence rule cannot see this -- it called all 16
+    converged, and on `sub-10C/ses-1` reported |dVolume| = 1 mm3 while
+    olfactory-bulb retention fell from 97.6% to 75.9%.
+
+    The loop is kept, defaulted off, because with the coverage rule below it is safe
+    by construction: extra passes can only be *selected* if they cover better, so
+    raising `iterations` cannot return a worse mask than pass 1. If a cohort ever
+    arrives whose initial transform chain is poor enough for re-registration to win,
+    the machinery is here and the history will show it.
 
     **Pass 1 re-uses the registration you already have.** `reference_guide` is the
     atlas brain mask warped through the original transform chain -- the one that
