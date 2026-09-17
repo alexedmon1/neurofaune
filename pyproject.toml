@@ -34,6 +34,12 @@ dependencies = [
     "scipy>=1.14",
     "pandas>=2.0",
     "scikit-learn>=1.0",
+    # Used at runtime, not just in tests: random_walker in
+    # preprocess/utils/atlas_guided_strip.py and threshold_otsu in
+    # preprocess/workflows/anat_preprocess.py. It was undeclared until
+    # 2026-09-17 and only worked where it happened to be installed
+    # transitively; CI installs from the lock and fell over.
+    "scikit-image>=0.22",
     # Visualization
     "matplotlib>=3.5.0",
     "seaborn>=0.12.0",
