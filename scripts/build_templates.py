@@ -1,17 +1,34 @@
 #!/usr/bin/env python3
 """
-Build age-specific templates from preprocessed BPA-Rat data.
+Build study templates from preprocessed data, one per cohort and modality.
 
-This script builds templates for each cohort (p30, p60, p90) and modality:
-- T2w: Preprocessed, brain-extracted anatomical images
-- FA: DTI scalar maps from eddy-corrected data
-- BOLD: Mean timepoint from motion-corrected fMRI data
+- T2w:  preprocessed, brain-extracted anatomical images
+- FA:   DTI scalar maps from eddy-corrected data
+- BOLD: mean timepoint from motion-corrected fMRI data
+
+Nothing here is specific to one study. Cohorts, the cohort -> session mapping and
+the template prefix all come from the config; an earlier version hardcoded one
+study's cohorts (``p30/p60/p90``), assumed ``ses-<cohort>``, and wrote files named
+``tpl-BPARat_*`` regardless of whose data it was processing, which made it unusable
+elsewhere without editing the script.
+
+Config keys consumed (all optional except paths)::
+
+    study.code                 prefix for template filenames, e.g. CPZ001 -> tpl-CPZ001...
+    templates.prefix           overrides the derived prefix outright
+    templates.cohorts          list of cohort labels, e.g. [p60, p90, p120]
+    templates.cohort_sessions  {cohort: session} map, e.g. {p60: ses-1, p90: ses-2}
+
+With no ``templates.cohorts`` the cohorts are discovered from the sessions present in
+the derivatives tree. With no ``templates.cohort_sessions`` a cohort is assumed to name
+its own session (``ses-<cohort>``), which is only right when the study names them that
+way -- declare the map when it does not.
 
 Usage:
     python scripts/build_templates.py --config config.yaml --cohort p60 --modality anat
-    python scripts/build_templates.py --config config.yaml --cohort p60 --modality dwi
-    python scripts/build_templates.py --config config.yaml --cohort p60 --modality func
     python scripts/build_templates.py --config config.yaml --cohort all --modality all
+    python scripts/build_templates.py --config config.yaml --cohort p120 --modality anat \
+        --session ses-3 --prefix tpl-CPZp120
 """
 
 import argparse
@@ -21,20 +38,67 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from neurofaune.config import load_config
-from neurofaune.templates.builder import (
-    select_subjects_for_template,
-    extract_mean_bold,
-    build_template,
-    register_template_to_sigma,
-    save_template_metadata
-)
 from neurofaune.atlas.manager import AtlasManager
+from neurofaune.config import get_config_value, load_config
+from neurofaune.templates.builder import (
+    build_template,
+    extract_mean_bold,
+    register_template_to_sigma,
+    save_template_metadata,
+    select_subjects_for_template,
+)
+
+
+def resolve_prefix(config, cohort: str, override: str | None = None) -> str:
+    """Template filename stem for `cohort`.
+
+    ``--prefix`` wins, then ``templates.prefix``, then ``study.code``. Falls back to
+    ``tpl`` rather than to any particular study's name.
+    """
+    if override:
+        return override
+    configured = get_config_value(config, 'templates.prefix', default=None)
+    if configured:
+        return f'{configured}{cohort}' if '{cohort}' not in configured \
+            else configured.replace('{cohort}', cohort)
+    code = get_config_value(config, 'study.code', default=None)
+    return f'tpl-{code}{cohort}' if code else f'tpl-{cohort}'
+
+
+def resolve_session(config, cohort: str, override: str | None = None) -> str:
+    """Session label holding `cohort`'s scans.
+
+    Declared via ``templates.cohort_sessions``; otherwise the cohort is assumed to
+    name its own session. That assumption holds only for studies that label sessions
+    by age -- this study uses ses-1/2/3 for p60/p90/p120, so it declares the map.
+    """
+    if override:
+        return override
+    mapping = get_config_value(config, 'templates.cohort_sessions', default=None) or {}
+    if cohort in mapping:
+        return mapping[cohort]
+    return cohort if str(cohort).startswith('ses-') else f'ses-{cohort}'
+
+
+def discover_cohorts(config, derivatives_dir) -> list:
+    """Cohorts to build: declared in config, else every session in the derivatives."""
+    declared = get_config_value(config, 'templates.cohorts', default=None)
+    if declared:
+        return list(declared)
+    sessions = sorted({p.name for p in Path(derivatives_dir).glob('sub-*/ses-*')})
+    if not sessions:
+        raise SystemExit(
+            f'No sessions found under {derivatives_dir}. Set templates.cohorts in the '
+            f'config, or pass --cohort explicitly.'
+        )
+    return sessions
 
 
 def build_anatomical_template(
     config: dict,
     cohort: str,
+    prefix: str,
+    session_label: str,
     derivatives_dir: Path,
     template_dir: Path,
     top_percent: float = 1/3,
@@ -54,7 +118,7 @@ def build_anatomical_template(
     )
 
     # Collect preprocessed T2w files
-    session = f'ses-{cohort}'
+    session = session_label
     input_files = []
 
     for subject in subjects:
@@ -73,7 +137,7 @@ def build_anatomical_template(
     cohort_dir = template_dir / 'anat' / cohort
     cohort_dir.mkdir(parents=True, exist_ok=True)
 
-    output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_T2w_'
+    output_prefix = cohort_dir / f'{prefix}_T2w_'
 
     results = build_template(
         input_files=input_files,
@@ -83,7 +147,7 @@ def build_anatomical_template(
     )
 
     # Rename template to standard name
-    template_file = cohort_dir / f'tpl-BPARat_{cohort}_T2w.nii.gz'
+    template_file = cohort_dir / f'{prefix}_T2w.nii.gz'
     results['template'].rename(template_file)
     print(f"\nFinal T2w template: {template_file}")
 
@@ -111,7 +175,7 @@ def build_anatomical_template(
     )
 
     # Rename warped template
-    warped_template = cohort_dir / f'tpl-BPARat_{cohort}_space-SIGMA_T2w.nii.gz'
+    warped_template = cohort_dir / f'{prefix}_space-SIGMA_T2w.nii.gz'
     reg_results['warped'].rename(warped_template)
     print(f"\nT2w template in SIGMA space: {warped_template}")
 
@@ -145,7 +209,7 @@ def build_anatomical_template(
         print(f"  Using {len(tissue_files)} subjects for {tissue} template")
 
         # Build tissue template
-        tissue_prefix = cohort_dir / f'tpl-BPARat_{cohort}_{tissue}_'
+        tissue_prefix = cohort_dir / f'{prefix}_{tissue}_'
 
         tissue_results = build_template(
             input_files=tissue_files,
@@ -155,7 +219,7 @@ def build_anatomical_template(
         )
 
         # Rename to standard name
-        tissue_template = cohort_dir / f'tpl-BPARat_{cohort}_label-{tissue}_probseg.nii.gz'
+        tissue_template = cohort_dir / f'{prefix}_label-{tissue}_probseg.nii.gz'
         tissue_results['template'].rename(tissue_template)
         print(f"  ✓ {tissue} template: {tissue_template.name}")
 
@@ -171,9 +235,9 @@ def build_anatomical_template(
     print("Anatomical Template Building Complete!")
     print("="*80)
     print(f"T2w template: {template_file}")
-    print(f"GM template: {cohort_dir / f'tpl-BPARat_{cohort}_label-GM_probseg.nii.gz'}")
-    print(f"WM template: {cohort_dir / f'tpl-BPARat_{cohort}_label-WM_probseg.nii.gz'}")
-    print(f"CSF template: {cohort_dir / f'tpl-BPARat_{cohort}_label-CSF_probseg.nii.gz'}")
+    print(f"GM template: {cohort_dir / f'{prefix}_label-GM_probseg.nii.gz'}")
+    print(f"WM template: {cohort_dir / f'{prefix}_label-WM_probseg.nii.gz'}")
+    print(f"CSF template: {cohort_dir / f'{prefix}_label-CSF_probseg.nii.gz'}")
     print(f"SIGMA space: {warped_template}")
     print(f"Transform: {composite}")
     print(f"Inverse: {inverse}")
@@ -183,6 +247,8 @@ def build_anatomical_template(
 def build_dti_template(
     config: dict,
     cohort: str,
+    prefix: str,
+    session_label: str,
     derivatives_dir: Path,
     template_dir: Path,
     top_percent: float = 1/3,
@@ -202,7 +268,7 @@ def build_dti_template(
     )
 
     # Collect FA files
-    session = f'ses-{cohort}'
+    session = session_label
     input_files = []
 
     for subject in subjects:
@@ -221,7 +287,7 @@ def build_dti_template(
     cohort_dir = template_dir / 'dwi' / cohort
     cohort_dir.mkdir(parents=True, exist_ok=True)
 
-    output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_FA_'
+    output_prefix = cohort_dir / f'{prefix}_FA_'
 
     results = build_template(
         input_files=input_files,
@@ -231,7 +297,7 @@ def build_dti_template(
     )
 
     # Rename template to standard name
-    template_file = cohort_dir / f'tpl-BPARat_{cohort}_FA.nii.gz'
+    template_file = cohort_dir / f'{prefix}_FA.nii.gz'
     results['template'].rename(template_file)
     print(f"\nFinal FA template: {template_file}")
 
@@ -256,6 +322,8 @@ def build_dti_template(
 def build_func_template(
     config: dict,
     cohort: str,
+    prefix: str,
+    session_label: str,
     derivatives_dir: Path,
     template_dir: Path,
     top_percent: float = 1/3,
@@ -275,7 +343,7 @@ def build_func_template(
     )
 
     # Extract mean BOLD for each subject - organize by modality/cohort
-    session = f'ses-{cohort}'
+    session = session_label
     cohort_dir = template_dir / 'func' / cohort
     work_dir = cohort_dir / 'work'
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -303,7 +371,7 @@ def build_func_template(
     print(f"\nUsing {len(input_files)} subjects for template building")
 
     # Build template
-    output_prefix = cohort_dir / f'tpl-BPARat_{cohort}_bold_'
+    output_prefix = cohort_dir / f'{prefix}_bold_'
 
     results = build_template(
         input_files=input_files,
@@ -313,7 +381,7 @@ def build_func_template(
     )
 
     # Rename template to standard name
-    template_file = cohort_dir / f'tpl-BPARat_{cohort}_bold.nii.gz'
+    template_file = cohort_dir / f'{prefix}_bold.nii.gz'
     results['template'].rename(template_file)
     print(f"\nFinal BOLD template: {template_file}")
 
@@ -337,15 +405,24 @@ def build_func_template(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Build age-specific templates for BPA-Rat study',
+        description='Build study templates, one per cohort and modality',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
     parser.add_argument('--config', type=Path, required=True,
                         help='Path to configuration YAML file')
     parser.add_argument('--cohort', type=str, required=True,
-                        choices=['p30', 'p60', 'p90', 'all'],
-                        help='Age cohort to build template for')
+                        help="Cohort label to build, or 'all'. Free-form: cohorts are "
+                             "this study's, not a fixed list. 'all' uses "
+                             "templates.cohorts from the config, else every session "
+                             "found in the derivatives tree.")
+    parser.add_argument('--session', type=str, default=None,
+                        help='Session holding this cohort (e.g. ses-3). Overrides '
+                             'templates.cohort_sessions; only valid with a single '
+                             '--cohort.')
+    parser.add_argument('--prefix', type=str, default=None,
+                        help='Template filename stem (e.g. tpl-CPZp120). Overrides '
+                             'templates.prefix / study.code; single --cohort only.')
     parser.add_argument('--modality', type=str, required=True,
                         choices=['anat', 'dwi', 'func', 'all'],
                         help='Modality to build template for')
@@ -366,7 +443,12 @@ def main():
 
     # Determine cohorts to process
     if args.cohort == 'all':
-        cohorts = ['p30', 'p60', 'p90']
+        if args.session or args.prefix:
+            parser.error('--session/--prefix apply to one cohort; use them with an '
+                         'explicit --cohort, or declare templates.cohort_sessions '
+                         'and templates.prefix in the config.')
+        cohorts = discover_cohorts(config, derivatives_dir)
+        print(f"Cohorts: {cohorts}")
     else:
         cohorts = [args.cohort]
 
@@ -380,20 +462,22 @@ def main():
     for cohort in cohorts:
         for modality in modalities:
             try:
+                prefix = resolve_prefix(config, cohort, args.prefix)
+                session_label = resolve_session(config, cohort, args.session)
                 if modality == 'anat':
                     build_anatomical_template(
-                        config, cohort, derivatives_dir, template_dir,
-                        args.top_percent, args.n_cores
+                        config, cohort, prefix, session_label, derivatives_dir,
+                        template_dir, args.top_percent, args.n_cores
                     )
                 elif modality == 'dwi':
                     build_dti_template(
-                        config, cohort, derivatives_dir, template_dir,
-                        args.top_percent, args.n_cores
+                        config, cohort, prefix, session_label, derivatives_dir,
+                        template_dir, args.top_percent, args.n_cores
                     )
                 elif modality == 'func':
                     build_func_template(
-                        config, cohort, derivatives_dir, template_dir,
-                        args.top_percent, args.n_cores
+                        config, cohort, prefix, session_label, derivatives_dir,
+                        template_dir, args.top_percent, args.n_cores
                     )
             except Exception as e:
                 print(f"\n❌ ERROR building {modality} template for {cohort}: {e}\n")
