@@ -41,7 +41,10 @@ from neurofaune.preprocess.utils.atlas_guided_strip import (
     compute_brain_mask_qc,
     refine_iterative,
 )
-from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
+from neurofaune.templates.sigma_warp import (
+    inverse_transform_args,
+    resolve_tpl_to_sigma_for_cohort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +90,8 @@ def atlas_to_subject_chain(
 ) -> list[str] | None:
     """`-t` arguments taking an atlas-space image into subject T2w space.
 
-    Returned in antsApplyTransforms order. Each registration's inverse is
-    `[0GenericAffine.mat,1]` followed by `1InverseWarp`, and the subject->template
-    leg comes before the template->SIGMA leg. Verified by round trip on
-    sub-10C/ses-1: this order maps the template-space T2w back onto the subject at
-    r=0.946, the warp-first order at r=0.861.
+    Returned in antsApplyTransforms order: each leg from `inverse_transform_args`,
+    the subject->template leg before the template->SIGMA leg.
 
     Returns None if any required transform is missing.
     """
@@ -101,20 +101,15 @@ def atlas_to_subject_chain(
         inverse = subj / f'{subject}_{session}_T2w_to_SIGMA_1InverseWarp.nii.gz'
         if not affine.exists():
             return None
-        return [f'[{affine},1]'] + ([str(inverse)] if inverse.exists() else [])
+        return inverse_transform_args(affine, inverse)
 
     affine = subj / f'{subject}_{session}_T2w_to_template_0GenericAffine.mat'
     inverse = subj / f'{subject}_{session}_T2w_to_template_1InverseWarp.nii.gz'
     tpl = resolve_tpl_to_sigma_for_cohort(templates_dir, cohort or session.replace('ses-', ''))
     if not affine.exists() or not tpl['found']:
         return None
-    chain = [f'[{affine},1]']
-    if inverse.exists():
-        chain.append(str(inverse))
-    chain.append(f"[{tpl['affine']},1]")
-    if tpl['inverse_warp'] is not None:
-        chain.append(str(tpl['inverse_warp']))
-    return chain
+    return (inverse_transform_args(affine, inverse)
+            + inverse_transform_args(tpl['affine'], tpl['inverse_warp']))
 
 
 def apply_chain(source: Path, reference: Path, chain: Sequence[str], output: Path,

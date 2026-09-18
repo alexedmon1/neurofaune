@@ -78,8 +78,10 @@ def test_labels_can_request_nearest_neighbour(anat_and_moving, tmp_path):
     assert cmd[cmd.index("--interpolation") + 1] == "NearestNeighbor"
 
 
-def test_nonlinear_warp_is_prepended(anat_and_moving, tmp_path):
-    """ANTs applies right-to-left, so the inverse warp must precede the affine."""
+def test_inverted_affine_precedes_inverse_warp(anat_and_moving, tmp_path):
+    """Inverse = [affine,1] THEN 1InverseWarp. This test used to pin the reverse,
+    which does not reproduce antsRegistration's own InverseWarped image (r=0.966
+    vs 1.000 on a real subject->template registration)."""
     anat, moving = anat_and_moving
     affine = tmp_path / "a.mat"
     affine.write_bytes(b"")
@@ -91,7 +93,7 @@ def test_nonlinear_warp_is_prepended(anat_and_moving, tmp_path):
                              inverse_warp=warp)
 
     cmd = run.call_args[0][0]
-    assert cmd.index(str(warp)) < cmd.index(f"[{affine},1]")
+    assert cmd.index(f"[{affine},1]") < cmd.index(str(warp))
 
 
 def test_absent_inverse_warp_is_ignored(anat_and_moving, tmp_path):

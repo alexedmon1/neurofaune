@@ -35,6 +35,25 @@ TPL_TO_SIGMA_INVERSE_WARP = "tpl-to-SIGMA_1InverseWarp.nii.gz"
 TIMESERIES_CHUNK = 60
 
 
+def inverse_transform_args(affine: Path, inverse_warp: Optional[Path] = None) -> List[str]:
+    """``-t`` values that apply one registration in reverse (fixed -> moving).
+
+    ``[0GenericAffine.mat,1]`` comes BEFORE ``1InverseWarp``. The reverse
+    ordering -- which several propagation functions used -- looks symmetrical
+    with the forward ``-t 1Warp -t 0GenericAffine`` but is wrong. Checked against
+    the ``InverseWarped`` image antsRegistration writes itself: this order
+    reproduces it exactly (r=1.000) on both a subject->template and a
+    template->SIGMA registration, while warp-first gives r=0.966 and r=0.666.
+
+    For a multi-leg chain back to the subject, concatenate the legs starting from
+    the one nearest the subject (subject<-template, then template<-SIGMA).
+    """
+    args = [f"[{affine},1]"]
+    if inverse_warp is not None and Path(inverse_warp).exists():
+        args.append(str(inverse_warp))
+    return args
+
+
 def resolve_tpl_to_sigma(
     template_file: Optional[Path] = None,
     candidate_dirs: Optional[Sequence[Path]] = None,

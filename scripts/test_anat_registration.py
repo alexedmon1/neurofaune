@@ -127,10 +127,9 @@ def main():
     subj_inv_warp = transforms_dir / f'{subject}_{session}_T2w_to_template_1InverseWarp.nii.gz'
 
     # Build transform list (template → subject)
-    transform_list = []
-    if subj_inv_warp.exists():
-        transform_list.extend(['-t', str(subj_inv_warp)])
-    transform_list.extend(['-t', f'[{subj_affine},1]'])  # Inverse affine
+    from neurofaune.templates.sigma_warp import inverse_transform_args
+    transform_list = [a for t in inverse_transform_args(subj_affine, subj_inv_warp)
+                      for a in ('-t', t)]
 
     cmd = [
         'antsApplyTransforms',

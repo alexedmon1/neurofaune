@@ -14,7 +14,10 @@ import nibabel as nib
 import numpy as np
 
 from neurofaune.templates.manifest import TemplateManifest, find_template_manifest
-from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
+from neurofaune.templates.sigma_warp import (
+    inverse_transform_args,
+    resolve_tpl_to_sigma_for_cohort,
+)
 from neurofaune.templates.registration_qc import (
     compute_registration_metrics,
     generate_registration_qc_figure,
@@ -256,19 +259,15 @@ def propagate_atlas_to_anat(
     print(f"  Template→SIGMA affine: {tpl_to_sigma_affine.name}")
     print(f"  Template→SIGMA warp: {tpl_to_sigma_inv_warp.name if tpl_to_sigma_inv_warp else 'N/A'}")
 
-    # Build transform chain for SIGMA → T2w
-    # ANTs applies transforms in reverse order
+    # Build transform chain for SIGMA → T2w: each leg inverted affine-first,
+    # subject leg first (see inverse_transform_args)
     transform_list = []
 
     # 1. Template → T2w (inverse of T2w → Template)
-    if t2w_to_tpl_inv_warp.exists():
-        transform_list.append(str(t2w_to_tpl_inv_warp))
-    transform_list.append(f"[{t2w_to_tpl_affine},1]")  # Invert affine
+    transform_list += inverse_transform_args(t2w_to_tpl_affine, t2w_to_tpl_inv_warp)
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")  # Invert affine
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     # Apply transforms
     output_file = Path(output_file)
@@ -536,11 +535,7 @@ def propagate_atlas_direct(
         )
 
     # Build transform chain for SIGMA → T2w
-    transform_list = []
-
-    if t2w_to_sigma_inv_warp.exists():
-        transform_list.append(str(t2w_to_sigma_inv_warp))
-    transform_list.append(f"[{t2w_to_sigma_affine},1]")
+    transform_list = inverse_transform_args(t2w_to_sigma_affine, t2w_to_sigma_inv_warp)
 
     # Apply transforms
     output_file = Path(output_file)

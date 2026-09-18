@@ -15,7 +15,10 @@ from typing import Dict, Any, List, Optional
 import nibabel as nib
 import numpy as np
 
-from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
+from neurofaune.templates.sigma_warp import (
+    inverse_transform_args,
+    resolve_tpl_to_sigma_for_cohort,
+)
 
 
 def register_subject_to_template(
@@ -392,16 +395,14 @@ def propagate_atlas_to_dwi_direct(
         )
 
     # Build transform chain for SIGMA → FA (inverse direction)
-    # ANTs applies transforms in reverse order, so list from FA to SIGMA
+    # Listed from FA outward; each leg inverted affine-first (inverse_transform_args)
     transform_list = []
 
     # 1. Template → FA (inverse of FA → Template)
     transform_list.append(f"[{fa_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     # Apply transforms
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -513,9 +514,7 @@ def propagate_atlas_to_bold_direct(
     transform_list.append(f"[{bold_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -625,9 +624,7 @@ def propagate_atlas_to_msme_direct(
     transform_list.append(f"[{msme_to_template},1]")
 
     # 2. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -767,21 +764,17 @@ def propagate_atlas_to_dwi(
         )
 
     # Build transform chain for SIGMA → FA (inverse direction)
-    # ANTs applies transforms in reverse order, so list from FA to SIGMA
+    # Listed from FA outward; each leg inverted affine-first (inverse_transform_args)
     transform_list = []
 
     # 1. T2w → FA (inverse of FA → T2w)
     transform_list.append(f"[{fa_to_t2w},1]")
 
     # 2. Template → T2w (inverse of T2w → Template)
-    if t2w_to_tpl_inv_warp.exists():
-        transform_list.append(str(t2w_to_tpl_inv_warp))
-    transform_list.append(f"[{t2w_to_tpl_affine},1]")
+    transform_list += inverse_transform_args(t2w_to_tpl_affine, t2w_to_tpl_inv_warp)
 
     # 3. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     # Apply transforms
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -924,21 +917,17 @@ def propagate_atlas_to_bold(
         )
 
     # Build transform chain for SIGMA → BOLD (inverse direction)
-    # ANTs applies transforms in reverse order, so list from BOLD to SIGMA
+    # Listed from BOLD outward; each leg inverted affine-first (inverse_transform_args)
     transform_list = []
 
     # 1. T2w → BOLD (inverse of BOLD → T2w)
     transform_list.append(f"[{bold_to_t2w},1]")
 
     # 2. Template → T2w (inverse of T2w → Template)
-    if t2w_to_tpl_inv_warp.exists():
-        transform_list.append(str(t2w_to_tpl_inv_warp))
-    transform_list.append(f"[{t2w_to_tpl_affine},1]")
+    transform_list += inverse_transform_args(t2w_to_tpl_affine, t2w_to_tpl_inv_warp)
 
     # 3. SIGMA → Template (inverse of Template → SIGMA)
-    if tpl_to_sigma_inv_warp is not None:
-        transform_list.append(str(tpl_to_sigma_inv_warp))
-    transform_list.append(f"[{tpl_to_sigma_affine},1]")
+    transform_list += inverse_transform_args(tpl_to_sigma_affine, tpl_to_sigma_inv_warp)
 
     # Apply transforms
     output_path.parent.mkdir(parents=True, exist_ok=True)

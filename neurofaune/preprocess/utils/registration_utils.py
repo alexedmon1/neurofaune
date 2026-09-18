@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional, Tuple
 import nibabel as nib
 import numpy as np
 
+from neurofaune.templates.sigma_warp import inverse_transform_args
+
 
 def register_via_anat_composition(
     moving_ref: Path,
@@ -131,11 +133,10 @@ def propagate_anat_mask(
     subprocess.run(reg_cmd, check=True, capture_output=True, text=True)
 
     # anat mask -> moving space: inverse of (moving->anat), nearest-neighbour.
-    # With SyN, prepend the inverse warp; ANTs applies transforms right-to-left.
-    inv_transforms = ['-t', f'[{m2a_affine},1]']
-    if nonlinear:
-        inv_warp = Path(str(m2a_prefix) + '1InverseWarp.nii.gz')
-        inv_transforms = ['-t', str(inv_warp)] + inv_transforms
+    # Inverted affine first, then the inverse warp (see inverse_transform_args).
+    inv_warp = Path(str(m2a_prefix) + '1InverseWarp.nii.gz') if nonlinear else None
+    inv_transforms = [a for t in inverse_transform_args(m2a_affine, inv_warp)
+                      for a in ('-t', t)]
     subprocess.run([
         'antsApplyTransforms', '-d', '3', '-i', str(anat_mask),
         '-r', str(moving_ref), *inv_transforms,
@@ -200,10 +201,9 @@ def propagate_anat_image(
         ANTs interpolation. ``Linear`` for probability maps (the default),
         ``NearestNeighbor`` for labels or binary masks.
     """
-    # ANTs applies transforms right-to-left, so the warp is prepended.
-    inv_transforms = ['-t', f'[{moving_to_anat_affine},1]']
-    if inverse_warp is not None and Path(inverse_warp).exists():
-        inv_transforms = ['-t', str(inverse_warp)] + inv_transforms
+    # Inverted affine first, then the inverse warp (see inverse_transform_args).
+    inv_transforms = [a for t in inverse_transform_args(moving_to_anat_affine, inverse_warp)
+                      for a in ('-t', t)]
 
     Path(out_image).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([
