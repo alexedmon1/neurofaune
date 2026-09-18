@@ -164,6 +164,12 @@ anatomical:
     # of the olfactory bulb, and refinement takes tissue fraction 90.3% -> 98.9%.
     refine:
       method: "atlas_iterative"     # 'atlas_iterative' or 'none'
+      # Runs in batch_preprocess_anat.py phase 2, after atlas propagation. false:
+      # write desc-refinedbrain_mask beside the original for review. true: replace
+      # desc-brain_mask (original kept as desc-initialbrain_mask) and re-strip
+      # desc-skullstrip/desc-preproc T2w from the N4 image. Tissue probsegs and the
+      # registration still come from the first-pass mask either way.
+      apply: false
       # Passes stop once the mask covers `target_coverage` of the parcellation from
       # the ORIGINAL registration, held fixed. Convergence is deliberately NOT the
       # stop rule: each pass registers to the previously stripped image, so a clipped

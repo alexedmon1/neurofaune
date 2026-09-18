@@ -201,6 +201,20 @@ uv run python scripts/batch_preprocess_anat.py \
     /path/to/bids /path/to/study --config config.yaml
 ```
 
+**Atlas-guided mask refinement.** After atlas propagation, phase 2 runs a second
+skull-strip pass that re-draws the brain boundary from the atlas and the unstripped
+T2w (`anatomical.skull_strip.refine.method: atlas_iterative`, on by default; set
+`none` to disable). By default it writes `desc-refinedbrain_mask` beside the original
+plus a QC table and outline montages in `qc/mask_refinement/{cohort}/`. Set
+`refine.apply: true` to replace `desc-brain_mask` (the original is kept as
+`desc-initialbrain_mask`) and re-strip `desc-skullstrip`/`desc-preproc_T2w`. Tissue
+probsegs and the registration still come from the first-pass mask. To re-run it on
+an already registered study:
+
+```bash
+uv run python scripts/refine_brain_masks.py --config config.yaml [--apply]
+```
+
 ### Diffusion (DTI)
 
 5D-to-4D conversion, intensity normalization, skull stripping, GPU-accelerated eddy correction with slice padding, DTI tensor fitting (FA, MD, AD, RD), FA-to-T2w registration (ANTs affine).

@@ -14,6 +14,8 @@ Phase 2: Full Processing (all subjects)
 - Preprocess remaining subjects
 - Register all subjects to cohort template
 - Propagate SIGMA atlas to each subject
+- Refine each brain mask against the atlas (anatomical.skull_strip.refine; on by
+  default, writes desc-refinedbrain_mask unless refine.apply is true)
 
 Usage:
     # Standard workflow with quality-based template building
@@ -56,6 +58,11 @@ from neurofaune.templates.anat_registration import (
     propagate_atlas_direct
 )
 from neurofaune.templates.registration_qc import generate_template_qc_report
+from neurofaune.preprocess.workflows.anat_mask_refinement import (
+    get_refine_settings,
+    run_brain_mask_refinement,
+    write_refinement_summary,
+)
 from neurofaune.utils.select_anatomical import is_3d_only_subject
 
 
@@ -582,9 +589,17 @@ def run_phase2_full_processing(
         'preprocessed': 0,
         'registered': 0,
         'atlas_propagated': 0,
+        'mask_refined': 0,
+        'mask_refinement_qc_failed': [],
         'failed': [],
         'skipped_template_subjects': 0
     }
+
+    refine = get_refine_settings(config)
+    refinement_rows = []
+    print(f"Brain mask refinement: {refine['method']}"
+          + (f" ({'replace in place' if refine['apply'] else 'write alongside'})"
+             if refine['method'] != 'none' else ''))
 
     for i, subj in enumerate(subjects):
         subject = subj['subject']
@@ -722,6 +737,55 @@ def run_phase2_full_processing(
                     'stage': 'atlas_propagation',
                     'error': str(e)
                 })
+                continue
+
+        # Step 4: Atlas-guided brain mask refinement (second pass; needs the
+        # registration and propagated atlas above). anatomical.skull_strip.refine
+        if refine['method'] == 'none':
+            continue
+        print(f"  Step 4: Brain mask refinement ({refine['method']})")
+        stem = derivatives_dir / f'{subject}_{session}'
+        done = (Path(f'{stem}_desc-initialbrain_mask.nii.gz') if refine['apply']
+                else Path(f'{stem}_desc-refinedbrain_mask.nii.gz'))
+        if done.exists() and not force:
+            print(f"    ✓ Already refined, skipping")
+            continue
+        try:
+            row = run_brain_mask_refinement(
+                config, subject, session, output_dir,
+                raw_t2w=subj['t2w_files'],
+                cohort=cohort,
+                direct=direct_mode,
+                parcellation_file=atlas_output,
+                settings=refine,
+            )
+        except Exception as e:
+            print(f"    ✗ Mask refinement failed: {e}")
+            results['failed'].append({
+                'subject': subject,
+                'session': session,
+                'stage': 'mask_refinement',
+                'error': str(e)
+            })
+            continue
+        refinement_rows.append(row)
+        if row['status'] == 'refined':
+            results['mask_refined'] += 1
+            if row['qc_passed']:
+                print(f"    ✓ Refined {row['volume_before_mm3']:.0f} -> "
+                      f"{row['volume_after_mm3']:.0f} mm3, coverage "
+                      f"{row['atlas_coverage_after']:.1%}")
+            else:
+                results['mask_refinement_qc_failed'].append(f'{subject}/{session}')
+                print(f"    ! Refined but FAILED QC: {row['qc_failures']} "
+                      f"-- review {row['montage']}")
+        else:
+            print(f"    - Skipped: {row.get('reason', row['status'])}")
+
+    table = write_refinement_summary(
+        refinement_rows, output_dir / 'qc' / 'mask_refinement' / cohort)
+    if table:
+        print(f"\nMask refinement table: {table}")
 
     return results
 
@@ -896,6 +960,10 @@ def main():
         print(f"  Preprocessed: {results['preprocessed']}")
         print(f"  Registered: {results['registered']}")
         print(f"  Atlas propagated: {results['atlas_propagated']}")
+        print(f"  Masks refined: {results.get('mask_refined', 0)}")
+        if results.get('mask_refinement_qc_failed'):
+            print(f"  Refined masks failing QC (review montages): "
+                  f"{', '.join(results['mask_refinement_qc_failed'])}")
         print(f"  Template subjects (fast-tracked): {results['skipped_template_subjects']}")
         print(f"  Failed: {len(results['failed'])}")
 
