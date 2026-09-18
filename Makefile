@@ -1,6 +1,7 @@
 # neurofaune — developer gate
 #
-# THE GATE (blocking — must pass before a change is tagged / used in research):
+# THE GATE (blocking — must pass before a commit is pinned / used in research;
+# tagging is a separate, milestone-only decision -- see "Versioning and tags" in CLAUDE.md):
 #     make check   →  unit tests + regression (behavior-preservation) tests
 #
 # ADVISORY (informational — never blocks, never rewrites files on its own):
@@ -34,7 +35,7 @@ regression:  ## Run fast behavior-preservation tests vs frozen golden outputs
 	$(UV) run --extra dev pytest -m "regression and not slow and not integration" -q
 
 check: test regression  ## THE GATE — tests + regression must pass before promotion (hermetic, every PR)
-	@echo "✅ gate passed — candidate preserves behavior, safe to tag / pin in research"
+	@echo "✅ gate passed — candidate preserves behavior, safe to pin (by SHA) in research"
 
 integration:  ## SLOW tier — real-tool (ANTs/FSL) end-to-end vs derived-metric golden; run before a release tag
 	$(UV) run --extra dev pytest -m "integration" -q

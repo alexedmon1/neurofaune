@@ -42,6 +42,29 @@ make capabilities   # regenerate CAPABILITIES.md, then commit it alongside the c
 make check          # THE GATE — tests + regression; must pass before push/tag/pin
 ```
 
+### Versioning and tags
+
+Tag at **milestones**, not after every change. Passing `make check` means a commit is
+safe to *pin*; it does not mean it should be tagged. 27 tags in three months (two in one
+day, one of them 2 commits on top of the previous) is what happens when every pin gets a
+tag.
+
+- **During active development, studies pin a commit SHA.** A SHA is just as immutable
+  as a tag. Provenance already records `CommitID`, so outputs stay traceable.
+- **Tag when** a cohort run will produce reported results, before sharing with someone
+  outside the project, or when a second study needs a stable point.
+- **What to bump** depends on outputs, not on how much code changed. Ask: *does a study
+  pinned to the previous tag need to re-run anything?*
+  - **Minor (`0.Y.0`)**: yes. The change alters outputs on existing data (a bug fix
+    that moves numbers counts), or changes the API or a config key/default.
+  - **Patch (`0.y.Z`)**: no. Docs, performance, tests, new features that are off by
+    default, fixes to paths no workflow calls.
+- **Tag format is `vX.Y.Z`, no `-alpha`.** `0.x` already says pre-stable. Tags up to
+  `v0.11.0-alpha` keep their names.
+- **A release commit** sets `version` in `pyproject.toml`, regenerates `CAPABILITIES.md`,
+  passes `make check` (and `make integration` where ANTs/FSL are available), and is
+  then tagged. Between releases the version string is left alone.
+
 **Batch processing scripts** (in `scripts/`):
 ```bash
 # Phase 1: Initialize (one-time per study)
