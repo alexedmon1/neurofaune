@@ -348,7 +348,8 @@ def register_anat_to_sigma_direct(
     mask_file: Optional[Path] = None,
     sigma_mask: Optional[Path] = None,
     n_cores: int = 4,
-    generate_qc: bool = True
+    generate_qc: bool = True,
+    name: str = 'T2w_to_SIGMA',
 ) -> Dict[str, Path]:
     """
     Register T2w directly to SIGMA (no study template).
@@ -376,6 +377,10 @@ def register_anat_to_sigma_direct(
         Number of CPU cores
     generate_qc : bool
         Generate QC figures
+    name : str
+        Transform name: outputs are `<subject>_<session>_<name>_*`. The mask
+        refinement seed uses `T2w_to_SIGMA_seed` so it is never mistaken for a
+        direct-mode registration.
 
     Returns
     -------
@@ -383,10 +388,13 @@ def register_anat_to_sigma_direct(
         Dictionary with paths to registration outputs
     """
     print(f"\n{'='*60}")
-    print(f"⚠ DIRECT-TO-SIGMA REGISTRATION")
-    print(f"{'='*60}")
-    print(f"WARNING: Direct T2w→SIGMA registration is less accurate than")
-    print(f"template-based registration. Consider building a study template.")
+    if name == 'T2w_to_SIGMA':
+        print(f"⚠ DIRECT-TO-SIGMA REGISTRATION")
+        print(f"{'='*60}")
+        print(f"WARNING: Direct T2w→SIGMA registration is less accurate than")
+        print(f"template-based registration. Consider building a study template.")
+    else:
+        print(f"T2w→SIGMA REGISTRATION ({name})")
     print(f"{'='*60}")
     print(f"  Subject: {subject} {session}")
     print(f"  T2w: {t2w_file.name}")
@@ -403,7 +411,7 @@ def register_anat_to_sigma_direct(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Output prefix
-    output_prefix = output_dir / f'{subject}_{session}_T2w_to_SIGMA_'
+    output_prefix = output_dir / f'{subject}_{session}_{name}_'
 
     # Build ANTs registration command
     cmd = [

@@ -1,19 +1,28 @@
 """Second-pass brain mask refinement as a pipeline stage.
 
 `neurofaune.preprocess.utils.atlas_guided_strip` holds the image logic; this module
-is the file-level stage that runs it inside anatomical preprocessing. It needs the
-registration and atlas propagation to exist already, so it runs AFTER them:
+is the file-level stage that runs it inside anatomical preprocessing. It needs an
+atlas in subject space, and there are two ways to get one:
 
-    preprocess (initial strip) -> register -> propagate atlas -> refine (this)
+    seeded (`run_seeded_mask_refinement`, before any template exists):
+        preprocess (initial strip) -> T2w->SIGMA seed SyN -> refine + restrip
+        -> build templates from the refined brains -> register -> propagate
+    after registration (`run_brain_mask_refinement` on an existing chain):
+        preprocess (initial strip) -> register -> propagate atlas -> refine
+
+The seeded order is what a fresh study should run. Templates built from first-pass
+strips carry the non-brain the refinement removes (the cuprizone p60 template was
+2.42x the atlas brain), and every subject then registers to that target. The seed
+registration is written under its own name, `<sub>_<ses>_T2w_to_SIGMA_seed_*`, so
+nothing mistakes it for a direct-mode registration.
 
 Selected by `anatomical.skull_strip.refine.method` (`atlas_iterative` or `none`).
 
-By default the refined mask is written beside the original as
-`desc-refinedbrain_mask` and nothing downstream changes. With
-`anatomical.skull_strip.refine.apply: true` it replaces `desc-brain_mask`, the
-original is kept once as `desc-initialbrain_mask`, and `desc-skullstrip_T2w` /
-`desc-preproc_T2w` are re-stripped from the N4-corrected image so the recovered
-tissue is actually in them. Tissue probsegs and the T2w->template registration
+By default (`anatomical.skull_strip.refine.apply: true`) the refined mask replaces
+`desc-brain_mask`, the original is kept once as `desc-initialbrain_mask`, and
+`desc-skullstrip_T2w` / `desc-preproc_T2w` are re-stripped from the N4-corrected
+image so the recovered tissue is actually in them. With `apply: false` it is written
+beside the original as `desc-refinedbrain_mask` and nothing downstream changes. Tissue probsegs and the T2w->template registration
 still predate the refined mask; re-registration is deliberately not triggered
 (see `refine_iterative`: it never improved coverage over 16 sessions).
 """
@@ -56,6 +65,13 @@ VOXEL_SCALE = 10.0
 # MRS and 5TT read; batch_preprocess_anat.py writes `space-T2w_atlas-SIGMA`.
 PARCELLATION_NAMES = ('atlas-SIGMA_dseg', 'space-T2w_atlas-SIGMA')
 
+# The seed registration: first-pass stripped T2w -> SIGMA, used only to seed the
+# refinement. Its own name keeps it apart from a direct-mode `T2w_to_SIGMA_`.
+SEED_NAME = 'T2w_to_SIGMA_seed'
+# Which SIGMA template the seed registers to. `masked` is brain to brain, matching
+# the stripped moving image; `unmasked` is what direct mode has always used.
+SEED_TEMPLATES = ('masked', 'unmasked')
+
 
 def get_refine_settings(config: dict[str, Any], modality: str = 'anatomical') -> dict[str, Any]:
     """Read `<modality>.skull_strip.refine.*` with the module defaults filled in."""
@@ -66,9 +82,13 @@ def get_refine_settings(config: dict[str, Any], modality: str = 'anatomical') ->
     qc = dict(DEFAULT_QC)
     qc.update(get_config_value(config, f'{key}.qc', default={}) or {})
     qc['volume_mm3'] = tuple(qc['volume_mm3'])
+    seed_template = get_config_value(config, f'{key}.seed_template', default='masked')
+    if seed_template not in SEED_TEMPLATES:
+        raise ValueError(f'{key}.seed_template must be one of {SEED_TEMPLATES}, '
+                         f'got {seed_template!r}')
     return {
         'method': method,
-        'apply': bool(get_config_value(config, f'{key}.apply', default=False)),
+        'apply': bool(get_config_value(config, f'{key}.apply', default=True)),
         'iterations': int(get_config_value(config, f'{key}.iterations',
                                            default=DEFAULT_ITERATIONS)),
         'target_coverage': float(get_config_value(config, f'{key}.target_coverage',
@@ -76,6 +96,7 @@ def get_refine_settings(config: dict[str, Any], modality: str = 'anatomical') ->
         'tolerance_mm3': float(get_config_value(config, f'{key}.tolerance_mm3',
                                                 default=DEFAULT_TOLERANCE_MM3)),
         'tissue_factor': float(get_config_value(config, f'{key}.tissue_factor', default=2.0)),
+        'seed_template': seed_template,
         'qc': qc,
     }
 
@@ -87,18 +108,21 @@ def atlas_to_subject_chain(
     session: str,
     cohort: str | None = None,
     direct: bool = False,
+    seed: bool = False,
 ) -> list[str] | None:
     """`-t` arguments taking an atlas-space image into subject T2w space.
 
     Returned in antsApplyTransforms order: each leg from `inverse_transform_args`,
-    the subject->template leg before the template->SIGMA leg.
+    the subject->template leg before the template->SIGMA leg. `direct` and `seed`
+    select a single subject->SIGMA leg (`T2w_to_SIGMA_` or `T2w_to_SIGMA_seed_`).
 
     Returns None if any required transform is missing.
     """
     subj = Path(transforms_dir) / subject / session
-    if direct:
-        affine = subj / f'{subject}_{session}_T2w_to_SIGMA_0GenericAffine.mat'
-        inverse = subj / f'{subject}_{session}_T2w_to_SIGMA_1InverseWarp.nii.gz'
+    if direct or seed:
+        name = SEED_NAME if seed else 'T2w_to_SIGMA'
+        affine = subj / f'{subject}_{session}_{name}_0GenericAffine.mat'
+        inverse = subj / f'{subject}_{session}_{name}_1InverseWarp.nii.gz'
         if not affine.exists():
             return None
         return inverse_transform_args(affine, inverse)
@@ -209,6 +233,7 @@ def run_brain_mask_refinement(
     direct: bool = False,
     parcellation_file: Path | None = None,
     n4_file: Path | None = None,
+    seeded: bool = False,
     apply: bool | None = None,
     qc_dir: Path | None = None,
     work_dir: Path | None = None,
@@ -224,6 +249,9 @@ def run_brain_mask_refinement(
         dir); the one on the derivatives grid is used.
     apply : bool, optional
         Overrides `refine.apply` from the config.
+    seeded : bool
+        Take the atlas through the pre-template seed registration
+        (`T2w_to_SIGMA_seed_*`); see `run_seeded_mask_refinement`.
     settings : dict, optional
         Overrides the config entirely (as returned by `get_refine_settings`).
 
@@ -257,7 +285,8 @@ def run_brain_mask_refinement(
     if parcellation_file is None or not Path(parcellation_file).exists():
         return skipped('no atlas parcellation in subject space; propagate the atlas first')
     chain = atlas_to_subject_chain(study_root / 'transforms', study_root / 'templates',
-                                   subject, session, cohort=cohort, direct=direct)
+                                   subject, session, cohort=cohort, direct=direct,
+                                   seed=seeded)
     if chain is None:
         return skipped('atlas->subject transform chain incomplete')
 
@@ -321,7 +350,8 @@ def run_brain_mask_refinement(
         if not initial_p.exists():
             shutil.copy(mask_p, initial_p)
         out_p = mask_p
-        _restrip(n4_file, refined, anat, subject, session, config)
+        _restrip(n4_file, refined, anat, subject, session, config,
+                 registered=not seeded)
     else:
         out_p = anat / f'{subject}_{session}_desc-refinedbrain_mask.nii.gz'
     nib.save(nib.Nifti1Image(refined.astype(np.uint8), mask_hdr.affine, mask_hdr.header),
@@ -363,7 +393,7 @@ def run_brain_mask_refinement(
 
 
 def _restrip(n4_file: Path, mask: np.ndarray, anat: Path, subject: str, session: str,
-             config: dict[str, Any]) -> None:
+             config: dict[str, Any], registered: bool = True) -> None:
     """Rewrite desc-skullstrip / desc-preproc T2w from the N4 image and `mask`.
 
     Mirrors run_anatomical_preprocessing: skullstrip = N4 * mask, preproc =
@@ -378,8 +408,100 @@ def _restrip(n4_file: Path, mask: np.ndarray, anat: Path, subject: str, session:
              str(anat / f'{subject}_{session}_desc-skullstrip_T2w.nii.gz'))
     nib.save(nib.Nifti1Image(brain * factor, n4.affine, n4.header),
              str(anat / f'{subject}_{session}_desc-preproc_T2w.nii.gz'))
-    logger.warning('%s %s: refined mask applied; tissue probsegs and the T2w->template '
-                   'registration still come from the first-pass mask', subject, session)
+    if registered:
+        logger.warning('%s %s: refined mask applied; tissue probsegs and the T2w->template '
+                       'registration still come from the first-pass mask', subject, session)
+    else:
+        logger.warning('%s %s: refined mask applied before registration; tissue probsegs '
+                       'still come from the first-pass mask', subject, session)
+
+
+def register_refinement_seed(
+    config: dict[str, Any],
+    subject: str,
+    session: str,
+    study_root: Path,
+    settings: dict[str, Any] | None = None,
+    n_cores: int = 4,
+    force: bool = False,
+) -> Path:
+    """First-pass stripped T2w -> SIGMA SyN, written as `T2w_to_SIGMA_seed_*`.
+
+    The seed for `run_seeded_mask_refinement`. The moving image is the first-pass
+    `desc-preproc_T2w`; the fixed image is the study-space SIGMA template, brain-only
+    unless `refine.seed_template` is `unmasked`. Returns the transforms directory.
+    """
+    from neurofaune.templates.anat_registration import register_anat_to_sigma_direct
+
+    s = settings or get_refine_settings(config)
+    key = 'template_masked' if s['seed_template'] == 'masked' else 'template'
+    sigma = Path(get_config_value(config, f'atlas.study_space.{key}'))
+    out = Path(study_root) / 'transforms' / subject / session
+    inverse = out / f'{subject}_{session}_{SEED_NAME}_1InverseWarp.nii.gz'
+    if inverse.exists() and not force:
+        return out
+    preproc = (Path(study_root) / 'derivatives' / subject / session / 'anat'
+               / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+    register_anat_to_sigma_direct(t2w_file=preproc, sigma_template=sigma, output_dir=out,
+                                  subject=subject, session=session, n_cores=n_cores,
+                                  generate_qc=False, name=SEED_NAME)
+    return out
+
+
+def run_seeded_mask_refinement(
+    config: dict[str, Any],
+    subject: str,
+    session: str,
+    study_root: Path,
+    raw_t2w: Sequence[Path],
+    n_cores: int = 4,
+    apply: bool | None = None,
+    force: bool = False,
+    qc_dir: Path | None = None,
+    montage: bool = True,
+    settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Refine a first-pass mask before any template exists.
+
+    Registers the first-pass stripped T2w straight to SIGMA, pulls the parcellation
+    back through that seed, and runs `run_brain_mask_refinement` against it. Run it
+    after the first-pass strip and before template building. With `refine.apply`
+    (the default) the templates are then built from the refined brains.
+
+    The seed parcellation is kept beside the seed transforms as
+    `<sub>_<ses>_T2w_to_SIGMA_seed_dseg.nii.gz`. It is a refinement input only; the
+    session's `atlas-SIGMA_dseg` comes later, through the cohort template.
+    """
+    s = settings or get_refine_settings(config)
+    if apply is not None:
+        s = {**s, 'apply': bool(apply)}
+    base = {'subject': subject, 'session': session}
+    if s['method'] == 'none':
+        return {**base, 'status': 'disabled'}
+    study_root = Path(study_root)
+    anat = study_root / 'derivatives' / subject / session / 'anat'
+    done = anat / (f'{subject}_{session}_desc-initialbrain_mask.nii.gz' if s['apply']
+                   else f'{subject}_{session}_desc-refinedbrain_mask.nii.gz')
+    if done.exists() and not force:
+        return {**base, 'status': 'skipped', 'reason': f'already refined ({done.name})'}
+    preproc = anat / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+    if not preproc.exists():
+        return {**base, 'status': 'skipped', 'reason': 'no preprocessed T2w'}
+
+    xf = register_refinement_seed(config, subject, session, study_root, settings=s,
+                                  n_cores=n_cores, force=force)
+    chain = atlas_to_subject_chain(study_root / 'transforms', study_root / 'templates',
+                                   subject, session, seed=True)
+    if chain is None:
+        return {**base, 'status': 'skipped', 'reason': 'seed registration incomplete'}
+    labels = Path(get_config_value(config, 'atlas.study_space.parcellation'))
+    parcellation = apply_chain(labels, preproc, chain,
+                               xf / f'{subject}_{session}_{SEED_NAME}_dseg.nii.gz',
+                               'GenericLabel')
+    row = run_brain_mask_refinement(config, subject, session, study_root, raw_t2w,
+                                    seeded=True, parcellation_file=parcellation,
+                                    settings=s, qc_dir=qc_dir, montage=montage)
+    return {**row, 'seed': s['seed_template']}
 
 
 def write_refinement_summary(rows: Sequence[dict[str, Any]], output_dir: Path) -> Path | None:

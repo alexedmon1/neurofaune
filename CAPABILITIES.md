@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`
 
-**Entry points:** 181 across 10 stages.
+**Entry points:** 183 across 10 stages.
 
 
 ## analysis
@@ -125,7 +125,9 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `register_refinement_seed` | `neurofaune.preprocess.workflows.anat_mask_refinement` | First-pass stripped T2w -> SIGMA SyN, written as `T2w_to_SIGMA_seed_*`. | — |
 | `run_brain_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine one session's T2w brain mask per `anatomical.skull_strip.refine`. | `atlas.study_space.brain_mask`, `atlas.study_space.parcellation`, `atlas.study_space.template_masked` |
+| `run_seeded_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine a first-pass mask before any template exists. | `atlas.study_space.parcellation` |
 | `extract_slices_from_volume` | `neurofaune.preprocess.workflows.anat_preprocess` | Extract specific slices from a 3D volume and merge them. | — |
 | `register_to_atlas_ants` | `neurofaune.preprocess.workflows.anat_preprocess` | Register subject to atlas using ANTs. | `anatomical.registration.convergence_threshold`, `anatomical.registration.convergence_window_size`, `anatomical.registration.iterations`, `anatomical.registration.metric_bins`, `anatomical.registration.shrink_factors`, `anatomical.registration.smoothing_sigmas`, `anatomical.registration.syn_params` |
 | `run_anatomical_preprocessing` | `neurofaune.preprocess.workflows.anat_preprocess` | Run anatomical T2w preprocessing workflow. | `anatomical.intensity_normalization.factor`, `anatomical.n4.convergence_threshold`, `anatomical.n4.iterations`, `anatomical.n4.shrink_factor`, `anatomical.skull_strip.atropos_convergence`, `anatomical.skull_strip.atropos_iterations`, `anatomical.skull_strip.method`, `anatomical.skull_strip.mrf_radius`, `anatomical.skull_strip.mrf_smoothing_factor`, `anatomical.skull_strip.n_classes`, `anatomical.skull_strip.tissue_confidence_threshold`, `anatomical.tissue_segmentation.convergence`, `anatomical.tissue_segmentation.enabled`, `anatomical.tissue_segmentation.iterations`, `anatomical.tissue_segmentation.mrf_radius`, `anatomical.tissue_segmentation.mrf_smoothing_factor`, `anatomical.tissue_segmentation.n_classes` |

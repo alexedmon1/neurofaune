@@ -2,17 +2,20 @@
 """
 Second-pass atlas-guided refinement of brain masks, with QC, for an existing study.
 
-The same stage runs automatically in `batch_preprocess_anat.py` phase 2 when
-`anatomical.skull_strip.refine.method` is `atlas_iterative`; this script re-runs it
-over sessions that are already registered and have a propagated atlas. All logic
-lives in `neurofaune.preprocess.workflows.anat_mask_refinement`.
+The same stage runs automatically in `batch_preprocess_anat.py` when
+`anatomical.skull_strip.refine.method` is `atlas_iterative`. All logic lives in
+`neurofaune.preprocess.workflows.anat_mask_refinement`. Two modes:
 
-    initial strip -> register to atlas -> this script -> (optionally re-register)
+    --seeded   initial strip -> this script (T2w->SIGMA seed SyN) -> build templates
+               For a fresh study: no template or propagated atlas needed. Sessions
+               are every one with a desc-preproc_T2w.
+    default    initial strip -> register -> propagate atlas -> this script
+               Over sessions already registered, with a propagated atlas.
 
 Settings come from the study config (`anatomical.skull_strip.refine.*`); the flags
-below override them. Nothing is overwritten unless --apply is given (or
-`refine.apply: true`): by default refined masks land beside the originals as
-`desc-refinedbrain_mask` so the montages can be reviewed first.
+below override them. `refine.apply` defaults to true: the refined mask replaces
+`desc-brain_mask` (the original kept as `desc-initialbrain_mask`). Pass --no-apply
+to write `desc-refinedbrain_mask` beside the originals and review the montages first.
 
 Usage:
     uv run python scripts/refine_brain_masks.py \
@@ -32,6 +35,7 @@ from neurofaune.preprocess.workflows.anat_mask_refinement import (  # noqa: E402
     PARCELLATION_NAMES,
     get_refine_settings,
     run_brain_mask_refinement,
+    run_seeded_mask_refinement,
     write_refinement_summary,
 )
 
@@ -50,11 +54,17 @@ def main():
                         help='default: paths.study_root from the config')
     parser.add_argument('--output-dir', type=Path, default=None,
                         help='CSV/summary/montages (default: <study>/qc/mask_refinement)')
-    parser.add_argument('--apply', action='store_true',
-                        help='replace desc-brain_mask and re-strip the T2w '
-                             '(default: refine.apply from the config)')
+    parser.add_argument('--apply', action=argparse.BooleanOptionalAction, default=None,
+                        help='replace desc-brain_mask and re-strip the T2w; --no-apply '
+                             'writes desc-refinedbrain_mask alongside '
+                             '(default: refine.apply from the config, true)')
     parser.add_argument('--direct-to-sigma', action='store_true',
                         help='sessions were registered straight to SIGMA, no template')
+    parser.add_argument('--seeded', action='store_true',
+                        help='before templates exist: register each first-pass T2w to '
+                             'SIGMA (T2w_to_SIGMA_seed_*) and refine against that')
+    parser.add_argument('--n-cores', type=int, default=4,
+                        help='threads per seed registration (--seeded)')
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--subjects', nargs='+', default=None,
                         help='restrict to these subject ids (e.g. sub-4C sub-10C)')
@@ -83,12 +93,13 @@ def main():
     for key in ('iterations', 'target_coverage', 'tolerance_mm3'):
         if getattr(args, key) is not None:
             settings[key] = getattr(args, key)
-    if args.apply:
-        settings['apply'] = True
+    if args.apply is not None:
+        settings['apply'] = args.apply
 
     derivatives = study_root / 'derivatives'
+    names = ('desc-preproc_T2w',) if args.seeded else PARCELLATION_NAMES
     sessions = sorted({(p.parent.parent.parent.name, p.parent.parent.name)
-                       for name in PARCELLATION_NAMES
+                       for name in names
                        for p in derivatives.glob(f'sub-*/ses-*/anat/*_{name}.nii.gz')})
     if args.subjects:
         wanted = set(args.subjects)
@@ -96,11 +107,17 @@ def main():
 
     rows = []
     for i, (sub, ses) in enumerate(sessions, 1):
-        row = run_brain_mask_refinement(
-            config, sub, ses, study_root,
-            raw_t2w=sorted((bids_dir / sub / ses / 'anat').glob('*_T2w.nii.gz')),
-            direct=args.direct_to_sigma, qc_dir=output_dir,
-            montage=i % args.montage_every == 0, settings=settings)
+        raw_t2w = sorted((bids_dir / sub / ses / 'anat').glob('*_T2w.nii.gz'))
+        if args.seeded:
+            row = run_seeded_mask_refinement(
+                config, sub, ses, study_root, raw_t2w, n_cores=args.n_cores,
+                qc_dir=output_dir, montage=i % args.montage_every == 0,
+                settings=settings)
+        else:
+            row = run_brain_mask_refinement(
+                config, sub, ses, study_root, raw_t2w,
+                direct=args.direct_to_sigma, qc_dir=output_dir,
+                montage=i % args.montage_every == 0, settings=settings)
         rows.append(row)
         if row['status'] == 'refined':
             logger.info('[%d/%d] %s %s %s', i, len(sessions), sub, ses,
@@ -119,7 +136,7 @@ def main():
         logger.warning('%d session(s) FAILED QC -- review their montages before '
                        'using them: %s', len(failed), ', '.join(failed))
     if not settings['apply']:
-        logger.info('Originals untouched; refined masks written as '
+        logger.info('Originals untouched (--no-apply); refined masks written as '
                     'desc-refinedbrain_mask. Re-run with --apply to replace them.')
     return 0
 

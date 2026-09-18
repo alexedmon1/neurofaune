@@ -164,12 +164,14 @@ anatomical:
     # of the olfactory bulb, and refinement takes tissue fraction 90.3% -> 98.9%.
     refine:
       method: "atlas_iterative"     # 'atlas_iterative' or 'none'
-      # Runs in batch_preprocess_anat.py phase 2, after atlas propagation. false:
-      # write desc-refinedbrain_mask beside the original for review. true: replace
-      # desc-brain_mask (original kept as desc-initialbrain_mask) and re-strip
-      # desc-skullstrip/desc-preproc T2w from the N4 image. Tissue probsegs and the
-      # registration still come from the first-pass mask either way.
-      apply: false
+      # Runs in batch_preprocess_anat.py phase 0, before the templates, seeded by a
+      # direct T2w->SIGMA registration. true: replace desc-brain_mask (original kept
+      # as desc-initialbrain_mask) and re-strip desc-skullstrip/desc-preproc T2w from
+      # the N4 image, so the templates are built from the refined brains. false:
+      # write desc-refinedbrain_mask beside the original for review only -- the
+      # templates are then built from first-pass brains, which carry the non-brain
+      # the refinement removes. Tissue probsegs come from the first-pass mask.
+      apply: true
       # Passes stop once the mask covers `target_coverage` of the parcellation from
       # the ORIGINAL registration, held fixed. Convergence is deliberately NOT the
       # stop rule: each pass registers to the previously stripped image, so a clipped
@@ -185,6 +187,9 @@ anatomical:
       target_coverage: 0.99         # stop here; the best-covering pass is kept
       tolerance_mm3: 25             # diagnostic only -- marks a pass as settled
       tissue_factor: 2.0            # a voxel counts as tissue above this x background
+      # SIGMA template the pre-template seed registers to (run_seeded_mask_refinement):
+      # 'masked' (brain to brain, matching the stripped moving image) or 'unmasked'.
+      seed_template: masked
       qc:
         volume_mm3: [1700, 2700]    # plausible rat brain incl. surface CSF
         atlas_coverage: 0.95        # parcellation-relative -- blind to misregistration

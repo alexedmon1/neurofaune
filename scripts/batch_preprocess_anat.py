@@ -2,7 +2,13 @@
 """
 Batch anatomical preprocessing with template building and registration.
 
-This script implements the two-phase anatomical preprocessing workflow:
+This script implements the anatomical preprocessing workflow:
+
+Phase 0: Brain Masks (all subjects)
+- First-pass skull strip
+- Refine each mask against SIGMA through a direct T2w->SIGMA seed registration
+  (anatomical.skull_strip.refine; refine.apply, the default, replaces the first-pass
+  brain with the refined one), so the templates below are built from refined brains
 
 Phase 1: Template Building (subset of subjects)
 - Select best subjects based on quality metrics
@@ -14,8 +20,7 @@ Phase 2: Full Processing (all subjects)
 - Preprocess remaining subjects
 - Register all subjects to cohort template
 - Propagate SIGMA atlas to each subject
-- Refine each brain mask against the atlas (anatomical.skull_strip.refine; on by
-  default, writes desc-refinedbrain_mask unless refine.apply is true)
+- Refine any mask phase 0 did not (e.g. --phase 2 alone), through the template chain
 
 Usage:
     # Standard workflow with quality-based template building
@@ -61,6 +66,7 @@ from neurofaune.templates.registration_qc import generate_template_qc_report
 from neurofaune.preprocess.workflows.anat_mask_refinement import (
     get_refine_settings,
     run_brain_mask_refinement,
+    run_seeded_mask_refinement,
     write_refinement_summary,
 )
 from neurofaune.utils.select_anatomical import is_3d_only_subject
@@ -383,6 +389,76 @@ def preprocess_subject(
             'status': 'failed',
             'error': str(e)
         }
+
+
+def run_phase0_brain_masks(
+    subjects: List[Dict[str, Any]],
+    output_dir: Path,
+    config: Dict[str, Any],
+    cohort: str,
+    n_cores: int = 4,
+    force: bool = False
+) -> Dict[str, Any]:
+    """
+    Phase 0: first-pass strip and seeded mask refinement for every subject.
+
+    Runs before any template exists. Templates built from first-pass strips carry
+    the non-brain tissue the refinement removes, and every subject then registers
+    to that target, so the refinement has to come first. Its atlas comes from a
+    direct T2w->SIGMA seed registration (`run_seeded_mask_refinement`).
+    """
+    print("\n" + "="*80)
+    print("PHASE 0: BRAIN MASKS (first-pass strip + seeded refinement)")
+    print("="*80)
+
+    refine = get_refine_settings(config)
+    results = {'preprocessed': 0, 'mask_refined': 0, 'mask_refinement_qc_failed': [],
+               'failed': []}
+    if refine['method'] != 'none' and not refine['apply']:
+        print("WARNING: refine.apply is false -- refined masks are written alongside "
+              "for review, and the templates will be built from FIRST-PASS brains.")
+    rows = []
+    for i, subj in enumerate(subjects):
+        subject, session = subj['subject'], subj['session']
+        print(f"\n[{i+1}/{len(subjects)}] {subject} {session}")
+        preproc = preprocess_subject(subj, output_dir, config, force=force)
+        if preproc['status'] == 'failed':
+            results['failed'].append({'subject': subject, 'session': session,
+                                      'stage': 'preprocessing',
+                                      'error': preproc.get('error', 'Unknown')})
+            continue
+        subj['preprocessed_t2w'] = preproc['preprocessed_t2w']
+        subj['brain_mask'] = preproc['brain_mask']
+        results['preprocessed'] += 1
+        if refine['method'] == 'none':
+            continue
+        try:
+            row = run_seeded_mask_refinement(
+                config, subject, session, output_dir, raw_t2w=subj['t2w_files'],
+                n_cores=n_cores, force=force,
+                qc_dir=output_dir / 'qc' / 'mask_refinement' / cohort)
+        except Exception as e:
+            print(f"    ✗ Mask refinement failed: {e}")
+            results['failed'].append({'subject': subject, 'session': session,
+                                      'stage': 'mask_refinement', 'error': str(e)})
+            continue
+        if row['status'] != 'refined':
+            print(f"    - Refinement {row['status']}: {row.get('reason', '')}")
+            continue
+        rows.append(row)
+        results['mask_refined'] += 1
+        if row['qc_passed']:
+            print(f"    ✓ Refined {row['volume_before_mm3']:.0f} -> "
+                  f"{row['volume_after_mm3']:.0f} mm3")
+        else:
+            results['mask_refinement_qc_failed'].append(f'{subject}/{session}')
+            print(f"    ! Refined but FAILED QC: {row['qc_failures']} "
+                  f"-- review {row['montage']}")
+
+    table = write_refinement_summary(rows, output_dir / 'qc' / 'mask_refinement' / cohort)
+    if table:
+        print(f"\nMask refinement table: {table}")
+    return results
 
 
 def run_phase1_template_building(
@@ -739,8 +815,10 @@ def run_phase2_full_processing(
                 })
                 continue
 
-        # Step 4: Atlas-guided brain mask refinement (second pass; needs the
-        # registration and propagated atlas above). anatomical.skull_strip.refine
+        # Step 4: Atlas-guided brain mask refinement through the template chain.
+        # Only for sessions phase 0 did not refine (its output marks them done);
+        # refining again here would score the mask against a parcellation that
+        # was itself registered on the refined brain.
         if refine['method'] == 'none':
             continue
         print(f"  Step 4: Brain mask refinement ({refine['method']})")
@@ -809,8 +887,11 @@ def main():
                         help='Register directly to SIGMA (not recommended)')
     parser.add_argument('--force', action='store_true',
                         help='Force reprocessing even if outputs exist')
-    parser.add_argument('--phase', choices=['1', '2', 'all'], default='all',
-                        help='Run specific phase (1=template, 2=full, all=both)')
+    parser.add_argument('--phase', choices=['0', '1', '2', 'all'], default='all',
+                        help='Run specific phase (0=brain masks, 1=template, 2=full, '
+                             'all=0+1+2)')
+    parser.add_argument('--n-cores', type=int, default=4,
+                        help='Threads per registration (phase-0 seed SyN)')
     parser.add_argument('--exclude-3d', action='store_true',
                         help='Exclude subjects that only have 3D T2w scans (no 2D available)')
     parser.add_argument('--n-jobs', type=int, default=1,
@@ -896,6 +977,20 @@ def main():
         print(f"# Processing cohort: {cohort}")
         print(f"{'#'*80}")
 
+        # Phase 0: first-pass strip + seeded refinement, before any template
+        if args.phase in ['0', 'all']:
+            phase0 = run_phase0_brain_masks(
+                subjects=cohort_subjects,
+                output_dir=args.output_dir,
+                config=config,
+                cohort=cohort,
+                n_cores=args.n_cores,
+                force=args.force
+            )
+            all_results.setdefault(cohort, {})['phase0'] = phase0
+            if args.phase == '0':
+                continue
+
         # Phase 1: Template building
         if args.phase in ['1', 'all'] and not args.skip_template_build and not args.direct_to_sigma:
             manifest, template_path = run_phase1_template_building(
@@ -947,7 +1042,7 @@ def main():
                 force=args.force
             )
 
-            all_results[cohort] = results
+            all_results[cohort] = {**all_results.get(cohort, {}), **results}
 
     # Print summary
     print("\n\n" + "="*80)
@@ -956,6 +1051,18 @@ def main():
 
     for cohort, results in all_results.items():
         print(f"\n{cohort}:")
+        phase0 = results.get('phase0')
+        if phase0:
+            print(f"  Phase 0: {phase0['preprocessed']} stripped, "
+                  f"{phase0['mask_refined']} masks refined")
+            if phase0['mask_refinement_qc_failed']:
+                print(f"  Refined masks failing QC (review montages): "
+                      f"{', '.join(phase0['mask_refinement_qc_failed'])}")
+            for fail in phase0['failed']:
+                print(f"    - {fail['subject']} {fail['session']}: "
+                      f"{fail['stage']} - {fail['error'][:50]}...")
+        if 'total' not in results:
+            continue
         print(f"  Total subjects: {results['total']}")
         print(f"  Preprocessed: {results['preprocessed']}")
         print(f"  Registered: {results['registered']}")
@@ -988,7 +1095,8 @@ def main():
     print(f"\nSummary saved to: {summary_file}")
 
     # Generate omnibus skull strip QC report
-    total_preprocessed = sum(r['preprocessed'] for r in all_results.values())
+    total_preprocessed = sum(r.get('preprocessed', r.get('phase0', {}).get('preprocessed', 0))
+                             for r in all_results.values())
     if total_preprocessed > 0:
         try:
             from neurofaune.preprocess.qc.batch_summary import generate_skull_strip_omnibus

@@ -71,7 +71,8 @@ tag.
 uv run python scripts/init_study.py /path/to/study --name "Study" --bids-root /path/to/bids
 uv run python scripts/build_templates.py --config config.yaml --cohort p60 --modality anat
 
-# Phase 2: Preprocessing (all subjects)
+# Phase 2: Preprocessing (all subjects). Anat runs its own phases in order:
+# 0 first-pass strip + seeded mask refinement -> 1 templates -> 2 register/propagate
 uv run python scripts/batch_preprocess_anat.py /path/to/bids /path/to/study --config config.yaml
 uv run python scripts/batch_preprocess_dwi.py --config config.yaml \
     --bids-root /path/to/bids --output-root /path/to/study
