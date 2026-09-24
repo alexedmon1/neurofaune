@@ -230,9 +230,13 @@ def test_float_precision_is_always_requested(tmp_path, chunk_env):
     assert "--float" in calls[0]["argv"]
 
 
-def test_long_timeseries_is_warped_in_bounded_chunks(tmp_path, chunk_env):
+def test_long_timeseries_is_warped_in_bounded_chunks(tmp_path, chunk_env, monkeypatch):
     """Peak memory must follow TIMESERIES_CHUNK, not the run length."""
     calls, sigma, mov, aff = chunk_env
+    # Pin the merge path: with FSL absent (CI) the fallback runs instead, and this
+    # test would silently stop checking that the chunks avoid numpy.
+    monkeypatch.setattr("neurofaune.templates.sigma_warp.shutil.which",
+                        lambda _: "/usr/local/fsl/bin/fslmerge")
     n_vols = TIMESERIES_CHUNK * 2 + 7
     bold = _nii(tmp_path / "in" / "bold.nii.gz", shape=SHAPE + (n_vols,))
 
