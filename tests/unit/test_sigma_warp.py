@@ -198,6 +198,13 @@ def chunk_env(tmp_path, monkeypatch):
     calls = []
 
     def fake_run(cmd, **kw):
+        if cmd[0] == "fslmerge":
+            # -t out in1 in2 ...: concatenate along time, as FSL would
+            out, parts = Path(cmd[2]), [nib.load(str(c)) for c in cmd[3:]]
+            n = sum(p.shape[3] for p in parts)
+            calls.append({"argv": cmd, "n_vols": n, "merged": len(parts)})
+            _nii(out, shape=parts[0].shape[:3] + (n,))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         src = Path(cmd[cmd.index("-i") + 1])
         out = Path(cmd[cmd.index("-o") + 1])
         img = nib.load(str(src))
@@ -232,12 +239,17 @@ def test_long_timeseries_is_warped_in_bounded_chunks(tmp_path, chunk_env):
     got = warp_maps_to_sigma({"bold": bold}, mov, sigma, tmp_path / "out",
                              "sub-1X", "ses-1", aff, None, suffix_style="bold")
 
-    assert len(calls) == 3, "one ANTs call per chunk"
-    for c in calls:
+    ants = [c for c in calls if c["argv"][0] == "antsApplyTransforms"]
+    merges = [c for c in calls if c["argv"][0] == "fslmerge"]
+    assert len(ants) == 3, "one ANTs call per chunk"
+    for c in ants:
         argv = c["argv"]
         assert argv[argv.index("-e") + 1] == "3"
         assert c["n_vols"] <= TIMESERIES_CHUNK, "a chunk exceeded the memory bound"
-    assert sum(c["n_vols"] for c in calls) == n_vols, "lost volumes across chunks"
+    assert sum(c["n_vols"] for c in ants) == n_vols, "lost volumes across chunks"
+    # The chunks are concatenated by fslmerge, not loaded into numpy: assembling
+    # them in Python cost ~15 GB per session on the cuprizone cohort.
+    assert len(merges) == 1 and merges[0]["merged"] == 3
     # every timepoint survives the split/merge, in one 4-D image
     merged = nib.load(str(got["bold"]))
     assert merged.ndim == 4 and merged.shape[3] == n_vols
@@ -324,3 +336,25 @@ def test_resolver_reports_every_directory_it_tried(tmp_path):
     assert any("nope" in n for n in names)
     assert any(n.endswith("transforms") for n in names)
     assert any(n.endswith("p60") for n in names)
+
+
+def test_merge_without_fslmerge_writes_float32_in_one_pass(tmp_path, monkeypatch):
+    """The numpy fallback must not reproduce the float64 blow-up it replaced."""
+    from neurofaune.templates.sigma_warp import _merge_chunks
+
+    monkeypatch.setattr("neurofaune.templates.sigma_warp.shutil.which", lambda _: None)
+    chunks = []
+    for i, n in enumerate((3, 2)):
+        data = np.full(SHAPE + (n,), float(i + 1), dtype=np.float32)
+        c = tmp_path / f"chunk{i}.nii.gz"
+        nib.save(nib.Nifti1Image(data, np.eye(4)), str(c))
+        chunks.append(c)
+
+    dst = tmp_path / "merged.nii.gz"
+    _merge_chunks(chunks, dst)
+
+    got = nib.load(str(dst))
+    assert got.shape == SHAPE + (5,)
+    assert got.get_data_dtype() == np.float32
+    data = np.asarray(got.dataobj)
+    assert np.allclose(data[..., :3], 1.0) and np.allclose(data[..., 3:], 2.0)

@@ -303,6 +303,45 @@ def _run_ants(cmd: List[str]) -> None:
     raise RuntimeError(detail)
 
 
+def _merge_chunks(chunks: Sequence[Path], dst: Path) -> None:
+    """Concatenate warped chunks along time without holding the series in RAM.
+
+    Chunking bounds what ANTs needs; assembling the result in numpy undid it.
+    ``nib.concat_images(...).dataobj`` materialises the whole SIGMA-space series
+    as float64 -- 10.3 GB for 128x128x218x360 -- and ``.astype(np.float32)`` adds
+    another 5.1 GB before the save. Measured on the cuprizone cohort
+    (2026-09-24): ~15 GB peak per session, so three concurrent sessions
+    exhausted a 31 GB machine and drove it into swap.
+
+    fslmerge streams the concatenation through its own I/O, so this costs
+    essentially no Python memory. The numpy path is kept for installations
+    without FSL, and writes float32 directly: one copy of the series, not three.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    if shutil.which("fslmerge"):
+        res = subprocess.run(["fslmerge", "-t", str(dst), *[str(c) for c in chunks]],
+                             capture_output=True, text=True)
+        if res.returncode == 0:
+            return
+        print(f"  fslmerge failed (rc={res.returncode}), falling back to numpy:\n"
+              f"  {res.stderr.strip()[:300]}")
+
+    first = nib.load(str(chunks[0]))
+    n_vols = sum(nib.load(str(c)).shape[3] for c in chunks)
+    out = np.empty(first.shape[:3] + (n_vols,), dtype=np.float32)
+    t = 0
+    for c in chunks:
+        img = nib.load(str(c))
+        n = img.shape[3]
+        out[..., t:t + n] = np.asarray(img.dataobj, dtype=np.float32)
+        t += n
+    outimg = nib.Nifti1Image(out, first.affine, first.header)
+    outimg.header.set_data_dtype(np.float32)
+    nib.save(outimg, str(dst))
+
+
 def _warp_timeseries(src: Path, dst: Path, sigma_template: Path,
                      chain: Sequence[str], interpolation: str) -> None:
     """Warp a 4-D series in chunks of :data:`TIMESERIES_CHUNK` volumes.
@@ -339,16 +378,7 @@ def _warp_timeseries(src: Path, dst: Path, sigma_template: Path,
             chunk_in.unlink()
             warped_chunks.append(chunk_out)
 
-        merged = nib.concat_images([nib.load(str(c)) for c in warped_chunks],
-                                   axis=3)
-        # concat_images gives (x,y,z,1,t) when the parts are themselves 4-D.
-        data = np.asarray(merged.dataobj)
-        if data.ndim == 5:
-            data = data.reshape(data.shape[:3] + (-1,))
-        ref = nib.load(str(warped_chunks[0]))
-        outimg = nib.Nifti1Image(data.astype(np.float32), ref.affine, ref.header)
-        outimg.header.set_data_dtype(np.float32)
-        nib.save(outimg, str(dst))
+        _merge_chunks(warped_chunks, dst)
 
         n_out = nib.load(str(dst)).shape[3]
         if n_out != n_vols:
