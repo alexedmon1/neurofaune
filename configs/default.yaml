@@ -469,6 +469,13 @@ functional:
       enabled: true  # Enable to extract physiological noise components
       num_components: 5  # Number of components from each tissue (CSF, WM)
       variance_threshold: 0.5  # Minimum tissue probability threshold
+      # A tissue mask below min_voxels_per_component * num_components is treated
+      # as broken and raises, naming the tissue and its size. Set
+      # allow_reduced_components: true to fit however many components the mask
+      # supports instead -- the old behaviour, which is silent (a 4-voxel WM mask
+      # yields 4 "WM components" and the session completes).
+      min_voxels_per_component: 10
+      allow_reduced_components: false
 
     # GLM confound regression - motion regressors always computed
     glm:

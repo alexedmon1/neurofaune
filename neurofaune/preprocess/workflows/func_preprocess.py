@@ -2251,7 +2251,9 @@ def run_functional_preprocessing(
             erode_voxels=acompcor_config.get('erode_voxels', 1),
             brain_mask=brain_mask,
             drop_first_component=acompcor_config.get('drop_first_component', False),
-            output_file=acompcor_file
+            output_file=acompcor_file,
+            min_voxels_per_component=acompcor_config.get('min_voxels_per_component', 10),
+            allow_reduced_components=acompcor_config.get('allow_reduced_components', False)
         )
 
         # Generate aCompCor QC
@@ -2267,7 +2269,9 @@ def run_functional_preprocessing(
             'qc_report': acompcor_qc_report,
             'n_components': acompcor_results['n_components_csf'] + acompcor_results['n_components_wm'],
             'n_voxels_csf': acompcor_results['n_voxels_csf'],
-            'n_voxels_wm': acompcor_results['n_voxels_wm']
+            'n_voxels_wm': acompcor_results['n_voxels_wm'],
+            'min_voxels_required': acompcor_results['min_voxels_required'],
+            'tissues_below_min': acompcor_results['tissues_below_min']
         }
 
         print(f"  ✓ aCompCor components extracted: {acompcor_file}")

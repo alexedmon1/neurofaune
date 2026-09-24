@@ -31,7 +31,9 @@ def extract_acompcor_components(
     erode_voxels: int = 1,
     brain_mask: Optional[Path] = None,
     drop_first_component: bool = False,
-    output_file: Optional[Path] = None
+    output_file: Optional[Path] = None,
+    min_voxels_per_component: int = 10,
+    allow_reduced_components: bool = False
 ) -> Dict[str, Any]:
     """
     Extract aCompCor components from CSF and white matter regions.
@@ -84,6 +86,15 @@ def extract_acompcor_components(
         checkable per session rather than taken on faith.
     output_file : Path, optional
         Output TSV file for aCompCor regressors
+    min_voxels_per_component : int
+        Voxels each tissue must have per component (default: 10). Below
+        ``min_voxels_per_component * n_components`` the mask is treated as
+        broken and a ValueError is raised naming the tissue and its size.
+    allow_reduced_components : bool
+        Fit however many components the mask supports instead of raising
+        (default: False). This was the old behaviour, and it is silent: a WM
+        mask of 4 voxels yields 4 "WM components" that are noise, and the
+        session completes.
 
     Returns
     -------
@@ -95,6 +106,9 @@ def extract_acompcor_components(
         - 'wm_components': components from WM only
         - 'n_voxels_csf': number of CSF voxels used
         - 'n_voxels_wm': number of WM voxels used
+        - 'min_voxels_required': the floor both tissues were checked against
+        - 'tissues_below_min': {tissue: n_voxels} for any tissue under it
+          (non-empty only when allow_reduced_components is set)
 
     Examples
     --------
@@ -178,19 +192,32 @@ def extract_acompcor_components(
     print(f"  CSF voxels: {n_voxels_csf}")
     print(f"  WM voxels: {n_voxels_wm}")
 
-    if n_voxels_csf < n_components:
-        print(f"  WARNING: Not enough CSF voxels ({n_voxels_csf}) for {n_components} components!")
-        print(f"  Reducing to {n_voxels_csf} components for CSF")
-        n_components_csf = max(1, n_voxels_csf)
-    else:
-        n_components_csf = n_components
-
-    if n_voxels_wm < n_components:
-        print(f"  WARNING: Not enough WM voxels ({n_voxels_wm}) for {n_components} components!")
-        print(f"  Reducing to {n_voxels_wm} components for WM")
-        n_components_wm = max(1, n_voxels_wm)
-    else:
-        n_components_wm = n_components
+    # A tissue mask far smaller than the regressors asked of it is a broken
+    # mask, not a smaller one. Reducing the component count to fit hides that:
+    # on the cuprizone cohort (2026-09-24) a probability threshold left on the
+    # old posterior scale gave 3-6 WM voxels per session, and 33 of 34 subjects
+    # completed with WM regressors fitted to a handful of voxels. Only the
+    # session with 0 failed, deep inside PCA with "0 feature(s)".
+    required = min_voxels_per_component * n_components
+    tissues_below_min = {t: int(n) for t, n in (('CSF', n_voxels_csf), ('WM', n_voxels_wm))
+                         if n < required}
+    if tissues_below_min and not allow_reduced_components:
+        raise ValueError(
+            "aCompCor tissue mask too small for the components requested: "
+            + "; ".join(f"{t} has {n} voxel(s)" for t, n in tissues_below_min.items())
+            + f" -- {n_components} components need at least {required} "
+            f"({min_voxels_per_component} per component). Check the tissue "
+            "probability threshold against the segmentation's posterior scale "
+            "(atlas priors cap posteriors well below 1), the tissue->BOLD "
+            "registration, and erode_voxels. Pass allow_reduced_components=True "
+            "to fit however many components the mask supports instead."
+        )
+    for tissue, n_voxels in tissues_below_min.items():
+        print(f"  WARNING: {tissue} mask has {n_voxels} voxel(s), fewer than the "
+              f"{required} these {n_components} components need; fitting "
+              f"{min(n_components, max(1, n_voxels))} instead (allow_reduced_components)")
+    n_components_csf = min(n_components, max(1, int(n_voxels_csf)))
+    n_components_wm = min(n_components, max(1, int(n_voxels_wm)))
 
     # Extract timeseries from CSF voxels
     print("  Extracting CSF timeseries...")
@@ -283,6 +310,8 @@ def extract_acompcor_components(
         'explained_variance_wm': pca_wm.explained_variance_ratio_,
         'n_voxels_csf': int(n_voxels_csf),
         'n_voxels_wm': int(n_voxels_wm),
+        'min_voxels_required': int(required),
+        'tissues_below_min': tissues_below_min,
         'n_components_csf': int(n_components_csf),
         'n_components_wm': int(n_components_wm),
         'erode_voxels': int(erode_voxels),

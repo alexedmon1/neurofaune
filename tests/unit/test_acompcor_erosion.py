@@ -70,7 +70,10 @@ def test_erosion_falls_back_when_it_would_empty_a_small_mask(tmp_path):
     csf = _write_nifti(tmp_path / "csf.nii.gz", thin)
     wm = _block_mask(tmp_path, "wm", 4, 16)
 
-    res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=1)
+    # min_voxels_per_component=1: this case is about the erosion fallback, and a
+    # 9-voxel CSF mask would otherwise (rightly) be rejected as too small.
+    res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=1,
+                                      min_voxels_per_component=1)
     # erosion of a single-slice patch -> 0 voxels < 5 components -> fall back
     assert res["n_voxels_csf"] == 9
     # WM is a fat cuboid, erosion still applies there
@@ -129,3 +132,55 @@ def test_brain_intersect_strips_rim(tmp_path):
     )
     # rim voxels at x=2 fall outside eroded brain ([3:17]) -> dropped; interior kept
     assert res["n_voxels_wm"] == 1000
+
+
+def test_tiny_tissue_mask_raises_instead_of_reducing_components(tmp_path):
+    """A mask far too small for the components asked of it is broken, not smaller.
+
+    Reducing silently is how 33 of 34 cuprizone subjects completed with WM
+    regressors fitted to 3-6 voxels (2026-09-24).
+    """
+    bold = _bold(tmp_path)
+    csf = _block_mask(tmp_path, "csf", 4, 14)
+    tiny = np.zeros(SHAPE)
+    tiny[8:10, 8:10, 8] = 1.0                      # 4 voxels
+    wm = _write_nifti(tmp_path / "wm.nii.gz", tiny)
+
+    with pytest.raises(ValueError, match=r"WM has 4 voxel\(s\)"):
+        extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=0)
+
+
+def test_reduced_components_allowed_explicitly(tmp_path):
+    bold = _bold(tmp_path)
+    csf = _block_mask(tmp_path, "csf", 4, 14)
+    tiny = np.zeros(SHAPE)
+    tiny[8:10, 8:10, 8] = 1.0
+    wm = _write_nifti(tmp_path / "wm.nii.gz", tiny)
+
+    res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=0,
+                                      allow_reduced_components=True)
+    assert res["n_voxels_wm"] == 4
+    assert res["tissues_below_min"] == {"WM": 4}
+    assert res["min_voxels_required"] == 50
+    assert res["n_components_wm"] <= 4
+
+
+def test_sufficient_masks_report_no_shortfall(tmp_path):
+    bold = _bold(tmp_path)
+    csf = _block_mask(tmp_path, "csf", 4, 14)
+    wm = _block_mask(tmp_path, "wm", 4, 16)
+    res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=0)
+    assert res["tissues_below_min"] == {}
+    assert res["min_voxels_required"] == 50
+
+
+def test_floor_is_configurable(tmp_path):
+    """Synthetic and small-animal cases can lower the floor deliberately."""
+    bold = _bold(tmp_path)
+    csf = _block_mask(tmp_path, "csf", 4, 14)
+    tiny = np.zeros(SHAPE)
+    tiny[8:10, 8:10, 8] = 1.0
+    wm = _write_nifti(tmp_path / "wm.nii.gz", tiny)
+    res = extract_acompcor_components(bold, csf, wm, n_components=2, erode_voxels=0,
+                                      min_voxels_per_component=1)
+    assert res["min_voxels_required"] == 2 and res["tissues_below_min"] == {}
