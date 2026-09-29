@@ -2,7 +2,7 @@
 """
 TBSS Data Preparation Workflow for Rodent DTI
 
-Prepares DTI data for group-level TBSS analysis using the neurofaune
+Prepares diffusion data (DTI, DKI, NODDI) for group-level TBSS analysis using the neurofaune
 registration chain (FA→Template→SIGMA) instead of FSL's standard
 tbss_2_reg pipeline.
 
@@ -45,11 +45,15 @@ import numpy as np
 import pandas as pd
 
 from neurofaune.config import load_config, get_config_value
-from neurofaune.templates.sigma_warp import resolve_tpl_to_sigma_for_cohort
+from neurofaune.templates.sigma_warp import DWI_SIGMA_METRICS, resolve_tpl_to_sigma_for_cohort
 
 
-# Supported DTI metrics
+# Default: the tensor measures, as before.
 DTI_METRICS = ['FA', 'MD', 'AD', 'RD']
+#: Every diffusion measure TBSS can prepare: tensor, kurtosis (DKI) and NODDI.
+#: Taken from DWI_SIGMA_METRICS -- the list the DWI workflow warps to SIGMA --
+#: so a measure added there is available here without a second list to update.
+DIFFUSION_METRICS = list(DWI_SIGMA_METRICS)
 
 
 @dataclass
@@ -123,7 +127,8 @@ def discover_tbss_subjects(
         exclude_file: Path to exclusion list (one subject_session per line)
         exclusion_csv: Path to CSV with subject,session columns (standardized format)
         subject_list: Explicit subject list (format: 'sub-Rat1_ses-p60' per line)
-        metrics: DTI metrics to validate (default: ['FA', 'MD', 'AD', 'RD'])
+        metrics: Diffusion metrics to validate, any of DIFFUSION_METRICS
+            (default: ['FA', 'MD', 'AD', 'RD'])
         use_prewarped: If True, use existing space-SIGMA files (default: True)
 
     Returns:
@@ -306,9 +311,13 @@ def discover_tbss_subjects(
 def _find_metric_file(
     dwi_dir: Path, subject: str, session: str, metric: str
 ) -> Optional[Path]:
-    """Find DTI metric file trying multiple naming patterns."""
+    """Find a native diffusion metric file (DTI, DKI or NODDI), trying known naming patterns."""
     patterns = [
         dwi_dir / f'{subject}_{session}_{metric}.nii.gz',
+        # DKI / NODDI maps carry a model entity (e.g. _model-DKI_MK), so the
+        # plain pattern above never finds them.
+        *([dwi_dir / DWI_SIGMA_METRICS[metric].format(prefix=f'{subject}_{session}')]
+          if metric in DWI_SIGMA_METRICS else []),
         dwi_dir / f'{metric}.nii.gz',
         dwi_dir / f'{subject}_{metric}.nii.gz',
         dwi_dir / 'dti' / f'{metric}.nii.gz',
@@ -974,7 +983,8 @@ def prepare_tbss_data(
     Args:
         config: Configuration dictionary
         output_dir: Output directory for TBSS analysis
-        metrics: Metrics to prepare (default: ['FA', 'MD', 'AD', 'RD'])
+        metrics: Metrics to prepare, any of DIFFUSION_METRICS
+            (default: ['FA', 'MD', 'AD', 'RD'])
         cohorts: Cohorts to include (default: all)
         subjects: Explicit subject list (format: 'sub-Rat1_ses-p60')
         exclude_file: Path to exclusion list
@@ -1267,8 +1277,10 @@ Examples:
     parser.add_argument('--output-dir', type=Path, required=True,
                         help='Output directory for TBSS analysis')
     parser.add_argument('--metrics', nargs='+', default=DTI_METRICS,
-                        choices=DTI_METRICS,
-                        help='Metrics to prepare (default: FA MD AD RD)')
+                        choices=DIFFUSION_METRICS,
+                        help='Metrics to prepare: tensor (FA MD AD RD), kurtosis '
+                             '(MK AK RK KFA) or NODDI (FICVF ODI FISO). '
+                             'Default: FA MD AD RD')
     parser.add_argument('--cohorts', nargs='+', default=['p30', 'p60', 'p90'],
                         help='Cohorts to include (default: p30 p60 p90)')
     parser.add_argument('--subject-list', type=Path,
