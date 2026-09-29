@@ -46,3 +46,16 @@ def test_cli_still_rejects_unknown_metrics(tmp_path):
          "--config", str(tmp_path / "c.yaml"), "--output-dir", str(tmp_path / "o"),
          "--metrics", "MWF"], capture_output=True, text=True)
     assert "invalid choice" in res.stderr
+
+
+def test_atlas_files_follow_the_configured_study_space(tmp_path):
+    cfg = {"paths": {"study_root": str(tmp_path / "study")},
+           "atlas": {"study_space": {"base_path": str(tmp_path / "preprocessing" / "atlas" / "SIGMA_study_space")}}}
+    assert pt._study_space_file(cfg, "SIGMA_InVivo_WM.nii.gz") == \
+        tmp_path / "preprocessing" / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_WM.nii.gz"
+
+
+def test_atlas_files_fall_back_to_study_root(tmp_path):
+    cfg = {"paths": {"study_root": str(tmp_path)}}
+    assert pt._study_space_file(cfg, "SIGMA_InVivo_WM.nii.gz") == \
+        tmp_path / "atlas" / "SIGMA_study_space" / "SIGMA_InVivo_WM.nii.gz"

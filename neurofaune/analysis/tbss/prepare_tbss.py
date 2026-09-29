@@ -56,6 +56,22 @@ DTI_METRICS = ['FA', 'MD', 'AD', 'RD']
 DIFFUSION_METRICS = list(DWI_SIGMA_METRICS)
 
 
+def _study_space_file(config: Dict, filename: str) -> Path:
+    """A file in the study-space SIGMA atlas directory.
+
+    The directory is `atlas.study_space.base_path` when the config sets it, and
+    `<paths.study_root>/atlas/SIGMA_study_space` otherwise. Hard-coding the
+    latter broke every study that keeps its atlas elsewhere (e.g. under a
+    preprocessing/ stage directory) with a FileNotFoundError for the WM
+    probability map, even though the config said where the atlas was.
+    """
+    base = get_config_value(config, 'atlas.study_space.base_path', default=None)
+    if base:
+        return Path(base) / filename
+    study_root = Path(get_config_value(config, 'paths.study_root'))
+    return study_root / 'atlas' / 'SIGMA_study_space' / filename
+
+
 @dataclass
 class SubjectData:
     """Container for subject data paths and validation status."""
@@ -369,8 +385,7 @@ def warp_metric_to_sigma(
 
     if not sigma_template.exists():
         # Try default location
-        study_root = Path(get_config_value(config, 'paths.study_root'))
-        sigma_template = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Brain_Template_Masked.nii.gz'
+        sigma_template = _study_space_file(config, 'SIGMA_InVivo_Brain_Template_Masked.nii.gz')
 
     if not sigma_template.exists():
         raise FileNotFoundError(f"SIGMA template not found: {sigma_template}")
@@ -456,8 +471,7 @@ def create_wm_mask(
 
     # Load WM probability — use override or fall back to SIGMA study-space
     if wm_prob_file is None:
-        study_root = Path(get_config_value(config, 'paths.study_root'))
-        wm_prob_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_WM.nii.gz'
+        wm_prob_file = _study_space_file(config, 'SIGMA_InVivo_WM.nii.gz')
 
     if not Path(wm_prob_file).exists():
         raise FileNotFoundError(
@@ -484,8 +498,7 @@ def create_wm_mask(
 
         # Use brain mask for erosion — override or SIGMA study-space
         if brain_mask_file is None:
-            study_root = Path(get_config_value(config, 'paths.study_root'))
-            brain_mask_file = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Brain_Mask.nii.gz'
+            brain_mask_file = _study_space_file(config, 'SIGMA_InVivo_Brain_Mask.nii.gz')
         if Path(brain_mask_file).exists():
             brain_mask = (nib.load(brain_mask_file).get_fdata() > 0).astype(np.uint8)
         else:

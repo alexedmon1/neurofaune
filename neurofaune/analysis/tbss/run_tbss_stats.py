@@ -310,10 +310,15 @@ def run_tbss_statistical_analysis(
     # Find SIGMA parcellation for labeling
     sigma_parcellation = None
     if config:
-        study_root = Path(get_config_value(config, 'paths.study_root', default=''))
-        parc_path = study_root / 'atlas' / 'SIGMA_study_space' / 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz'
+        from neurofaune.analysis.tbss.prepare_tbss import _study_space_file
+        parc_path = _study_space_file(config, 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz')
         if parc_path.exists():
             sigma_parcellation = parc_path
+        else:
+            # Clusters are still reported, but without region labels -- say so
+            # rather than let an unlabeled report pass for a labeled one.
+            logger.warning(f"SIGMA parcellation not found at {parc_path}; "
+                           "cluster reports will carry no region labels")
 
     for metric in metrics:
         metric_output = output_dir / f"randomise_{metric}"

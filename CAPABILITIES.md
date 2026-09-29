@@ -27,11 +27,11 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `compute_partial_etasq_from_tstat` | `neurofaune.analysis.stats.effect_size` | Compute partial eta-squared map from t-statistic. | — |
 | `run_randomise` | `neurofaune.analysis.stats.randomise_wrapper` | Execute FSL randomise with specified parameters. | — |
 | `compute_icc_2_1` | `neurofaune.analysis.stats.reliability` | ICC(2,1) for a subjects-by-measurements matrix. | — |
-| `warp_metric_to_sigma` | `neurofaune.analysis.tbss.prepare_tbss` | Warp a DTI metric map to SIGMA study-space using the full transform chain. | `atlas.study_space`, `paths.study_root` |
+| `warp_metric_to_sigma` | `neurofaune.analysis.tbss.prepare_tbss` | Warp a DTI metric map to SIGMA study-space using the full transform chain. | `atlas.study_space` |
 | `build_coverage_mask` | `neurofaune.analysis.tbss.prepare_template_tbss` | Intersect WM mask with per-voxel subject coverage. | — |
 | `warp_atlas_to_template` | `neurofaune.analysis.tbss.prepare_template_tbss` | Warp SIGMA atlas assets to per-cohort template space. | — |
 | `warp_metric_to_template` | `neurofaune.analysis.tbss.prepare_template_tbss` | Warp one DTI metric to template space via the FA_to_template affine. | — |
-| `run_tbss_statistical_analysis` | `neurofaune.analysis.tbss.run_tbss_stats` | Run statistical analysis on prepared TBSS data. | `paths.study_root` |
+| `run_tbss_statistical_analysis` | `neurofaune.analysis.tbss.run_tbss_stats` | Run statistical analysis on prepared TBSS data. | — |
 | `compute_jacobian` | `neurofaune.analysis.vbm.prepare_vbm` | Compute Jacobian determinant from a displacement field. | — |
 | `warp_tissue_to_sigma` | `neurofaune.analysis.vbm.prepare_vbm` | Warp a native-space tissue probability map to SIGMA space. | — |
 
