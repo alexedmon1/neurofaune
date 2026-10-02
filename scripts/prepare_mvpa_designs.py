@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'neuroaider'))
 
 from neuroaider import DesignHelper
+from neurofaune.analysis.stats.design_record import write_design_record
 from neurofaune.network.roi_extraction import discover_sigma_images
 
 logging.basicConfig(
@@ -215,6 +216,8 @@ def create_per_pnd_categorical(data, pnd, output_dir, subject_list_path):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -277,6 +280,8 @@ def create_pooled_categorical(data, output_dir, subject_list_path):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -324,6 +329,8 @@ def create_per_pnd_dose_regression(data, pnd, output_dir, subject_list_path):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -383,6 +390,8 @@ def create_pooled_dose_regression(data, output_dir, subject_list_path):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -480,6 +489,8 @@ def create_per_pnd_target_regression(data, pnd, target_name, output_dir, subject
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     # Save target values for load_design() to use directly
     target_vals = dict(zip(
@@ -549,6 +560,8 @@ def create_pooled_target_regression(data, target_name, output_dir, subject_list_
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     # Save target values for load_design()
     target_vals = dict(zip(

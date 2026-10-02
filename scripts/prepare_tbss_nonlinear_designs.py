@@ -363,6 +363,36 @@ def create_nonlinear_design(
     ])
     (design_dir / 'design_description.txt').write_text('\n'.join(desc_lines) + '\n')
 
+    # What the design tests, machine-readable and checked against the matrices:
+    # the columns and rows as neuroaider codes them, the polynomial contrasts
+    # and F-tests spelled out.
+    from neurofaune.analysis.stats.design_record import write_design_record
+    meaning = {('linear', 'pos'): 'Group means increase with dose (linear trend)',
+               ('linear', 'neg'): 'Group means decrease with dose (linear trend)',
+               ('quadratic', 'pos'): 'U-shaped dose response (positive quadratic component)',
+               ('quadratic', 'neg'): 'Inverted-U dose response (negative quadratic component)',
+               ('cubic', 'pos'): 'Positive cubic component of the dose response',
+               ('cubic', 'neg'): 'Negative cubic component of the dose response'}
+    record = helper.describe()
+    record['summary'] = (f"Nonlinear dose response at {pnd}: orthogonal polynomial contrasts "
+                         f"on the four dose-group means (C, L, M, H; log10(1 + dose) spacing), "
+                         f"sex in the model.")
+    record['contrasts'] = []
+    for i, (name, weights) in enumerate(contrasts.items(), 1):
+        component, sign = name.rsplit('_', 1)
+        record['contrasts'].append({
+            'index': i, 'name': name, 'vector': [float(w) for w in weights],
+            'tests': meaning.get((component, sign), f"{name} polynomial component"),
+            'test_kind': 'custom'})
+    ftest_meaning = {
+        'omnibus_dose': 'Any dose effect (linear, quadratic or cubic; 3 df)',
+        'deviation_from_linearity': 'A non-linear dose response (quadratic or cubic; 2 df)',
+        'linear_only': 'A linear dose response (1 df)'}
+    record['ftests'] = [{'index': i, 'name': nm, 'contrasts': idx,
+                         'tests': ftest_meaning.get(nm, nm)}
+                        for i, (nm, idx) in enumerate(ftest_specs.items(), 1)]
+    write_design_record(design_dir, record)
+
     # Write provenance
     if tbss_dir is not None:
         write_provenance(design_dir, tbss_dir, n, f'nonlinear_{pnd.lower()}')

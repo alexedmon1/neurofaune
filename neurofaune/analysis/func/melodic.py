@@ -371,6 +371,12 @@ def run_dual_regression(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stage 3 runs randomise on this design: say what it tests, beside the
+    # results (warned about when the design has no design.json).
+    if design_mat is not None and contrast_con is not None:
+        from neurofaune.analysis.stats.design_record import attach_design
+        attach_design(output_dir, design_mat, contrast_con, log=logger)
     group_ic_maps = Path(group_ic_maps)
 
     logger.info("=" * 70)

@@ -313,6 +313,27 @@ raises when a filter leaves nothing — the comparison helpers likewise read the
 levels off the group labels. Do not reintroduce a hardcoded cohort or dose list;
 the package serves more than one study.
 
+### Every randomise design says what it tests
+
+A `design.mat` / `design.con` pair is numbers; which subject each row is, what each
+column codes and what each contrast asks live in the code that built them. So every
+design carries a **design record** beside it — `design.json` (schema
+`neurofaune.design/1`) and `design.md` (the same as a README) — from
+`neurofaune.analysis.stats.design_record`:
+
+- `write_design(dir, X, columns, contrasts, rows=...)` builds matrices and record in one
+  call (hand-built designs, a study's own orchestration);
+- `write_design_record(dir, helper.describe())` for a `neuroaider.DesignHelper` design;
+- `run_randomise` (and dual regression) copies the design and its record into the run's
+  output folder and writes `randomise.json` (how the test was run). A design with no
+  `design.json` is **warned about** for now; a record that contradicts its matrices is
+  refused.
+
+A record names every row, gives every column a meaning, and gives every contrast a
+sentence, a test kind (`two_group` names `group_a`, higher when the statistic is
+positive, and `group_b`) and its vector. Nothing vague is written: "Design column" or
+an empty "tests" is an error, not a placeholder.
+
 ## Key Design Constraints
 
 1. **T2w is primary anatomical modality** (not T1w) - better rodent brain contrast
