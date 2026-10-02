@@ -5,9 +5,14 @@ TBSS Summary Report Generation
 Generates comprehensive HTML reports summarizing the full TBSS analysis:
 - Subject inclusion/exclusion
 - Skeleton parameters and coverage
-- Statistical results across all metrics and contrasts
-- Significant clusters with SIGMA atlas labels
+- Every test, significant or not, with its whole-mask effect size (Cohen's d and
+  CI), direction and extent -- from tests.csv written by run_tbss_stats
+- Clusters with extent, peak, named SIGMA regions and effect -- from clusters.csv
+- A Null results section: every test with no voxel surviving FWE correction
 - Slice QC summary (if applicable)
+
+The report renders the read-out tables (neurofaune.analysis.stats.readout); it
+computes nothing itself, and never headlines a count of significant voxels.
 
 Usage:
     from neurofaune.analysis.tbss.reporting import generate_tbss_report
@@ -25,10 +30,11 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 
 
 def load_analysis_summary(randomise_dir: Path) -> Optional[Dict]:
@@ -132,44 +138,16 @@ def get_skeleton_stats(tbss_dir: Path) -> Dict:
     return stats
 
 
-def load_cluster_reports(randomise_dir: Path, metrics: List[str]) -> Dict[str, List[Dict]]:
-    """
-    Load cluster report CSVs for all metrics.
-
-    Args:
-        randomise_dir: Directory containing randomise results
-        metrics: List of metrics to check
-
-    Returns:
-        Dict mapping metric -> list of cluster report dicts
-    """
-    import pandas as pd
-
-    all_clusters = {}
-
-    for metric in metrics:
-        reports_dir = randomise_dir / f'cluster_reports_{metric}'
-        if not reports_dir.exists():
-            continue
-
-        metric_clusters = []
-        for csv_file in sorted(reports_dir.glob('*_clusters.csv')):
-            try:
-                df = pd.read_csv(csv_file)
-                contrast_name = csv_file.stem.replace('_clusters', '')
-                metric_clusters.append({
-                    'contrast_name': contrast_name,
-                    'n_clusters': len(df),
-                    'total_voxels': int(df['size_voxels'].sum()) if not df.empty else 0,
-                    'clusters': df.to_dict('records') if not df.empty else []
-                })
-            except Exception:
-                continue
-
-        if metric_clusters:
-            all_clusters[metric] = metric_clusters
-
-    return all_clusters
+def load_readout(randomise_dir: Path) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """tests.csv and clusters.csv written by run_tbss_stats (None when absent)."""
+    out = []
+    for name in ("tests.csv", "clusters.csv"):
+        f = Path(randomise_dir) / name
+        try:
+            out.append(pd.read_csv(f) if f.exists() else None)
+        except pd.errors.EmptyDataError:        # a run with no clusters writes an empty file
+            out.append(pd.DataFrame())
+    return out[0], out[1]
 
 
 def generate_tbss_report(
@@ -212,7 +190,7 @@ def generate_tbss_report(
     analysis_summary = load_analysis_summary(randomise_dir)
     slice_qc = load_slice_qc_summary(tbss_dir)
     skeleton_stats = get_skeleton_stats(tbss_dir)
-    cluster_reports = load_cluster_reports(randomise_dir, metrics)
+    tests, clusters = load_readout(randomise_dir)
 
     # Build HTML
     html = _build_html_report(
@@ -221,7 +199,8 @@ def generate_tbss_report(
         analysis_summary=analysis_summary,
         slice_qc=slice_qc,
         skeleton_stats=skeleton_stats,
-        cluster_reports=cluster_reports,
+        tests=tests,
+        clusters=clusters,
         metrics=metrics
     )
 
@@ -238,7 +217,8 @@ def _build_html_report(
     analysis_summary: Optional[Dict],
     slice_qc: Optional[Dict],
     skeleton_stats: Dict,
-    cluster_reports: Dict[str, List[Dict]],
+    tests: Optional[pd.DataFrame],
+    clusters: Optional[pd.DataFrame],
     metrics: List[str]
 ) -> str:
     """Build the complete HTML report string."""
@@ -255,7 +235,8 @@ def _build_html_report(
     params_html = _build_params_section(analysis_summary)
 
     # Results section (per metric)
-    results_html = _build_results_section(analysis_summary, cluster_reports, metrics)
+    results_html = _build_results_section(tests, clusters, metrics)
+    nulls_html = _build_null_section(tests)
 
     # Slice QC section
     slice_qc_html = _build_slice_qc_section(slice_qc)
@@ -401,6 +382,7 @@ def _build_html_report(
         <a href="#skeleton">Skeleton</a>
         <a href="#parameters">Parameters</a>
         <a href="#results">Results</a>
+        <a href="#nulls">Null results</a>
         {('<a href="#sliceqc">Slice QC</a>' if slice_qc else '')}
     </div>
 
@@ -411,6 +393,7 @@ def _build_html_report(
     {skeleton_html}
     {params_html}
     {results_html}
+    {nulls_html}
     {slice_qc_html}
 
     <div class="footer">
@@ -539,6 +522,7 @@ def _build_params_section(analysis_summary: Optional[Dict]) -> str:
         ('TFCE', 'Yes' if analysis_summary.get('tfce', True) else 'No'),
         ('Metrics', ', '.join(analysis_summary.get('metrics', []))),
         ('N Subjects', analysis_summary.get('n_subjects', 'N/A')),
+        ('Clusters', analysis_summary.get('cluster_definition', 'N/A')),
     ]
 
     rows = "".join(f"<tr><td><strong>{k}</strong></td><td>{v}</td></tr>" for k, v in params)
@@ -552,106 +536,128 @@ def _build_params_section(analysis_summary: Optional[Dict]) -> str:
     """
 
 
+def _f(x, fmt: str = "{:+.2f}") -> str:
+    return "&ndash;" if x is None or (isinstance(x, float) and not np.isfinite(x)) else fmt.format(x)
+
+
+def _d_cell(r, prefix: str = "") -> str:
+    return (f"{_f(r.get(prefix + 'd'))} [{_f(r.get(prefix + 'd_ci_low'))}, "
+            f"{_f(r.get(prefix + 'd_ci_high'))}]")
+
+
+def _means(r, prefix: str = "") -> str:
+    if r.get("design") == "two-group":
+        return f"{_f(r.get(prefix + 'mean_pos'), '{:.4g}')} vs {_f(r.get(prefix + 'mean_neg'), '{:.4g}')}"
+    if r.get("design") == "one-sample":
+        return _f(r.get(prefix + "mean"), "{:.4g}")
+    return "&ndash;"
+
+
 def _build_results_section(
-    analysis_summary: Optional[Dict],
-    cluster_reports: Dict[str, List[Dict]],
-    metrics: List[str]
+    tests: Optional[pd.DataFrame],
+    clusters: Optional[pd.DataFrame],
+    metrics: List[str],
+    max_rows: int = 20,
 ) -> str:
-    """Build the results section with per-metric cluster tables."""
-
-    sections = []
-
-    for metric in metrics:
-        metric_html = _build_metric_results(metric, analysis_summary, cluster_reports.get(metric))
-        sections.append(metric_html)
-
+    """Every test per metric with its effect, then its clusters."""
+    if tests is None or tests.empty:
+        return ('<h2 id="results">Statistical Results</h2><div class="warning-box">'
+                'tests.csv not found -- run_tbss_stats writes it; nothing is reported without it.</div>')
+    sections = [_build_metric_results(m, tests[tests.metric == m],
+                                      clusters[clusters.metric == m] if clusters is not None
+                                      and not clusters.empty else None, max_rows)
+                for m in metrics if (tests.metric == m).any()]
     return f"""
     <h2 id="results">Statistical Results</h2>
+    <p>Every contrast is listed, whether or not any voxel survived correction. <em>Whole-mask d</em>
+    is the effect of the contrast on each subject's mean over the whole analysis mask, with an exact
+    95% CI; it is not selected on significance. <em>Raw d</em> is the same difference standardised by
+    the raw (not covariate-adjusted) SD. Cluster effects are computed over voxels selected because
+    they were significant, so they are inflated.</p>
     {''.join(sections)}
     """
 
 
 def _build_metric_results(
     metric: str,
-    analysis_summary: Optional[Dict],
-    cluster_reports: Optional[List[Dict]]
+    tests: pd.DataFrame,
+    clusters: Optional[pd.DataFrame],
+    max_rows: int = 20,
 ) -> str:
-    """Build results section for a single metric."""
+    """One metric: a row per contrast, then the clusters (all of them, or a link to the CSV)."""
+    rows = []
+    for _, r in tests.iterrows():
+        rows.append(
+            f"<tr><td>{r.contrast_name}</td><td>{r.tested_direction}</td>"
+            f"<td>{r.n} / {r.df}</td><td>{_d_cell(r, 'whole_')}</td><td>{_f(r.get('whole_d_raw'))}</td>"
+            f"<td>{_means(r, 'whole_')}</td><td>{r.get('whole_observed_direction', '')}</td>"
+            f"<td>{int(r.n_vox_fwe):,} ({100 * r.frac_mask_fwe:.1f}%)</td><td>{_f(r.min_p_fwe, '{:.3g}')}</td>"
+            f"<td>{int(r.n_clusters)}</td></tr>")
+    table = f"""
+        <table>
+            <tr><th>Contrast</th><th>Tests</th><th>n / df</th><th>Whole-mask d [95% CI]</th>
+                <th>Raw d</th><th>Means</th><th>Observed</th><th>Voxels at FWE threshold</th>
+                <th>Min FWE p</th><th>Clusters</th></tr>
+            {''.join(rows)}
+        </table>"""
 
-    # Get contrast-level summary from analysis_summary
-    contrast_summary = ""
-    if analysis_summary and 'results' in analysis_summary:
-        metric_results = analysis_summary['results'].get(metric, {})
-        contrasts = metric_results.get('contrasts', [])
-
-        if contrasts:
-            rows = []
-            for c in contrasts:
-                status_class = 'significant' if c.get('significant') else 'not-significant'
-                status_text = 'SIGNIFICANT' if c.get('significant') else 'n.s.'
-                n_vox = c.get('n_significant_voxels', 0)
-                rows.append(
-                    f"<tr><td>{c.get('type', '')}{c.get('contrast_number', '')}</td>"
-                    f"<td>{n_vox:,}</td>"
-                    f"<td class=\"{status_class}\">{status_text}</td></tr>"
-                )
-
-            contrast_summary = f"""
-            <table>
-                <tr><th>Contrast</th><th>Significant Voxels</th><th>Status</th></tr>
-                {''.join(rows)}
-            </table>"""
-
-    # Cluster details
-    cluster_html = ""
-    if cluster_reports:
-        for report in cluster_reports:
-            if not report.get('clusters'):
-                continue
-
-            contrast_name = report.get('contrast_name', 'unknown')
-            clusters = report['clusters']
-
-            rows = []
-            for cl in clusters[:20]:  # Limit display
-                region = cl.get('region', '')
-                rows.append(
-                    f"<tr>"
-                    f"<td>{cl.get('cluster_id', '')}</td>"
-                    f"<td>{cl.get('size_voxels', 0):,}</td>"
-                    f"<td>{cl.get('peak_stat', 0):.2f}</td>"
-                    f"<td>{cl.get('peak_x_mm', 0):.1f}, "
-                    f"{cl.get('peak_y_mm', 0):.1f}, "
-                    f"{cl.get('peak_z_mm', 0):.1f}</td>"
-                    f"<td>{region}</td>"
-                    f"</tr>"
-                )
-
-            cluster_html += f"""
-            <h3>{contrast_name}</h3>
-            <table>
-                <tr><th>#</th><th>Voxels</th><th>Peak T</th><th>Peak (mm)</th><th>Region</th></tr>
-                {''.join(rows)}
-            </table>"""
-            if len(clusters) > 20:
-                cluster_html += f"<p>... and {len(clusters) - 20} more clusters</p>"
-
-    # Determine significance status for the box
-    has_significant = False
-    if analysis_summary and 'results' in analysis_summary:
-        metric_results = analysis_summary['results'].get(metric, {})
-        has_significant = metric_results.get('n_significant_contrasts', 0) > 0
-
-    box_class = 'summary-box' if has_significant else 'info-box'
-    status_msg = 'Significant results found' if has_significant else 'No significant results'
+    cluster_html = "<p>No clusters under the cluster definition.</p>"
+    if clusters is not None and not clusters.empty:
+        c = clusters.sort_values("n_voxels", ascending=False)
+        shown = c.head(max_rows)
+        crow = []
+        for _, r in shown.iterrows():
+            top = "; ".join(str(r.get("regions", "")).split("; ")[:3]) if "regions" in r else ""
+            crow.append(
+                f"<tr><td>{r.contrast_name}</td><td>{int(r.cluster)}</td><td>{int(r.n_voxels):,}</td>"
+                f"<td>{r.mm3:.2f}</td><td>{r.peak_t:.2f}</td><td>{r.peak_xyz_mm}</td>"
+                f"<td>{r.get('peak_region', '') or ''}</td><td>{top}</td>"
+                f"<td>{_f(r.min_p_fwe, '{:.3g}')}</td><td>{_d_cell(r)}</td></tr>")
+        more = (f"<p>Showing the {len(shown)} largest of {len(c)} clusters; every cluster, with all "
+                f"regions it covers, is in <a href=\"clusters.csv\">clusters.csv</a>.</p>"
+                if len(c) > len(shown) else
+                '<p>Full table, with every region each cluster covers: <a href="clusters.csv">clusters.csv</a>.</p>')
+        cluster_html = f"""
+        <table>
+            <tr><th>Contrast</th><th>#</th><th>Voxels</th><th>mm&sup3;</th><th>Peak t</th>
+                <th>Peak (mm)</th><th>Peak region</th><th>Largest regions (voxels)</th>
+                <th>Min FWE p</th><th>Cluster d [95% CI] (selected)</th></tr>
+            {''.join(crow)}
+        </table>{more}"""
 
     return f"""
     <div class="metric-section">
         <div class="metric-header">{metric}</div>
-        <div class="{box_class}"><strong>{status_msg}</strong></div>
-        {contrast_summary}
+        {table}
+        <h3>{metric}: clusters</h3>
         {cluster_html}
     </div>
+    """
+
+
+def _build_null_section(tests: Optional[pd.DataFrame]) -> str:
+    """Every test in which no voxel survived correction, with its effect size."""
+    if tests is None or tests.empty:
+        return ""
+    nulls = tests[~tests.significant_fwe.astype(bool)]
+    if nulls.empty:
+        body = "<p>Every test had at least one voxel surviving FWE correction.</p>"
+    else:
+        rows = "".join(
+            f"<tr><td>{r.metric}</td><td>{r.contrast_name}</td><td>{r.tested_direction}</td>"
+            f"<td>{r.n} / {r.df}</td><td>{_d_cell(r, 'whole_')}</td><td>{_f(r.min_p_fwe, '{:.3g}')}</td></tr>"
+            for _, r in nulls.iterrows())
+        body = f"""
+        <table>
+            <tr><th>Metric</th><th>Contrast</th><th>Tests</th><th>n / df</th>
+                <th>Whole-mask d [95% CI]</th><th>Min FWE p</th></tr>
+            {rows}
+        </table>"""
+    return f"""
+    <h2 id="nulls">Null results</h2>
+    <p>{len(nulls)} of {len(tests)} tests had no voxel surviving FWE correction. They are results:
+    each is listed with its whole-mask effect and interval.</p>
+    {body}
     """
 
 
