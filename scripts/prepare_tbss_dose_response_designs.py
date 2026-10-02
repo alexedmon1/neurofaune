@@ -43,6 +43,7 @@ from prepare_tbss_designs import load_and_merge_data, write_provenance, pre_subs
 # Add neuroaider to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'neuroaider'))
 from neuroaider import DesignHelper
+from neurofaune.analysis.stats.design_record import write_design_record
 
 logging.basicConfig(
     level=logging.INFO,
@@ -154,6 +155,8 @@ def create_per_pnd_dose_design(data, pnd, output_dir, tbss_dir=None):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -260,6 +263,8 @@ def create_pooled_dose_design(data, output_dir, tbss_dir=None):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -321,6 +326,8 @@ def create_per_pnd_target_design(data, pnd, target_name, output_dir, tbss_dir=No
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -410,6 +417,8 @@ def create_pooled_target_design(data, target_name, output_dir, tbss_dir=None):
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     data[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
