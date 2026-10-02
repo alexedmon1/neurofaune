@@ -74,6 +74,19 @@ def test_a_vague_or_incomplete_design_is_never_written(tmp_path, break_it, expec
     assert not (tmp_path / "design.mat").exists()
 
 
+def test_a_null_run_says_its_labels_are_shuffled_and_what_each_row_is(tmp_path):
+    dr.write_design(tmp_path, X, COLUMNS, CONTRASTS, rows=ROWS[::-1], label_ids=ROWS,
+                    data={"file": "data.nii.gz", "meaning": "per-animal FA change, p90 minus p60"})
+    record = dr.read_design_record(tmp_path)
+    assert record["rows"]["label_ids"] == ROWS and record["rows"]["ids"] == ROWS[::-1]
+    md = (tmp_path / "design.md").read_text()
+    assert "deliberately shuffled" in md and "per-animal FA change, p90 minus p60" in md
+    with pytest.raises(dr.DesignRecordError, match="label_ids"):
+        dr.write_design(tmp_path / "x", X, COLUMNS, CONTRASTS, rows=ROWS, label_ids=ROWS[:3])
+    with pytest.raises(dr.DesignRecordError, match="data: no meaning"):
+        dr.write_design(tmp_path / "y", X, COLUMNS, CONTRASTS, rows=ROWS, data={"file": "d.nii.gz"})
+
+
 def test_rows_must_be_named(tmp_path):
     with pytest.raises(dr.DesignRecordError, match="rows"):
         dr.write_design(tmp_path, X, COLUMNS, CONTRASTS)

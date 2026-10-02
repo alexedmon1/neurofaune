@@ -30,7 +30,14 @@ Schema ``neurofaune.design/1`` (fields marked * are required)::
     schema*        "neurofaune.design/1"
     summary        one sentence: what the analysis asks
     n*             number of rows (observations) in design.mat
-    rows*          {"ids": [...], "file": "subject_order.txt"} -- row i is ids[i]
+    rows*          {"ids": [...], "file": "subject_order.txt"} -- row i is ids[i];
+                   "label_ids": [...] only when the design's labels were deliberately
+                   decoupled from the data (a null / shuffled run): row i holds the
+                   data of ids[i] but carries the group / covariate values of
+                   label_ids[i]
+    data           {"file": "all_FA.nii.gz", "meaning": "..."} -- what each row's
+                   observation is (the 4D input to randomise), e.g. "per-animal FA
+                   change, p90 minus p60, on the TBSS skeleton"
     groups         {group: n} -- how many rows each group has
     columns*       [{index, name, meaning, kind}] -- one per design.mat column;
                    kind: intercept | group | covariate | nuisance | interaction
@@ -144,6 +151,8 @@ def describe_design(
     *,
     rows: Optional[Sequence[str]] = None,
     rows_file: Optional[str] = None,
+    label_ids: Optional[Sequence[str]] = None,
+    data: Optional[Dict[str, str]] = None,
     groups: Optional[Dict[str, int]] = None,
     summary: Optional[str] = None,
     ftests: Optional[Sequence[Dict[str, Any]]] = None,
@@ -157,8 +166,10 @@ def describe_design(
     order. ``contrasts`` are dicts with ``name``, ``vector``, ``tests`` (a
     sentence), ``test_kind`` and, for a two-group test, ``group_a`` (higher when
     the statistic is positive) and ``group_b``. ``rows`` are the subject ids of
-    design.mat's rows, in order. ``ftests`` are dicts with ``name``,
-    ``contrasts`` (1-based contrast indices) and ``tests``.
+    design.mat's rows, in order; ``label_ids``, only for a deliberately shuffled
+    (null) run, the subject whose labels each row carries. ``data`` is
+    ``{"file", "meaning"}``: what each row's observation is. ``ftests`` are
+    dicts with ``name``, ``contrasts`` (1-based contrast indices) and ``tests``.
     """
     record: Dict[str, Any] = {"schema": SCHEMA}
     if summary:
@@ -169,6 +180,10 @@ def describe_design(
         record["rows"]["ids"] = [str(r) for r in rows]
     if rows_file:
         record["rows"]["file"] = rows_file
+    if label_ids is not None:
+        record["rows"]["label_ids"] = [str(r) for r in label_ids]
+    if data:
+        record["data"] = {k: str(v) for k, v in data.items() if v is not None}
     if groups:
         record["groups"] = {str(k): int(v) for k, v in groups.items()}
     record["columns"] = [_column(i + 1, c) for i, c in enumerate(columns)]
@@ -223,6 +238,11 @@ def validate_design_record(
         problems.append("rows: neither the subject ids nor the file listing them in order")
     if ids is not None and n is not None and len(ids) != n:
         problems.append(f"rows: {len(ids)} ids for n = {n}")
+    label_ids = (record.get("rows") or {}).get("label_ids")
+    if label_ids is not None and n is not None and len(label_ids) != n:
+        problems.append(f"rows: {len(label_ids)} label_ids for n = {n}")
+    if record.get("data") is not None and _vague(record["data"].get("meaning")):
+        problems.append("data: no meaning -- say what each row's observation is")
     if record.get("groups") and n is not None and sum(record["groups"].values()) != n:
         problems.append(f"groups add up to {sum(record['groups'].values())}, not n = {n}")
 
@@ -318,8 +338,17 @@ def render_design_markdown(record: Dict[str, Any]) -> str:
     where = ("listed in order in `design.json` (`rows.ids`)" if rows.get("ids") else "")
     if rows.get("file"):
         where += (" and " if where else "listed in order in ") + f"`{rows['file']}`"
-    out += [f"**{record.get('n')} rows**{gtxt}, one per observation; row *i* of `design.mat` "
-            f"is the *i*-th subject {where}.", ""]
+    if rows.get("label_ids"):
+        out += [f"**{record.get('n')} rows**{gtxt}. **The labels are deliberately shuffled "
+                f"against the data (a null run):** row *i* holds the data of `rows.ids[i]` but "
+                f"carries the design values of `rows.label_ids[i]` (both in `design.json`).", ""]
+    else:
+        out += [f"**{record.get('n')} rows**{gtxt}, one per observation; row *i* of `design.mat` "
+                f"is the *i*-th subject {where}.", ""]
+    data = record.get("data") or {}
+    if data.get("meaning"):
+        out += [f"**Each row's observation:** {data['meaning']}"
+                + (f" (`{data['file']}`)" if data.get("file") else "") + ".", ""]
 
     out += [f"## Design matrix — `design.mat`, {record.get('n')} × {len(cols)}", "",
             "| # | Column | What it codes |", "|---|---|---|"]
