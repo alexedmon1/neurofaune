@@ -213,6 +213,30 @@ def test_design_names_fall_back_to_design_con_then_defaults(tmp_path):
     assert cols == ["EV1", "EV2"] and cons == ["up", "down"]
 
 
+def test_design_record_names_the_columns_and_says_what_each_contrast_tests(run):
+    """A design.json beside the design (neurofaune's design records) is the first
+    source of names, and each test row carries the record's sentence."""
+    from neurofaune.analysis.stats import design_record as dr
+    rd = run["dir"]
+    dr.write_design(rd, run["X"], [("drug", "1 if the animal got the drug", "group"),
+                                   ("vehicle", "1 if the animal got vehicle", "group")],
+                    [{"name": "drug>vehicle", "vector": [1, -1], "test_kind": "two_group",
+                      "tests": "drug mean > vehicle mean", "group_a": "drug", "group_b": "vehicle"},
+                     {"name": "vehicle>drug", "vector": [-1, 1], "test_kind": "two_group",
+                      "tests": "vehicle mean > drug mean", "group_a": "vehicle", "group_b": "drug"}],
+                    summary="Does the drug change FA?", groups={"drug": 6, "vehicle": 6},
+                    rows=[f"sub-{i}" for i in range(12)])
+    tests, _ = _read(run)
+    assert tests.contrast_name.tolist() == ["drug>vehicle", "vehicle>drug"]
+    assert tests.contrast_tests.tolist() == ["drug mean > vehicle mean", "vehicle mean > drug mean"]
+    assert "drug" in tests.tested_direction.iloc[0]
+
+
+def test_without_a_record_contrast_tests_is_empty(run):
+    tests, _ = _read(run)
+    assert tests.contrast_tests.isna().all()
+
+
 # ----------------------------------------------------------------- report ---
 def test_report_renders_from_readout_with_a_null_section(run, tmp_path):
     tests, clusters = _read(run, cluster_on="uncorrected")
@@ -222,11 +246,46 @@ def test_report_renders_from_readout_with_a_null_section(run, tmp_path):
     clusters.assign(metric="FA").to_csv(rd / "clusters.csv", index=False)
     out = reporting.generate_tbss_report("demo", tmp_path / "no_tbss", rd, rd / "report.html", metrics=["FA"])
     html = out.read_text()
-    assert "Null results" in html and "<td>B>A</td>" in html
+    assert "Null results" in html and "<td>B&gt;A</td>" in html
     assert "SIGNIFICANT" not in html and "n.s." not in html
     assert 'href="clusters.csv"' in html
     assert "1 of 2 tests had no voxel surviving FWE correction" in html
     assert "Tract.L" in html
+
+
+def test_report_escapes_every_name(run, tmp_path):
+    """Names reach the page as text, never as markup: <, > and & in an analysis,
+    metric, contrast or region name are escaped wherever they appear."""
+    tests, clusters = _read(run, cluster_on="uncorrected")
+    bad_metric, bad_con, bad_region = "FA<i>&</i>", "A<b>&</b>B", "Tract<script>&x"
+    tests = tests.assign(metric=bad_metric, contrast_name=bad_con)
+    clusters = clusters.assign(metric=bad_metric, contrast_name=bad_con, peak_region=bad_region,
+                               regions=f"{bad_region}:3; Other&<:1")
+    rd = tmp_path / "analysis"
+    rd.mkdir()
+    tests.to_csv(rd / "tests.csv", index=False)
+    clusters.to_csv(rd / "clusters.csv", index=False)
+    (rd / "analysis_summary.json").write_text(json.dumps(
+        {"metrics": [bad_metric], "cluster_definition": "FWE p < 0.05, 26-connected, >= 1 voxels"}))
+    out = reporting.generate_tbss_report("dose<x>&y", tmp_path / "no_tbss", rd, rd / "report.html",
+                                         metrics=[bad_metric])
+    html = out.read_text()
+    for raw in ("<i>", "</i>", "<b>", "</b>", "<script>", "dose<x>", "Other&<", "p < 0.05"):
+        assert raw not in html, raw
+    for escaped in ("FA&lt;i&gt;&amp;&lt;/i&gt;", "A&lt;b&gt;&amp;&lt;/b&gt;B", "Tract&lt;script&gt;&amp;x",
+                    "dose&lt;x&gt;&amp;y", "p &lt; 0.05"):
+        assert escaped in html, escaped
+
+
+def test_cluster_report_escapes_the_contrast_name(tmp_path):
+    from neurofaune.analysis.stats import cluster_report as cr
+    df = pd.DataFrame({"cluster_id": [1], "size_voxels": [3], "peak_stat": [2.5], "peak_corrp": [0.99],
+                       "peak_x_mm": [0.0], "peak_y_mm": [0.0], "peak_z_mm": [0.0], "region": ["R<&>"]})
+    out = tmp_path / "c.html"
+    cr._generate_html_report(df, "A<b>&B", out, 0.95)
+    html = out.read_text()
+    assert "A<b>" not in html and "R<&>" not in html
+    assert "A&lt;b&gt;&amp;B" in html and "R&lt;&amp;&gt;" in html
 
 
 def test_report_says_when_clusters_are_truncated(run):

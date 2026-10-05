@@ -8,6 +8,7 @@ generates reports with SIGMA atlas labels for anatomical localization.
 Adapted from neurovrai for rodent TBSS with SIGMA parcellation.
 """
 
+import html
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -407,10 +408,10 @@ def _generate_html_report(
     display_df = df[display_cols].copy()
     display_df.columns = col_labels
 
-    html = f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Cluster Report: {contrast_name}</title>
+    <title>Cluster Report: {html.escape(contrast_name)}</title>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
         h1 {{ color: #333; }}
@@ -423,7 +424,7 @@ def _generate_html_report(
     </style>
 </head>
 <body>
-    <h1>TBSS Cluster Report: {contrast_name}</h1>
+    <h1>TBSS Cluster Report: {html.escape(contrast_name)}</h1>
 
     <div class="summary">
         <h2>Summary</h2>
@@ -444,4 +445,4 @@ def _generate_html_report(
 </html>"""
 
     with open(output_file, 'w') as f:
-        f.write(html)
+        f.write(page)

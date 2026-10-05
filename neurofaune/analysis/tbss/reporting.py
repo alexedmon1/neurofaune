@@ -26,6 +26,7 @@ Usage:
     )
 """
 
+import html
 import json
 import logging
 from datetime import datetime
@@ -244,7 +245,7 @@ def _build_html_report(
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>TBSS Report: {analysis_name}</title>
+    <title>TBSS Report: {_e(analysis_name)}</title>
     <style>
         body {{
             font-family: 'Segoe UI', Arial, sans-serif;
@@ -386,7 +387,7 @@ def _build_html_report(
         {('<a href="#sliceqc">Slice QC</a>' if slice_qc else '')}
     </div>
 
-    <h1>TBSS Analysis Report: {analysis_name}</h1>
+    <h1>TBSS Analysis Report: {_e(analysis_name)}</h1>
     <p>Generated: {timestamp}</p>
 
     {subjects_html}
@@ -426,7 +427,7 @@ def _build_subjects_section(manifest: Optional[Dict]) -> str:
     cohort_html = ""
     if cohort_counts:
         rows = "".join(
-            f"<tr><td>{cohort}</td><td>{count}</td></tr>"
+            f"<tr><td>{_e(cohort)}</td><td>{count}</td></tr>"
             for cohort, count in sorted(cohort_counts.items())
         )
         cohort_html = f"""
@@ -440,7 +441,7 @@ def _build_subjects_section(manifest: Optional[Dict]) -> str:
     excluded = manifest.get('excluded_subjects', [])
     if excluded:
         rows = "".join(
-            f"<tr><td>{e.get('subject', 'N/A')}</td><td>{e.get('reason', 'N/A')}</td></tr>"
+            f"<tr><td>{_e(e.get('subject', 'N/A'))}</td><td>{_e(e.get('reason', 'N/A'))}</td></tr>"
             for e in excluded[:20]  # Limit display
         )
         exclusion_html = f"""
@@ -525,7 +526,7 @@ def _build_params_section(analysis_summary: Optional[Dict]) -> str:
         ('Clusters', analysis_summary.get('cluster_definition', 'N/A')),
     ]
 
-    rows = "".join(f"<tr><td><strong>{k}</strong></td><td>{v}</td></tr>" for k, v in params)
+    rows = "".join(f"<tr><td><strong>{_e(k)}</strong></td><td>{_e(v)}</td></tr>" for k, v in params)
 
     return f"""
     <h2 id="parameters">Analysis Parameters</h2>
@@ -534,6 +535,15 @@ def _build_params_section(analysis_summary: Optional[Dict]) -> str:
         {rows}
     </table>
     """
+
+
+def _e(x) -> str:
+    """Text for HTML: escaped, and empty for a missing value. Every name and free-text
+    value (contrasts, measures, regions, directions, subjects, analysis names) goes
+    through this; only numbers formatted by _f are written without it."""
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    return html.escape(str(x))
 
 
 def _f(x, fmt: str = "{:+.2f}") -> str:
@@ -588,9 +598,9 @@ def _build_metric_results(
     rows = []
     for _, r in tests.iterrows():
         rows.append(
-            f"<tr><td>{r.contrast_name}</td><td>{r.tested_direction}</td>"
+            f"<tr><td>{_e(r.contrast_name)}</td><td>{_e(r.tested_direction)}</td>"
             f"<td>{r.n} / {r.df}</td><td>{_d_cell(r, 'whole_')}</td><td>{_f(r.get('whole_d_raw'))}</td>"
-            f"<td>{_means(r, 'whole_')}</td><td>{r.get('whole_observed_direction', '')}</td>"
+            f"<td>{_means(r, 'whole_')}</td><td>{_e(r.get('whole_observed_direction', ''))}</td>"
             f"<td>{int(r.n_vox_fwe):,} ({100 * r.frac_mask_fwe:.1f}%)</td><td>{_f(r.min_p_fwe, '{:.3g}')}</td>"
             f"<td>{int(r.n_clusters)}</td></tr>")
     table = f"""
@@ -609,9 +619,9 @@ def _build_metric_results(
         for _, r in shown.iterrows():
             top = "; ".join(str(r.get("regions", "")).split("; ")[:3]) if "regions" in r else ""
             crow.append(
-                f"<tr><td>{r.contrast_name}</td><td>{int(r.cluster)}</td><td>{int(r.n_voxels):,}</td>"
-                f"<td>{r.mm3:.2f}</td><td>{r.peak_t:.2f}</td><td>{r.peak_xyz_mm}</td>"
-                f"<td>{r.get('peak_region', '') or ''}</td><td>{top}</td>"
+                f"<tr><td>{_e(r.contrast_name)}</td><td>{int(r.cluster)}</td><td>{int(r.n_voxels):,}</td>"
+                f"<td>{r.mm3:.2f}</td><td>{r.peak_t:.2f}</td><td>{_e(r.peak_xyz_mm)}</td>"
+                f"<td>{_e(r.get('peak_region', '') or '')}</td><td>{_e(top)}</td>"
                 f"<td>{_f(r.min_p_fwe, '{:.3g}')}</td><td>{_d_cell(r)}</td></tr>")
         more = (f"<p>Showing the {len(shown)} largest of {len(c)} clusters; every cluster, with all "
                 f"regions it covers, is in <a href=\"clusters.csv\">clusters.csv</a>.</p>"
@@ -627,9 +637,9 @@ def _build_metric_results(
 
     return f"""
     <div class="metric-section">
-        <div class="metric-header">{metric}</div>
+        <div class="metric-header">{_e(metric)}</div>
         {table}
-        <h3>{metric}: clusters</h3>
+        <h3>{_e(metric)}: clusters</h3>
         {cluster_html}
     </div>
     """
@@ -644,7 +654,7 @@ def _build_null_section(tests: Optional[pd.DataFrame]) -> str:
         body = "<p>Every test had at least one voxel surviving FWE correction.</p>"
     else:
         rows = "".join(
-            f"<tr><td>{r.metric}</td><td>{r.contrast_name}</td><td>{r.tested_direction}</td>"
+            f"<tr><td>{_e(r.metric)}</td><td>{_e(r.contrast_name)}</td><td>{_e(r.tested_direction)}</td>"
             f"<td>{r.n} / {r.df}</td><td>{_d_cell(r, 'whole_')}</td><td>{_f(r.min_p_fwe, '{:.3g}')}</td></tr>"
             for _, r in nulls.iterrows())
         body = f"""
@@ -681,6 +691,6 @@ def _build_slice_qc_section(slice_qc: Optional[Dict]) -> str:
             <div class="stat-label">Metrics Imputed</div>
         </div>
     </div>
-    <p><strong>Validity masks:</strong> {slice_qc.get('validity_masks_dir', 'N/A')}</p>
-    <p><strong>Analysis mask:</strong> {slice_qc.get('analysis_mask', 'N/A')}</p>
+    <p><strong>Validity masks:</strong> {_e(slice_qc.get('validity_masks_dir', 'N/A'))}</p>
+    <p><strong>Analysis mask:</strong> {_e(slice_qc.get('analysis_mask', 'N/A'))}</p>
     """

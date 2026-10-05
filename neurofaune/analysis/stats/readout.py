@@ -97,13 +97,30 @@ class Atlas:
         return self.names.get(int(label), f"label {int(label)}")
 
 
+def _record(design_dir: Path) -> dict | None:
+    """The design record (design.json) beside the design, when there is one."""
+    from neurofaune.analysis.stats.design_record import read_design_record
+    try:
+        return read_design_record(design_dir)
+    except (OSError, ValueError):
+        return None
+
+
 def design_names(design_dir: Path, n_columns: int, n_contrasts: int) -> tuple[list[str], list[str]]:
-    """Column and contrast names: design_summary.json, then design.con, then EV<i>/C<i>."""
+    """Column and contrast names: the design record (design.json), then
+    design_summary.json, then design.con, then EV<i>/C<i>."""
     columns, contrasts = None, None
+    record = _record(design_dir)
+    if record:
+        rc = [c.get("name") for c in record.get("columns", [])]
+        rk = [c.get("name") for c in record.get("contrasts", [])]
+        columns = rc if len(rc) == n_columns and all(rc) else None
+        contrasts = rk if len(rk) == n_contrasts and all(rk) else None
     summary = Path(design_dir) / "design_summary.json"
-    if summary.exists():
+    if (columns is None or contrasts is None) and summary.exists():
         s = json.loads(summary.read_text())
-        columns, contrasts = s.get("columns"), s.get("contrasts")
+        columns = columns if columns is not None else s.get("columns")
+        contrasts = contrasts if contrasts is not None else s.get("contrasts")
     con = Path(design_dir) / "design.con"
     if contrasts is None and con.exists():
         named = {}
@@ -287,6 +304,9 @@ def read_randomise(
     if n_con != len(C):
         raise ValueError(f"{n_con} t-stat maps but {len(C)} contrasts in {design_con}")
     cols, cons = design_names(design_mat.parent, X.shape[1], len(C))
+    record = _record(design_mat.parent)
+    said = [c.get("tests") for c in record.get("contrasts", [])] if record else []
+    said = said if len(said) == len(C) else [None] * len(C)
     cols = list(column_names) if column_names is not None else cols
     cons = list(contrast_names) if contrast_names is not None else cons
 
@@ -330,6 +350,7 @@ def read_randomise(
 
         base = {**labels, "contrast": k + 1, "contrast_name": cn, "contrast_vector": desc["vector"],
                 "design": desc["kind"], "tested_direction": desc["tested"],
+                "contrast_tests": said[k],
                 "n": int(X.shape[0]), "df": int(X.shape[0] - np.linalg.matrix_rank(X))}
         whole_eff = contrast_effect(whole, X, c, desc, ci_level)
         tests.append({
