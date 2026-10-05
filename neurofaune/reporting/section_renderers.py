@@ -6,6 +6,7 @@ HTML string for its collapsible section in the dashboard.
 """
 
 import base64
+import html
 import logging
 from pathlib import Path
 from typing import Any, Dict, List
@@ -113,16 +114,30 @@ def render_tbss(entry: Dict[str, Any], analysis_root: Path) -> str:
     cards.append(_stat_card(stats.get("n_permutations", "?"), "Permutations"))
 
     n_sig = stats.get("n_significant_contrasts", 0)
+    n_tests = stats.get("n_tests")
     sig_colour = "#2E7D32" if n_sig > 0 else "#666"
-    cards.append(
-        f'<div class="stat-card">'
-        f'<div class="stat-value" style="color:{sig_colour}">{n_sig}</div>'
-        f'<div class="stat-label">Significant Contrasts</div>'
-        f"</div>"
-    )
+    if n_tests:
+        # Every test is in tests.csv with its whole-mask effect; the card says how
+        # many had any voxel surviving FWE correction, out of how many were run.
+        cards.append(
+            f'<div class="stat-card">'
+            f'<div class="stat-value" style="color:{sig_colour}">{n_sig} of {n_tests}</div>'
+            f'<div class="stat-label">Tests with FWE-surviving voxels</div>'
+            f"</div>"
+        )
+    else:
+        cards.append(
+            f'<div class="stat-card">'
+            f'<div class="stat-value" style="color:{sig_colour}">{n_sig}</div>'
+            f'<div class="stat-label">Significant Contrasts</div>'
+            f"</div>"
+        )
 
     gallery = _figures_gallery(entry.get("figures", []), analysis_root)
-    output_link = f'<p>Output: <code>{entry.get("output_dir", "")}</code></p>'
+    output_link = f'<p>Output: <code>{html.escape(str(entry.get("output_dir", "")))}</code></p>'
+    if stats.get("tests_csv"):
+        output_link += (f'<p>Every test, with its whole-mask effect and 95% CI, nulls included: '
+                        f'<code>{html.escape(str(stats["tests_csv"]))}</code></p>')
 
     return (
         f'<div class="stats-grid">{"".join(cards)}</div>'
