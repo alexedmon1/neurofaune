@@ -358,6 +358,11 @@ class RandomiseAnalysis:
             with open(design_summary_file) as f:
                 design_summary = json.load(f)
             contrast_names = design_summary.get('contrasts', None)
+        # What the design tests (design.json), when it says: its names come first.
+        from neurofaune.analysis.stats.design_record import read_design_record, summarize_contrasts
+        design_record = read_design_record(design_dir)
+        if design_record is not None:
+            contrast_names = [c['name'] for c in design_record['contrasts']]
 
         # --- Load master subject list ---
         master_list_file = self.analysis_dir / "subject_list.txt"
@@ -496,6 +501,9 @@ class RandomiseAnalysis:
             'n_predictors': n_waves,
             'n_contrasts': n_contrasts,
             'contrast_names': contrast_names,
+            # What each contrast tests (from design.json; empty when undescribed).
+            'design_described': design_record is not None,
+            'contrasts_tested': summarize_contrasts(design_record),
             'metrics': metrics,
             'n_permutations': n_permutations,
             'results': {

@@ -193,6 +193,12 @@ def validate_design_files(design_dir: Path, n_subjects: int) -> Dict:
             design_summary = json.load(f)
         contrast_names = design_summary.get('contrasts', None)
 
+    # What the design tests (design.json), when it says: its names come first.
+    from neurofaune.analysis.stats.design_record import read_design_record
+    design_record = read_design_record(design_dir)
+    if design_record is not None:
+        contrast_names = [c['name'] for c in design_record['contrasts']]
+
     if contrast_names is None and n_contrasts:
         contrast_names = [f'contrast_{i+1}' for i in range(n_contrasts)]
 
@@ -202,7 +208,8 @@ def validate_design_files(design_dir: Path, n_subjects: int) -> Dict:
         'n_subjects': n_points,
         'n_predictors': n_waves,
         'n_contrasts': n_contrasts,
-        'contrast_names': contrast_names
+        'contrast_names': contrast_names,
+        'design_record': design_record,
     }
 
 
@@ -302,6 +309,9 @@ def run_tbss_statistical_analysis(
     design_summary = design_dir / 'design_summary.json'
     if design_summary.exists():
         shutil.copy(design_summary, output_dir / 'design_summary.json')
+    for name in ('design.json', 'design.md'):   # what the design tests
+        if (design_dir / name).exists():
+            shutil.copy(design_dir / name, output_dir / name)
 
     # Step 3: Run randomise for each metric
     logger.info("\n[Step 3] Running FSL randomise...")
@@ -362,6 +372,8 @@ def run_tbss_statistical_analysis(
             f"min FWE p = {r.min_p_fwe:.3g}"
         )
 
+    from neurofaune.analysis.stats.design_record import summarize_contrasts
+
     # Save analysis summary
     summary_file = output_dir / 'analysis_summary.json'
     summary_data = {
@@ -373,6 +385,9 @@ def run_tbss_statistical_analysis(
         'metrics': metrics,
         'n_permutations': n_permutations,
         'tfce': tfce,
+        # What each contrast tests (from design.json; empty when undescribed).
+        'design_described': design.get('design_record') is not None,
+        'contrasts_tested': summarize_contrasts(design.get('design_record')),
         'cluster_definition': f"FWE p < {alpha:g}, 26-connected, >= {min_cluster_size} voxels",
         'tests_csv': 'tests.csv',
         'clusters_csv': 'clusters.csv',

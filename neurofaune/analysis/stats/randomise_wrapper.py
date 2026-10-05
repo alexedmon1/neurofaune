@@ -138,6 +138,16 @@ def run_randomise(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # What this run tests, beside its results: the design files and, when the
+    # design has one, its design.json / design.md (warned about when it does
+    # not; refused when it contradicts the matrices). Written before randomise
+    # starts, so even an interrupted run says what it was testing.
+    from neurofaune.analysis.stats.design_record import DesignRecordError, attach_design
+    try:
+        design_record = attach_design(output_dir, design_mat, contrast_con, fts_file, log=logger)
+    except DesignRecordError as e:
+        raise RandomiseError(f"design.json beside {design_mat} does not describe it: {e}")
+
     output_basename = output_dir / "randomise"
 
     cmd = [
@@ -184,6 +194,12 @@ def run_randomise(
     logger.info(f"  TFCE: {tfce_desc}")
     logger.info(f"  Output: {output_dir}")
     logger.info(f"  Command: {' '.join(cmd)}")
+    _write_call(output_dir, cmd, input_file=input_file, design_mat=design_mat,
+                contrast_con=contrast_con, mask=mask, fts_file=fts_file,
+                n_permutations=n_permutations, tfce=tfce, tfce_2d=tfce_2d,
+                voxel_threshold=voxel_threshold, demean=demean,
+                variance_smoothing=variance_smoothing, seed=seed,
+                described=design_record is not None)
 
     start_time = time.time()
     log_file = output_dir / "randomise.log"
@@ -216,8 +232,34 @@ def run_randomise(
         'n_permutations': n_permutations,
         'output_dir': str(output_dir),
         'log_file': str(log_file),
-        'output_files': output_files
+        'output_files': output_files,
+        'design_record': design_record,
     }
+
+
+def _write_call(output_dir: Path, cmd: List[str], **params) -> Path:
+    """``randomise.json``: how this run was invoked -- its inputs, the inference
+    options that define the test (TFCE 2D/3D, permutations, threshold, demeaning)
+    and the exact command -- beside its results."""
+    import json
+    from datetime import datetime, timezone
+
+    from neurofaune.provenance import package_provenance
+
+    record = {
+        "written": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "written_by": {k: v for k, v in package_provenance().items()
+                       if k in ("Name", "Version", "CommitID")},
+        "command": cmd,
+        **{k: (str(v) if isinstance(v, Path) else v) for k, v in params.items()},
+        "inference": (("TFCE, 2D (--T2, skeleton)" if params.get("tfce_2d") else "TFCE, 3D (-T)")
+                      if params.get("tfce") else
+                      (f"cluster-forming threshold t > {params.get('voxel_threshold')}"
+                       if params.get("voxel_threshold") is not None else "voxelwise")),
+    }
+    path = output_dir / "randomise.json"
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    return path
 
 
 def _collect_output_files(output_dir: Path) -> Dict[str, List[Path]]:

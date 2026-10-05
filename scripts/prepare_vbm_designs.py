@@ -38,6 +38,7 @@ import pandas as pd
 # Add neuroaider to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'neuroaider'))
 from neuroaider import DesignHelper
+from neurofaune.analysis.stats.design_record import write_design_record
 
 logging.basicConfig(
     level=logging.INFO,
@@ -304,6 +305,8 @@ def create_per_pnd_design(
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -372,6 +375,8 @@ def create_per_pnd_dose_response_design(
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
@@ -483,6 +488,8 @@ def create_per_pnd_target_response_design(
         summary_file=design_dir / 'design_summary.json',
     )
     helper.write_description(design_dir / 'design_description.txt')
+    # What the design tests, machine-readable, checked against the matrices.
+    write_design_record(design_dir, helper.describe())
 
     subset[['subject_key']].to_csv(
         design_dir / 'subject_order.txt', index=False, header=False
