@@ -8,8 +8,9 @@ This workflow:
 1. Validates prepared TBSS data (skeletonised volumes, manifest)
 2. Loads pre-generated design matrices (from neuroaider or manual creation)
 3. Runs FSL randomise with TFCE for each metric
-4. Extracts significant clusters with SIGMA atlas labels
-5. Generates HTML reports
+4. Reads every test out (tests.csv: whole-mask effect size + CI, extent, direction;
+   clusters.csv: extent, peak, named SIGMA regions, effect) -- see stats/readout.py
+5. Writes analysis_summary.json; reporting.generate_tbss_report renders the HTML
 
 Prerequisites:
 - Completed TBSS data preparation (prepare_tbss.py)
@@ -30,8 +31,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from neurofaune.analysis.stats.randomise_wrapper import run_randomise, summarize_results
-from neurofaune.analysis.stats.cluster_report import generate_reports_for_all_contrasts
+import pandas as pd
+
+from neurofaune.analysis.stats.effect_size import generate_effect_size_maps
+from neurofaune.analysis.stats.randomise_wrapper import run_randomise
+from neurofaune.analysis.stats.readout import Atlas, read_randomise
 from neurofaune.config import load_config, get_config_value
 
 
@@ -209,6 +213,25 @@ def validate_design_files(design_dir: Path, n_subjects: int) -> Dict:
     }
 
 
+
+def _sigma_atlas(config: Optional[Dict], logger: logging.Logger) -> Optional[Atlas]:
+    """The study-space SIGMA parcellation with region NAMES, or None (said in the log)."""
+    if not config:
+        logger.warning("No config: clusters will carry no region labels")
+        return None
+    from neurofaune.analysis.tbss.prepare_tbss import _study_space_file
+    parc = _study_space_file(config, 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz')
+    table = _study_space_file(config, 'SIGMA_InVivo_Anatomical_Brain_Atlas_Labels.csv')
+    if not parc.exists():
+        # Clusters are still reported, but without region labels -- say so
+        # rather than let an unlabeled report pass for a labeled one.
+        logger.warning(f"SIGMA parcellation not found at {parc}; clusters will carry no region labels")
+        return None
+    if not table.exists():
+        logger.warning(f"SIGMA label table not found at {table}; regions will be label numbers")
+        return Atlas.from_files(parc)
+    return Atlas.from_files(parc, table)
+
 def run_tbss_statistical_analysis(
     tbss_dir: Path,
     design_dir: Path,
@@ -306,60 +329,48 @@ def run_tbss_statistical_analysis(
             mask=prepared['analysis_mask'],
             n_permutations=n_permutations,
             tfce=tfce,
-            seed=seed
+            seed=seed,
+            uncorrected_p=True,
         )
+        # Voxelwise Cohen's d / partial eta-squared maps beside the t maps, for viewing.
+        generate_effect_size_maps(metric_output, design['design_mat'], design['design_con'])
+        all_results[metric] = {'randomise': randomise_result}
 
-        all_results[metric] = {
-            'randomise': randomise_result,
-            'summary': summarize_results(metric_output, cluster_threshold)
-        }
-
-    # Step 4: Extract clusters and generate reports
-    logger.info("\n[Step 4] Extracting clusters and generating reports...")
-
-    # Find SIGMA parcellation for labeling
-    sigma_parcellation = None
-    if config:
-        from neurofaune.analysis.tbss.prepare_tbss import _study_space_file
-        parc_path = _study_space_file(config, 'SIGMA_InVivo_Anatomical_Brain_Atlas.nii.gz')
-        if parc_path.exists():
-            sigma_parcellation = parc_path
-        else:
-            # Clusters are still reported, but without region labels -- say so
-            # rather than let an unlabeled report pass for a labeled one.
-            logger.warning(f"SIGMA parcellation not found at {parc_path}; "
-                           "cluster reports will carry no region labels")
-
+    # Step 4: Read every test out -- significant or not -- with effect sizes and named regions
+    logger.info("\n[Step 4] Reading out tests and clusters...")
+    atlas = _sigma_atlas(config, logger)
+    alpha = 1.0 - cluster_threshold
+    all_tests, all_clusters = [], []
     for metric in metrics:
         metric_output = output_dir / f"randomise_{metric}"
-        reports_dir = output_dir / f"cluster_reports_{metric}"
-
-        cluster_results = generate_reports_for_all_contrasts(
-            randomise_output_dir=metric_output,
-            output_dir=reports_dir,
-            contrast_names=design['contrast_names'],
-            sigma_parcellation=sigma_parcellation,
-            threshold=cluster_threshold,
-            min_cluster_size=min_cluster_size
+        tests, clusters = read_randomise(
+            metric_output, prepared['metric_files'][metric], design['design_mat'],
+            prepared['analysis_mask'], prefix="randomise", atlas=atlas,
+            contrast_names=design['contrast_names'], design_con=design['design_con'],
+            cluster_on="fwe", alpha=alpha, min_cluster_size=min_cluster_size,
+            labels={"analysis": analysis_name, "metric": metric},
         )
+        all_tests.append(tests)
+        all_clusters.append(clusters)
+        all_results[metric]['tests'] = tests.to_dict("records")
+    tests = pd.concat(all_tests, ignore_index=True)
+    clusters = pd.concat(all_clusters, ignore_index=True) if any(len(c) for c in all_clusters) \
+        else pd.DataFrame()
+    tests.to_csv(output_dir / 'tests.csv', index=False)
+    clusters.to_csv(output_dir / 'clusters.csv', index=False)
+    logger.info(f"  {len(tests)} test rows -> tests.csv, {len(clusters)} cluster rows -> clusters.csv")
 
-        all_results[metric]['clusters'] = cluster_results
-
-    # Step 5: Summary
+    # Step 5: Summary -- every test with its whole-mask effect, not a significance count
     logger.info("\n" + "=" * 80)
     logger.info("ANALYSIS COMPLETE")
     logger.info("=" * 80)
-
-    for metric in metrics:
-        summary = all_results[metric]['summary']
-        n_sig = sum(1 for c in summary['contrasts'] if c['significant'])
-        logger.info(f"\n  {metric}:")
-        for contrast in summary['contrasts']:
-            status = "SIGNIFICANT" if contrast['significant'] else "not significant"
-            logger.info(
-                f"    {contrast['type']}{contrast['contrast_number']}: "
-                f"{contrast['n_significant_voxels']} voxels ({status})"
-            )
+    for _, r in tests.iterrows():
+        logger.info(
+            f"  {r.metric} {r.contrast_name} (tests {r.tested_direction}): "
+            f"whole-mask d = {r.whole_d:+.2f} [{r.whole_d_ci_low:+.2f}, {r.whole_d_ci_high:+.2f}], "
+            f"{r.n_vox_fwe} voxels at FWE p < {alpha:g} ({100 * r.frac_mask_fwe:.1f}% of mask), "
+            f"min FWE p = {r.min_p_fwe:.3g}"
+        )
 
     from neurofaune.analysis.stats.design_record import summarize_contrasts
 
@@ -377,16 +388,10 @@ def run_tbss_statistical_analysis(
         # What each contrast tests (from design.json; empty when undescribed).
         'design_described': design.get('design_record') is not None,
         'contrasts_tested': summarize_contrasts(design.get('design_record')),
-        'results': {
-            metric: {
-                'n_significant_contrasts': sum(
-                    1 for c in all_results[metric]['summary']['contrasts']
-                    if c['significant']
-                ),
-                'contrasts': all_results[metric]['summary']['contrasts']
-            }
-            for metric in metrics
-        }
+        'cluster_definition': f"FWE p < {alpha:g}, 26-connected, >= {min_cluster_size} voxels",
+        'tests_csv': 'tests.csv',
+        'clusters_csv': 'clusters.csv',
+        'results': {metric: {'tests': all_results[metric]['tests']} for metric in metrics},
     }
     with open(summary_file, 'w') as f:
         json.dump(summary_data, f, indent=2, default=str)

@@ -96,7 +96,8 @@ def run_randomise(
     voxel_threshold: Optional[float] = None,
     demean: bool = False,
     variance_smoothing: Optional[float] = None,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    uncorrected_p: bool = False
 ) -> Dict:
     """
     Execute FSL randomise with specified parameters.
@@ -116,6 +117,8 @@ def run_randomise(
         demean: Demean data temporally
         variance_smoothing: Variance smoothing in mm
         seed: Random seed for reproducibility
+        uncorrected_p: Also write uncorrected p maps (--uncorrp), so a
+            read-out can report extent at an uncorrected threshold too
 
     Returns:
         Dictionary with execution results and output file paths
@@ -178,6 +181,9 @@ def run_randomise(
 
     if seed is not None:
         cmd.append(f'--seed={seed}')
+
+    if uncorrected_p:
+        cmd.append('--uncorrp')
 
     logger.info("Executing FSL randomise")
     logger.info(f"  Input: {input_file}")

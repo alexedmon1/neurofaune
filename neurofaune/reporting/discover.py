@@ -126,11 +126,18 @@ def _discover_tbss(analysis_root: Path) -> List[Dict[str, Any]]:
         n_subjects = data.get("n_subjects", 0)
         metrics = data.get("metrics", [])
 
-        # Count significant contrasts
-        n_sig = 0
+        # Tests: summaries from run_tbss_stats since the read-out carry every test as a
+        # row (results[metric]["tests"]) and no longer a significance count; older
+        # summaries carry only the count. Read whichever the summary has -- reading
+        # only the count would show 0 for every new analysis.
         results = data.get("results", {})
-        for metric_results in results.values():
-            n_sig += metric_results.get("n_significant_contrasts", 0)
+        rows = [t for m in results.values() for t in (m.get("tests") or [])]
+        if rows:
+            n_tests = len(rows)
+            n_sig = sum(1 for t in rows if t.get("significant_fwe"))
+        else:
+            n_tests = None
+            n_sig = sum(m.get("n_significant_contrasts", 0) for m in results.values())
 
         # Collect figure paths
         figures = []
@@ -152,6 +159,10 @@ def _discover_tbss(analysis_root: Path) -> List[Dict[str, Any]]:
                 "n_permutations": data.get("n_permutations", 0),
                 "n_significant_contrasts": n_sig,
                 "n_contrasts": data.get("n_contrasts", 0),
+                "n_tests": n_tests,
+                "tests_csv": (_rel(analysis_dir / data["tests_csv"], analysis_root)
+                              if data.get("tests_csv") and (analysis_dir / data["tests_csv"]).exists()
+                              else None),
             },
             "figures": figures,
             "source_summary_json": _rel(summary_path, analysis_root),

@@ -3,7 +3,16 @@ Base class and subclasses for FSL randomise-based voxelwise analyses.
 
 Provides a common framework for VBM and voxelwise fMRI analyses that share
 the same pattern: subset 4D volumes to match design subject orders, run
-FSL randomise with TFCE, extract clusters, and generate reports.
+FSL randomise with TFCE, and read every test out.
+
+Read-out: every contrast of every metric is a row of ``tests.csv`` --
+significant or not -- with the unselected whole-mask effect (Cohen's d and
+its exact CI) and its extent at the corrected and uncorrected threshold;
+``clusters.csv`` has one row per cluster with extent, peak, and the named
+SIGMA regions it covers (``stats.readout.read_randomise``). The older outputs
+-- ``cluster_reports_<metric>/`` and the per-contrast significance summary in
+``analysis_summary.json`` -- are still written, because the analysis registry
+and the run scripts read them.
 
 Subclass-specific differences:
     - VBMAnalysis: GM/WM tissues, 3D TFCE, config auto-discovery
@@ -20,8 +29,10 @@ from typing import Dict, List, Optional
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 
 from neurofaune.analysis.stats.cluster_report import generate_reports_for_all_contrasts
+from neurofaune.analysis.stats.readout import Atlas, read_randomise
 from neurofaune.analysis.stats.randomise_wrapper import run_randomise, summarize_results
 from neurofaune.config import get_config_value, load_config
 
@@ -256,6 +267,30 @@ class RandomiseAnalysis:
 
         return None
 
+    def _atlas(self, parcellation: Optional[Path], mask: Path) -> Optional[Atlas]:
+        """The parcellation with region NAMES (its labels table beside it), or None.
+
+        None, said in the log, when there is no parcellation, or when it is not
+        on the analysis mask's grid -- clusters are then reported without names
+        rather than with names from the wrong space.
+        """
+        if parcellation is None:
+            self.logger.warning("No parcellation: clusters will carry no region names")
+            return None
+        parcellation = Path(parcellation)
+        shape = nib.load(str(parcellation)).shape[:3]
+        if shape != nib.load(str(mask)).shape[:3]:
+            self.logger.warning(
+                f"Parcellation {parcellation.name} {shape} is not on the analysis "
+                f"mask's grid {nib.load(str(mask)).shape[:3]}: clusters will carry no region names")
+            return None
+        name = parcellation.name.replace('.nii.gz', '').replace('.nii', '')
+        table = parcellation.with_name(f"{name}_Labels.csv")
+        if not table.exists():
+            self.logger.warning(f"Label table {table.name} not found: regions will be label numbers")
+            return Atlas.from_files(parcellation)
+        return Atlas.from_files(parcellation, table)
+
     # ------------------------------------------------------------------
     # Main run method
     # ------------------------------------------------------------------
@@ -451,6 +486,7 @@ class RandomiseAnalysis:
                 tfce=True,
                 tfce_2d=False,  # 3D TFCE for volumetric data
                 seed=seed,
+                uncorrected_p=True,  # uncorrected extents in tests.csv
             )
 
             all_results[metric] = {
@@ -477,6 +513,35 @@ class RandomiseAnalysis:
                 min_cluster_size=min_cluster_size,
             )
             all_results[metric]['clusters'] = cluster_results
+
+        # --- Read every test out: significant or not, with its effect and named regions ---
+        self.logger.info("\nReading out tests and clusters...")
+        atlas = self._atlas(sigma_parcellation, analysis_mask)
+        alpha = 1.0 - cluster_threshold
+        all_tests, all_clusters = [], []
+        for metric in metrics:
+            tests, clusters = read_randomise(
+                output_dir / f"randomise_{metric}", metric_files[metric], design_mat,
+                analysis_mask, prefix="randomise", atlas=atlas,
+                contrast_names=contrast_names, design_con=design_con,
+                cluster_on="fwe", alpha=alpha, min_cluster_size=min_cluster_size,
+                labels={"analysis": analysis_name, "metric": metric},
+            )
+            all_tests.append(tests)
+            all_clusters.append(clusters)
+            all_results[metric]['tests'] = tests.to_dict("records")
+        tests = pd.concat(all_tests, ignore_index=True)
+        clusters = (pd.concat(all_clusters, ignore_index=True)
+                    if any(len(c) for c in all_clusters) else pd.DataFrame())
+        tests.to_csv(output_dir / 'tests.csv', index=False)
+        clusters.to_csv(output_dir / 'clusters.csv', index=False)
+        for _, r in tests.iterrows():
+            self.logger.info(
+                f"  {r.metric} {r.contrast_name} (tests {r.tested_direction}): "
+                f"whole-mask d = {r.whole_d:+.2f} [{r.whole_d_ci_low:+.2f}, {r.whole_d_ci_high:+.2f}], "
+                f"{r.n_vox_fwe} voxels at FWE p < {alpha:g} ({100 * r.frac_mask_fwe:.1f}% of mask), "
+                f"min FWE p = {r.min_p_fwe:.3g}"
+            )
 
         # --- Log summary ---
         self.logger.info(f"\n{analysis_name} results:")
@@ -506,8 +571,14 @@ class RandomiseAnalysis:
             'contrasts_tested': summarize_contrasts(design_record),
             'metrics': metrics,
             'n_permutations': n_permutations,
+            'cluster_definition': f"FWE p < {alpha:g}, 26-connected, >= {min_cluster_size} voxels",
+            'tests_csv': 'tests.csv',
+            'clusters_csv': 'clusters.csv',
             'results': {
                 metric: {
+                    # Every test with its whole-mask effect and CI (tests.csv), nulls included.
+                    'tests': all_results[metric]['tests'],
+                    # Kept for the analysis registry and the run scripts, which read them.
                     'n_significant_contrasts': sum(
                         1 for c in all_results[metric]['summary']['contrasts']
                         if c['significant']
