@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from ._schema import load_schema, validate
 from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, MODALITIES, PER_SUBGROUP, PROVENANCE_JSON, READS,
                    SPEC, SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, canonical_measure, id_problem,
-                   measure_vocabulary, valid_axes, version_tuple)
+                   measure_vocabulary, run_id_problem, valid_axes, version_tuple)
 
 #: Analysis types whose tests are voxelwise, so a test row must state its extent.
 VOXELWISE = ("tbss", "vbm", "tbm", "voxelwise", "fixel")
@@ -30,13 +30,19 @@ class Report:
     id: str | None = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: what the cross-run check needs: version, modality, analysis_type, run, supersedes, tests
+    meta: dict = field(default_factory=dict, repr=False)
 
     @property
     def ok(self) -> bool:
         return not self.errors
 
+    @property
+    def run(self) -> str | None:
+        return self.meta.get("run")
+
     def as_dict(self) -> dict:
-        return {"folder": str(self.folder), "id": self.id, "ok": self.ok,
+        return {"folder": str(self.folder), "id": self.id, "run": self.run, "ok": self.ok,
                 "errors": self.errors, "warnings": self.warnings}
 
 
@@ -120,6 +126,15 @@ def _rules_0_2(analysis: dict, rep: Report) -> None:
         why = id_problem(analysis["id"], modality, atype)
         if why:
             rep.errors.append(f"{ANALYSIS_JSON}: id {analysis['id']!r} {why}")
+    run = analysis.get("run")
+    if not isinstance(run, dict) or not run.get("id"):
+        rep.errors.append(f"{ANALYSIS_JSON}: run is required from 0.2 ({{id, label, supersedes}}; §3.2)")
+    else:
+        why = run_id_problem(run["id"])
+        if why:
+            rep.errors.append(f"{ANALYSIS_JSON}: run id {run['id']!r} {why}")
+        if run["id"] in (run.get("supersedes") or []):
+            rep.errors.append(f"{ANALYSIS_JSON}: run {run['id']!r} supersedes itself")
     vocab = measure_vocabulary()
     own = set(mods or []) if modality == "multimodal" else {modality}
     for m in analysis.get("measures") or []:
@@ -350,9 +365,72 @@ def check_analysis(folder: Path) -> Report:
                     if p.parent != folder and is_analysis(p.parent))
     if nested:
         rep.errors.append(f"analysis folders must not nest: {[str(p) for p in nested[:3]]}")
+    run = analysis.get("run") if isinstance(analysis.get("run"), dict) else {}
+    rep.meta = {"v02": v02, "modality": analysis.get("modality"), "analysis_type": analysis.get("analysis_type"),
+                "run": run.get("id"), "supersedes": list(run.get("supersedes") or []), "tests": tested}
     return rep
 
 
+def check_runs(reports: list[Report]) -> None:
+    """Across folders (§3.2): an id names one analysis; each of its folders is one run.
+
+    Runs of one id share modality and analysis_type and have distinct run ids; a run
+    supersedes only runs of its own id; a test (measure, contrast, facet) in two runs is
+    an error unless the later run lists the earlier in ``supersedes`` -- then the earlier
+    run's copy of that test is superseded, and its other tests stay current. 0.1 folders
+    have no runs: their ids must be unique. Errors are added to the reports in place.
+    """
+    from itertools import combinations
+
+    by_id: dict[str, list[Report]] = {}
+    for r in reports:
+        if r.id:
+            by_id.setdefault(r.id, []).append(r)
+    for aid, reps in by_id.items():
+        if len(reps) < 2:
+            continue
+        if not all(r.meta.get("v02") for r in reps):
+            for r in reps:
+                r.errors.append(f"id {aid!r} is used by {len(reps)} folders; only 0.2 folders, each one "
+                                "run (§3.2), may share an id")
+            continue
+        for key in ("modality", "analysis_type"):
+            values = {r.meta.get(key) for r in reps}
+            if len(values) > 1:
+                for r in reps:
+                    r.errors.append(f"runs of {aid!r} disagree on {key}: {sorted(map(str, values))}")
+        runs: dict[str, Report] = {}
+        for r in reps:
+            if r.run in runs:
+                for x in (r, runs[r.run]):
+                    x.errors.append(f"run {r.run!r} of {aid!r} is in two folders: {runs[r.run].folder}, {r.folder}")
+            elif r.run:
+                runs[r.run] = r
+        superseded: set[tuple[str, tuple]] = set()
+        for r in reps:
+            for old in r.meta.get("supersedes") or []:
+                if old not in runs:
+                    r.errors.append(f"run {r.run!r} supersedes {old!r}, which is not a run of {aid!r}")
+                    continue
+                if r.run in (runs[old].meta.get("supersedes") or []):
+                    r.errors.append(f"runs {r.run!r} and {old!r} of {aid!r} supersede each other")
+                    continue
+                overlap = r.meta["tests"] & runs[old].meta["tests"]
+                if not overlap:
+                    r.warnings.append(f"run {r.run!r} supersedes {old!r} but repeats none of its tests")
+                superseded |= {(old, k) for k in overlap}
+        for a, b in combinations([r for r in reps if r.run], 2):
+            clash = sorted(k for k in a.meta["tests"] & b.meta["tests"]
+                           if (a.run, k) not in superseded and (b.run, k) not in superseded)
+            if clash:
+                for x in (a, b):
+                    x.errors.append(f"runs {a.run!r} and {b.run!r} of {aid!r} both hold {len(clash)} test(s), "
+                                    f"e.g. {clash[0]}; the later run must list the earlier in supersedes")
+
+
 def check(path: Path) -> list[Report]:
-    """One report per analysis folder at or under ``path`` (empty when there are none)."""
-    return [check_analysis(f) for f in find_analyses(Path(path))]
+    """One report per analysis folder at or under ``path`` (empty when there are none),
+    the runs of each analysis checked against each other (``check_runs``)."""
+    reports = [check_analysis(f) for f in find_analyses(Path(path))]
+    check_runs(reports)
+    return reports

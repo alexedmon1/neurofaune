@@ -34,6 +34,13 @@ write_analysis(out, {
               status="completed", start=started, end=now()))   # raises if non-conforming
 ```
 
+   From 0.2 each call writes one **run** (RESULTS_SPEC.md §3.2): give it
+   `"run": {"id": ..., "label": ...}` (else the current UTC time is its id) and write it
+   into `neurofaune.results.spec.run_folder(root, analysis_id, run_id)`. **Adding tests
+   to an analysis later** is a new run in a new folder beside the first — never an edit
+   of the first. **Re-running tests** (a fixed mask, a joint correction) is a new run
+   whose `supersedes` names the runs it replaces; the old folders stay.
+
 4. **Test it**: the producer's own test suite builds a small synthetic analysis
    per analysis type and asserts that `neurofaune.results.check(folder)` passes.
    On real outputs: `neurofaune results check <results root>`.

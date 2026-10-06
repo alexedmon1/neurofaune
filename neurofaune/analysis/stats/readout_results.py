@@ -197,6 +197,7 @@ def write_readout_results(
     design: Mapping[str, Any] | None = None,
     decision: Mapping[str, Any] | None = None,
     references: Sequence[Mapping[str, str]] = (),
+    run: Mapping[str, Any] | str | None = None,
     tests_file: str = "tests.csv",
     clusters_file: str = "clusters.csv",
     axes: str | None = None,
@@ -217,6 +218,8 @@ def write_readout_results(
         design: the analysis's design block (n, groups, ...), for a battery of designs;
             by default it is taken from ``design_record`` and the first test row.
         decision, references: passed into analysis.json as the specification defines them.
+        run: this run of the analysis (specification §3.2): a run id, or ``{id, label,
+            supersedes}``; by default a run id from the current time.
         tests_file, clusters_file: table names, so a folder that already holds other
             tables of those names can adopt the specification without losing them.
         axes: the anatomical direction each voxel axis of the maps runs toward (e.g. "LIA",
@@ -329,6 +332,7 @@ def write_readout_results(
         **({"decision": dict(decision)} if decision else {}),
         **({"display": {"plane": plane}} if plane else {}),
         **({"references": [dict(r) for r in references]} if references else {}),
+        **({"run": {"id": run} if isinstance(run, str) else dict(run)} if run else {}),
     }
     from neurofaune.provenance import generated_by
     gen = generated_by()

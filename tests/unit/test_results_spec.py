@@ -390,3 +390,114 @@ def test_the_measure_vocabulary_is_packaged_and_consistent():
     aliases = [a.lower() for v in vocab.values() for a in v.get("aliases", [])]
     assert len(aliases) == len(set(aliases)) and not names & set(aliases)
     assert canonical_measure("CSFF") == ("CSWF", False) and canonical_measure("Glx") == ("Glu+Gln", False)
+
+
+# ------------------------------------------------------------ 0.2 runs ---
+def _run(root, run_id, contrasts=("A>B",), measures=("FA", "MD"), **over):
+    """One run of dwi/roi/demo under ``root``, with the given contrasts on the given measures."""
+    from neurofaune.results.spec import run_folder
+
+    f = run_folder(root, "dwi/roi/demo", run_id)
+    f.mkdir(parents=True)
+    rows = [(m, c) for c in contrasts for m in measures]
+    pd.DataFrame({"measure": [m for m, _ in rows], "contrast": [c for _, c in rows],
+                  "direction": ["A > B"] * len(rows), "n": [20] * len(rows), "d": [0.5] * len(rows),
+                  "lo": [0.1] * len(rows), "hi": [0.9] * len(rows), "p": [0.04] * len(rows)}
+                 ).to_csv(f / "tests.tsv", sep="\t", index=False)
+    write_columns(f / "tests.tsv", COLUMNS)
+    a = _analysis(measures=list(measures), run={"id": run_id, **over})
+    a["tables"][0]["n_rows"] = len(rows)
+    write_analysis(f, a, _prov(), strict=False)
+    return f
+
+
+def _by_run(root):
+    return {r.run: r for r in check(root)}
+
+
+def test_runs_with_different_tests_are_one_analysis(tmp_path):
+    _run(tmp_path, "2026-10-05", contrasts=("A>B",))
+    _run(tmp_path, "2026-10-08", contrasts=("B>A",), label="added later")
+    reps = _by_run(tmp_path)
+    assert set(reps) == {"2026-10-05", "2026-10-08"} and all(r.ok for r in reps.values()), \
+        [r.errors for r in reps.values()]
+    assert {r.id for r in reps.values()} == {"dwi/roi/demo"}
+
+
+def test_a_test_in_two_runs_needs_supersedes(tmp_path):
+    _run(tmp_path, "2026-10-05")
+    _run(tmp_path, "2026-10-08")
+    reps = _by_run(tmp_path)
+    assert all("the later run must list the earlier in supersedes" in " ".join(r.errors) for r in reps.values())
+
+
+def test_supersedes_replaces_only_the_repeated_tests(tmp_path):
+    _run(tmp_path, "2026-10-05", contrasts=("A>B", "B>A"))
+    _run(tmp_path, "2026-10-08", contrasts=("A>B",), supersedes=["2026-10-05"])
+    reps = _by_run(tmp_path)
+    assert all(r.ok for r in reps.values()), [r.errors for r in reps.values()]
+
+
+@pytest.mark.parametrize("over, says", [
+    ({"supersedes": ["2026-01-01"]}, "which is not a run of"),
+    ({"supersedes": ["2026-10-08"]}, "supersedes itself"),
+])
+def test_supersedes_names_another_existing_run(tmp_path, over, says):
+    _run(tmp_path, "2026-10-05", contrasts=("A>B",))
+    _run(tmp_path, "2026-10-08", contrasts=("B>A",), **over)
+    assert says in " ".join(_by_run(tmp_path)["2026-10-08"].errors)
+
+
+def test_runs_agree_on_modality_and_have_distinct_ids(tmp_path):
+    _run(tmp_path, "2026-10-05", contrasts=("A>B",))
+    f = _run(tmp_path, "2026-10-08", contrasts=("B>A",))
+    a = json.loads((f / "analysis.json").read_text())
+    a.update(modality="func", id="dwi/roi/demo")          # contradicts its id too; both reported
+    (f / "analysis.json").write_text(json.dumps(a))
+    assert "disagree on modality" in " ".join(_by_run(tmp_path)["2026-10-05"].errors)
+    g = tmp_path / "elsewhere"
+    g.mkdir()
+    for name in ("tests.tsv", "tests.json", "provenance.json"):
+        (g / name).write_bytes((f / name).read_bytes())
+    a.update(modality="dwi")
+    (g / "analysis.json").write_text(json.dumps(a))
+    assert any("is in two folders" in " ".join(r.errors) for r in check(tmp_path))
+
+
+def test_the_writer_names_a_run_and_checks_its_siblings(tmp_path):
+    _run(tmp_path, "2026-10-05")
+    f = _run(tmp_path, "2026-10-08")
+    from neurofaune.results.check import check_analysis
+
+    assert check_analysis(f).ok                 # alone it conforms; beside its sibling it does not
+    a = json.loads((f / "analysis.json").read_text())
+    with pytest.raises(Exception, match="supersedes"):
+        write_analysis(f, a, _prov())
+    a.pop("run")
+    g = tmp_path / "dwi" / "roi" / "other" / "x"
+    g.mkdir(parents=True)
+    for name in ("tests.tsv", "tests.json"):
+        (g / name).write_bytes((f / name).read_bytes())
+    write_analysis(g, {**a, "id": "dwi/roi/other"}, _prov())
+    assert json.loads((g / "analysis.json").read_text())["run"]["id"]       # filled in
+
+
+def test_0_1_folders_have_no_runs_and_unique_ids(tmp_path):
+    for name in ("a", "b"):
+        f = tmp_path / name
+        f.mkdir()
+        pd.DataFrame({"measure": ["FA", "MD"], "contrast": ["A>B"] * 2, "direction": ["A > B"] * 2,
+                      "n": [20, 20], "d": [0.8, -0.1], "lo": [0.1, -0.8], "hi": [1.5, 0.6],
+                      "p": [0.02, 0.7]}).to_csv(f / "tests.tsv", sep="\t", index=False)
+        write_columns(f / "tests.tsv", COLUMNS)
+        old = {k: v for k, v in _analysis(id="roi/demo").items() if k != "modality"}
+        write_analysis(f, {**old, "spec_version": "0.1.0"}, _prov(), strict=False)
+    assert all("only 0.2 folders" in " ".join(r.errors) for r in check(tmp_path))
+
+
+def test_a_0_2_folder_without_a_run_is_reported(folder):
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    a = json.loads((folder / "analysis.json").read_text())
+    a.pop("run")
+    (folder / "analysis.json").write_text(json.dumps(a))
+    assert "run is required" in _errors(folder)

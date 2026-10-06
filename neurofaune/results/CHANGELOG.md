@@ -29,6 +29,13 @@ they are without matching on names:
   spelling is an error; a contract table's measures are those `analysis.json` lists;
 - `references` labels `registration`, `finding` and `doi` have an agreed meaning.
 
+- **runs** (§3.2): a folder is one run of an analysis, `run: {id, label, supersedes}`
+  (required; the writer fills in a time-stamped id when none is given). Runs of one id
+  share modality and analysis type; a test held by two runs is an error unless the later
+  supersedes the earlier (per test); corrections stay with their runs. `check` checks
+  runs across a results root (`check_runs`); the writer checks a new run against its
+  siblings. Recommended layout `<root>/<id>/<run id>/` (`spec.run_folder`).
+
 The checker reads 0.1 and 0.2, each folder by the rules of the version it declares.
 neurofaune's TBSS and randomise writers now write 0.2 ids (`dwi/tbss/<name>`,
 `anat/vbm/<name>`, `func/voxelwise/<name>`).

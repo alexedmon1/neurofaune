@@ -11,7 +11,8 @@ conformance checker (`neurofaune results check`).
 first study read it end to end. Until then a minor version may change a field;
 from 1.0.0 on, versions follow semver and a reader written for 1.x reads every 1.y.
 0.2 adds identity and vocabulary (§3.1): what one analysis is, how it is named, and
-the words a reader groups analyses by.
+the words a reader groups analyses by; and runs (§3.2): the tests of one analysis run
+at different times, each run in a folder of its own.
 
 ## 1. Principles
 
@@ -58,6 +59,10 @@ modalities at once (a decoder over diffusion and functional features) is
 - A results root holds any number of analysis folders at any depth. A reader finds
   them by looking for `analysis.json` files whose `spec` is `"neurofaune.results"`.
   Analysis folders do not nest.
+- **From 0.2 a folder is one run of an analysis** (§3.2): the analysis is its `id`, and
+  its runs — the tests run at one time — are folders that share it. The recommended
+  layout is `<root>/<id>/<run id>/`, e.g. `results/dwi/tbss/h1h/2026-10-05/`
+  (`neurofaune.results.spec.run_folder`).
 
 ## 3. `analysis.json`
 
@@ -67,7 +72,8 @@ Fields marked * are required.
 |---|---|
 | `spec`* | `"neurofaune.results"` |
 | `spec_version`* | `"0.2.0"` |
-| `id`* | identifier, unique under the results root and stable across re-runs; from 0.2 `<modality>/<analysis_type>/<name>`, e.g. `"dwi/tbss/dose_p60"` (§3.1) |
+| `id`* | the analysis, stable across re-runs; from 0.2 `<modality>/<analysis_type>/<name>`, e.g. `"dwi/tbss/dose_p60"` (§3.1), shared by its runs (§3.2); a 0.1 id is unique under the results root |
+| `run`* (0.2) | this folder's run of the analysis: `{id*, label, supersedes}` (§3.2) |
 | `title`*, `description`* | a heading, and what the analysis asks in a sentence or two |
 | `analysis_type`* | `tbss`, `vbm`, `tbm`, `voxelwise`, `roi`, `covariance_network`, `nbs`, `graph`, `connectome`, `fixel`, `decoding`, `radiomics`, `spectroscopy`, `other` |
 | `modality`* (0.2) | `anat`, `dwi`, `func`, `msme`, `mrs`, `asl` or `multimodal` (§3.1) |
@@ -147,6 +153,45 @@ modality, an id that does not follow the pattern or contradicts the fields, a kn
 measure under another spelling, a table measure not listed; warnings: a measure not in
 the vocabulary, a measure of another modality than the analysis's). A 0.1 folder is
 read by 0.1's rules.
+
+### 3.2 Runs: tests of one analysis run at different times (0.2)
+
+An analysis is rarely run once. A battery is registered and run; a contrast is added
+after its results are read; one measure is re-run with a corrected mask. Each of those
+is a **run**: the tests run together at one time, with their own provenance, role,
+correction and references — a registered run and a later exploratory one keep their
+own labels, side by side. Each run is a folder of its own, written once and not edited
+afterwards; its `analysis.json` carries
+
+```json
+"run": {"id": "2026-10-08", "label": "covariate-adjusted follow-up", "supersedes": ["2026-10-05"]}
+```
+
+- `id`* — unique among the analysis's runs; lowercase letters, digits, `_`, `.`, `-`
+  (a date, or a date and time, reads well). The writer fills in the current UTC time
+  when a producer gives none.
+- `label` — the run in a few words, for a reader's list of runs.
+- `supersedes` — earlier runs of the same analysis whose tests this run repeats and
+  replaces. Supersession is per test: an earlier run's test (measure × contrast × facet)
+  is superseded when a run that lists it holds the same test; the earlier run's other
+  tests stay current. Superseded runs stay on disk.
+
+**The rules** (checked across a results root; the writer checks a new run against its
+sibling runs in the same parent folder): runs of one `id` share `modality` and
+`analysis_type`; run ids are unique within an analysis; `supersedes` names runs of the
+same analysis, never the run itself, and two runs do not supersede each other; **a test
+held by two runs, neither superseding the other, is an error** — the same test is never
+reported twice as current. A run that supersedes another but repeats none of its tests
+is warned about.
+
+**Corrections stay with their runs.** Each run's `inference.correction` covers that
+run's tests; a reader shows every test with its own run's correction and never pools p
+values across runs. To correct a set of tests jointly after adding to it, run them all
+again as one new run that supersedes the old ones.
+
+Fields that describe the analysis rather than the run (`title`, `description`,
+`measures`) may differ between runs as the analysis grows; a reader takes them from the
+latest current run and lists the union of the measures.
 
 ## 4. `provenance.json`
 
@@ -271,8 +316,9 @@ neurofaune results check <analysis folder or results root> [--json]
 checks every analysis folder it finds: the JSON files against the schemas, every
 listed file present and inside the folder, every table against its dictionary, the
 standard terms and their qualifiers, the contract (§6), and — for folders that declare
-0.2 — identity and vocabulary (§3.1). Each folder is checked by the rules of the
-version it declares. Exit status 0 when every
+0.2 — identity and vocabulary (§3.1) and, across the folders it finds, the runs of each
+analysis against each other (§3.2). Each folder is checked by the rules of the version
+it declares. Exit status 0 when every
 folder conforms. The schemas in `neurofaune/results/schemas/` are plain JSON Schema
 (draft 2020-12) and work with any validator; the checker itself needs only the
 standard library, so it can run where neurofaune's imaging dependencies cannot.

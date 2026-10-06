@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .check import Report, check_analysis, read_table
-from .spec import ANALYSIS_JSON, PROVENANCE_JSON, SPEC, SPEC_VERSION
+from .check import Report, check_analysis, check_runs, is_analysis, read_table
+from .spec import ANALYSIS_JSON, PROVENANCE_JSON, SPEC, SPEC_VERSION, default_run_id, version_tuple
 
 
 class NonConformingResults(ValueError):
@@ -81,16 +81,29 @@ def write_analysis(folder: Path, analysis: Mapping[str, Any], provenance_record:
                    *, strict: bool = True) -> Report:
     """Write ``analysis.json`` and ``provenance.json`` into ``folder`` and check it.
 
-    ``spec`` / ``spec_version`` are filled in. With ``strict`` a non-conforming
-    folder raises :class:`NonConformingResults` (the files stay on disk, so the
-    problem can be inspected); otherwise the report is returned either way.
+    ``spec`` / ``spec_version`` are filled in, and from 0.2 a ``run`` when the analysis
+    gives none (``{"id": <UTC time>}``; give one to name the run). The folder is checked,
+    and so is the run against the other runs of the same id beside it (the folders in
+    ``folder``'s parent: the layout ``spec.run_folder`` recommends); a whole results root
+    is checked across runs by ``check``. With ``strict`` a non-conforming folder raises
+    :class:`NonConformingResults` (the files stay on disk, so the problem can be
+    inspected); otherwise the report is returned either way.
     """
     folder = Path(folder)
     a = {"spec": SPEC, "spec_version": SPEC_VERSION, **analysis}
+    version = version_tuple(a["spec_version"])
+    if version is not None and version >= (0, 2) and "run" not in a:
+        a["run"] = {"id": default_run_id()}
     p = {"spec": SPEC, "spec_version": SPEC_VERSION, **provenance_record}
     (folder / ANALYSIS_JSON).write_text(json.dumps(a, indent=2, default=str) + "\n")
     (folder / PROVENANCE_JSON).write_text(json.dumps(p, indent=2, default=str) + "\n")
     report = check_analysis(folder)
+    if report.meta.get("v02") and folder.parent.is_dir():
+        siblings = [check_analysis(q) for q in sorted(folder.parent.iterdir())
+                    if q != folder and q.is_dir() and is_analysis(q)]
+        same = [r for r in siblings if r.id == report.id]
+        if same:
+            check_runs([report, *same])
     if strict and not report.ok:
         raise NonConformingResults(report)
     return report

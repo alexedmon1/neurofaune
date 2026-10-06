@@ -132,3 +132,33 @@ def analysis_id(modality: str, analysis_type: str, *name: str) -> str:
 
     parts = [re.sub(r"[^a-z0-9_.-]+", "_", str(p).lower()).strip("_") for p in name]
     return "/".join([modality, analysis_type, *(p for p in parts if p)])
+
+
+# ── 0.2: runs -- tests of one analysis run at different times ─────────────────────
+#
+# An analysis is one id; each time some of its tests are run, that run writes a folder
+# of its own (never edited afterwards), whose analysis.json carries
+# ``run: {id, label, supersedes}``. Readers show one analysis per id, its runs together.
+
+def run_id_problem(run_id: str) -> str | None:
+    """Why a run id is not lowercase letters, digits, '_', '.' or '-', else None."""
+    if not isinstance(run_id, str) or not run_id or any(ch not in _SEGMENT + ".-" for ch in run_id):
+        return "is not lowercase letters, digits, '_', '.' or '-'"
+    return None
+
+
+def default_run_id() -> str:
+    """A run id from the current UTC time, e.g. ``2026-10-06_183248``."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+
+
+def run_folder(root, analysis_id: str, run_id: str):
+    """The recommended folder of one run: ``<root>/<analysis id>/<run id>``."""
+    from pathlib import Path
+
+    why = run_id_problem(run_id)
+    if why:
+        raise ValueError(f"run id {run_id!r} {why}")
+    return Path(root).joinpath(*analysis_id.split("/"), run_id)
