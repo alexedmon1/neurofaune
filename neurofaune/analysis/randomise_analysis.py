@@ -541,7 +541,8 @@ class RandomiseAnalysis:
         # tests.csv / clusters.csv with column dictionaries, analysis.json and provenance.json
         # (docs/RESULTS_SPEC.md), so the results can be read without neurofaune.
         from neurofaune.analysis.stats.readout_results import write_readout_results
-        from neurofaune.atlas.study_space import atlas_space_name, study_space_template
+        from neurofaune.atlas.study_space import (atlas_space_name, display_plane, study_space_axes,
+                                                  study_space_template)
         write_readout_results(
             output_dir, tests, clusters, analysis_id=f"{self.ANALYSIS_TYPE}/{analysis_name}",
             title=f"{self.ANALYSIS_TYPE}: {analysis_name}",
@@ -554,6 +555,7 @@ class RandomiseAnalysis:
             inference="3-D TFCE", design_record=design_record, started=started,
             modality=self.MODALITY, mask=analysis_mask,
             background=study_space_template(self.config),
+            axes=study_space_axes(self.config), plane=display_plane(self.config),
             inputs=[*({"path": str(metric_files[m]), "role": f"4-D {m}"} for m in metrics),
                     {"path": str(design_mat), "role": "design matrix"},
                     {"path": str(analysis_mask), "role": "analysis mask"}],

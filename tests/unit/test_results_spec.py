@@ -278,3 +278,25 @@ def test_an_effect_needs_its_interval_values_not_just_the_columns(folder):
     df.to_csv(folder / "tests.tsv", sep="\t", index=False)
     write_analysis(folder, _analysis(), _prov(), strict=False)
     assert "without its interval" in _errors(folder)
+
+
+@pytest.mark.parametrize("code, ok", [("LIA", True), ("ras", True), ("RRA", False), ("LI", False),
+                                      ("XYZ", False), ("SIA", False)])
+def test_axes_codes(code, ok):
+    assert spec.valid_axes(code) is ok
+
+
+def test_a_bad_axes_code_fails(folder):
+    maps = [{"path": "tests.tsv", "kind": "other", "description": "x", "axes": "LIX"}]
+    write_analysis(folder, _analysis(maps=maps, display={"plane": "coronal"}), _prov(), strict=False)
+    assert "three letters" in _errors(folder)
+
+
+def test_study_space_axes_and_plane_come_from_the_config():
+    from neurofaune.atlas.study_space import display_plane, study_space_axes
+
+    cfg = {"atlas": {"study_space": {"axes": "lia", "display_plane": "coronal"}}}
+    assert study_space_axes(cfg) == "LIA" and display_plane(cfg) == "coronal"
+    assert study_space_axes({}) is None and display_plane(None) is None
+    with pytest.raises(ValueError):
+        study_space_axes({"atlas": {"study_space": {"axes": "LLA"}}})

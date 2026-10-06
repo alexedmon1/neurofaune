@@ -87,7 +87,8 @@
           "measure": {"type": "string"},
           "contrast": {"type": "string"},
           "facet": {"type": "string"},
-          "values": {"enum": ["p", "one_minus_p"]}
+          "values": {"enum": ["p", "one_minus_p"]},
+          "axes": {"type": "string", "minLength": 3}
         }
       }
     },
@@ -121,6 +122,10 @@
           }
         }
       }
+    },
+    "display": {
+      "type": "object",
+      "properties": {"plane": {"enum": ["axial", "coronal", "sagittal"]}}
     },
     "retired": {
       "type": "object",

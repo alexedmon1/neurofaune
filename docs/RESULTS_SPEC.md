@@ -70,8 +70,9 @@ Fields marked * are required.
 | `inference`* | `{method*, correction*, n_permutations, notes}`; `correction` = `{p_kind*, family*, statement*, alpha}` (below) |
 | `effect`* | `{measure*, definition*, ci_level, scope}`, or `{measure: null, reason*}` where no effect size applies |
 | `tables`* | `[{path*, role*, rows*, description*, headline}]` (below) |
-| `maps` | `[{path*, kind*, description*, space, measure, contrast, facet, values}]` |
+| `maps` | `[{path*, kind*, description*, space, measure, contrast, facet, values, axes}]` |
 | `figures` | `[{path*, caption*, measure, contrast, facet}]` |
+| `display` | `{plane}`: `axial`, `coronal` or `sagittal`, the plane maps are best shown in (coronal for rodents) |
 | `decision` | where the analysis defines a decision rule: `{rule*, outcome*, criteria: [{name, description, passed}]}`; `outcome` is `holds`, `does_not_hold` or `not_assessed` |
 | `retired` | `{reason*, superseded_by}` — kept on disk, not to be read as current |
 | `caveats` | `[sentence, …]` that a reader must see beside the results |
@@ -103,6 +104,10 @@ the atlas the maps are in** -- the atlas the study registered to -- on the same 
 the maps, which readers draw on voxel for voxel. It is not a study-derived image
 (a mean FA, a group template): every analysis in one space is shown on the same
 reference. A reader draws on the `mask` when there is no background.
+A map's `axes` states the anatomical direction each voxel axis runs toward -- three
+letters, one from each of R/L, A/P, S/I (S dorsal, I ventral), e.g. `LIA`. A reader
+orients by it and not by the image header: rodent headers often follow the scanner
+rather than the animal. Without `axes` a reader uses the header and says so.
 A `p_corrected` / `p_uncorrected` map states what its voxels hold: `values` is `p`
 or `one_minus_p` (randomise's convention). A reader does not threshold a p map that
 does not say. A map that belongs to one test names its `measure`,

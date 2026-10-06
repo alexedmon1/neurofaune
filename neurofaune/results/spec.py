@@ -23,6 +23,18 @@ RUN_STATUSES = ("completed", "partial", "failed", "running")
 DECISION_OUTCOMES = ("holds", "does_not_hold", "not_assessed")
 TEST_KINDS = ("two_group", "one_sample", "regression", "interaction", "custom")
 TABLE_SUFFIXES = {".csv": ",", ".tsv": "\t"}
+PLANES = ("axial", "coronal", "sagittal")
+#: Each voxel axis runs toward one end of one of these pairs (S = superior / dorsal,
+#: I = inferior / ventral for animals as for people).
+AXIS_PAIRS = ("RL", "AP", "SI")
+
+
+def valid_axes(code: str) -> bool:
+    """Three letters, one from each of R/L, A/P, S/I, e.g. "LIA"."""
+    if not isinstance(code, str) or len(code) != 3:
+        return False
+    used = [next((i for i, pair in enumerate(AXIS_PAIRS) if ch in pair), None) for ch in code.upper()]
+    return None not in used and sorted(used) == [0, 1, 2]
 
 #: Standard column terms -> the qualifiers each one requires in its dictionary entry.
 STANDARD_TERMS: dict[str, tuple[str, ...]] = {

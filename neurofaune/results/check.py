@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from ._schema import load_schema, validate
 from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, PROVENANCE_JSON, SPEC,
-                                     SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES)
+                                     SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, valid_axes)
 
 #: Analysis types whose tests are voxelwise, so a test row must state its extent.
 VOXELWISE = ("tbss", "vbm", "tbm", "voxelwise", "fixel")
@@ -272,6 +272,9 @@ def check_analysis(folder: Path) -> Report:
                 tested |= {(r.get(mcol, "") if mcol else "", r.get(ccol, ""),
                             r.get(fcol, "") if fcol else "") for r in rows}
     for item in analysis.get("maps") or []:
+        if isinstance(item, dict) and "axes" in item and not valid_axes(item["axes"]):
+            rep.errors.append(f"map {item.get('path')!r}: axes {item['axes']!r} is not three letters, "
+                              "one from each of R/L, A/P, S/I")
         if isinstance(item, dict) and item.get("kind") in ("p_corrected", "p_uncorrected") \
                 and "values" not in item:
             rep.warnings.append(f"map {item.get('path')!r}: a p map should say whether it holds "

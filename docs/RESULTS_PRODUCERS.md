@@ -74,7 +74,9 @@ background is `atlas.study_space.template_masked` (else `atlas.study_space.templ
 and the space is named by `atlas.name` (`neurofaune.atlas.study_space`). SIGMA for the
 rat studies so far; a mouse study's config names its own atlas and nothing in
 neurofaune changes. A template on another grid than the analysis mask is left out
-with a warning.
+with a warning. **Orientation is declared, not read from headers:** `atlas.study_space.axes`
+(e.g. `LIA`) is written on every map and `atlas.study_space.display_plane` (coronal for
+rodents) into `display`; a study whose config gives no axes leaves readers on the header.
 
 ## 4. neurovrai
 
@@ -152,6 +154,8 @@ regression stage 3:
    The space and the background are the atlas **the study registered to** (e.g. the
    MNI152 template a study's config names), read from neurovrai's study config, not
    hardcoded; resample the template to the maps' grid if the analysis ran on another.
+   Human images from a standard pipeline usually have trustworthy headers; give `axes`
+   anyway once checked (e.g. `RAS`) and `plane="axial"`.
 5. Keep `effect_size.py` maps if wanted, listed as `maps` of kind `effect`. The
    reported effect is the read-out's whole-mask d with its exact CI.
 

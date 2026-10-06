@@ -199,6 +199,8 @@ def write_readout_results(
     references: Sequence[Mapping[str, str]] = (),
     tests_file: str = "tests.csv",
     clusters_file: str = "clusters.csv",
+    axes: str | None = None,
+    plane: str | None = None,
     strict: bool = False,
 ):
     """Write tests.csv, clusters.csv, their dictionaries, analysis.json and provenance.json.
@@ -217,6 +219,10 @@ def write_readout_results(
         decision, references: passed into analysis.json as the specification defines them.
         tests_file, clusters_file: table names, so a folder that already holds other
             tables of those names can adopt the specification without losing them.
+        axes: the anatomical direction each voxel axis of the maps runs toward (e.g. "LIA",
+            ``neurofaune.atlas.study_space.study_space_axes``); written on every map so
+            readers orient by it, not by the header.
+        plane: the plane to show the maps in (axial / coronal / sagittal).
         mask_name: what the mask is, in words ("TBSS skeleton", "brain mask").
         space: template space of the maps (e.g. "SIGMA").
         inference: how the maps were corrected, as a noun phrase: "2-D TFCE" (skeleton),
@@ -279,6 +285,9 @@ def write_readout_results(
             if Path(src).resolve() != (output_dir / name).resolve():
                 shutil.copyfile(src, output_dir / name)
             maps.append({"path": name, "kind": kind, "space": space, "description": what})
+    if axes:
+        for m in maps:
+            m["axes"] = axes
     run_folders = sorted({Path(run_dir_of(r)) for _, r in tests.iterrows()})
     records = [p.relative_to(output_dir).as_posix()
                for p in [output_dir / "design.json", *(d / "design.json" for d in run_folders)]
@@ -318,6 +327,7 @@ def write_readout_results(
         **({"modality": modality} if modality else {}),
         **({"caveats": list(caveats)} if caveats else {}),
         **({"decision": dict(decision)} if decision else {}),
+        **({"display": {"plane": plane}} if plane else {}),
         **({"references": [dict(r) for r in references]} if references else {}),
     }
     from neurofaune.provenance import generated_by

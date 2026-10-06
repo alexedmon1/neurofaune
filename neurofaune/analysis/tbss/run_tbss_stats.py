@@ -361,7 +361,8 @@ def run_tbss_statistical_analysis(
     # tests.csv / clusters.csv with column dictionaries, analysis.json and provenance.json
     # (docs/RESULTS_SPEC.md), so the results can be read without neurofaune.
     from neurofaune.analysis.stats.readout_results import write_readout_results
-    from neurofaune.atlas.study_space import atlas_space_name, study_space_template
+    from neurofaune.atlas.study_space import (atlas_space_name, display_plane, study_space_axes,
+                                              study_space_template)
     record = design.get('design_record')
     write_readout_results(
         output_dir, tests, clusters, analysis_id=f"tbss/{analysis_name}",
@@ -373,6 +374,7 @@ def run_tbss_statistical_analysis(
         space=atlas_space_name(config),
         inference="2-D TFCE" if tfce else "voxel-wise maximum t", design_record=record,
         started=started, mask=prepared['analysis_mask'], background=study_space_template(config),
+        axes=study_space_axes(config), plane=display_plane(config),
         inputs=[*({"path": str(prepared['metric_files'][m]), "role": f"skeletonised {m}"} for m in metrics),
                 {"path": str(design['design_mat']), "role": "design matrix"},
                 {"path": str(prepared['analysis_mask']), "role": "skeleton mask"}],
