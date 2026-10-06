@@ -117,13 +117,15 @@ Nothing was run. The four items marked † were re-checked in the source.
 
 ### 4.3 Getting to the spec, analysis by analysis
 
-**Decision for the author:** whether neurovrai depends on neurofaune (pinned) for
-the spec, the design records and the randomise read-out, or copies them (§2).
-Recommended: **depend.** neurofaune's randomise wrapper and cluster report began as
-copies of neurovrai's and have since diverged — the drift a second copy would
-repeat. The modules involved import only numpy, scipy, pandas and nibabel;
-neurovrai needs Python ≥ 3.13, which neurofaune supports, and both pin
-nilearn < 0.11.
+**Decided (author, 2026-10-06): neurovrai depends on neurofaune**, pinned to a commit
+or tag, for the spec (`neurofaune.results`), the design records
+(`analysis.stats.design_record`) and the randomise read-out (`analysis.stats.readout`,
+`readout_results`). It does not copy them: neurofaune's randomise wrapper and cluster
+report began as copies of neurovrai's and have since diverged, which a second copy
+would repeat. The modules involved import only numpy, scipy, pandas and nibabel;
+neurovrai needs Python >= 3.13, which neurofaune supports, and both pin nilearn < 0.11.
+neurovrai's own randomise wrapper, cluster report and effect-size code retire as each
+analysis moves over.
 
 **Randomise analyses** — TBSS, VBM, ReHo / fALFF, ASL CBF, T1w/T2w ratio, dual
 regression stage 3:
