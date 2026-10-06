@@ -389,4 +389,4 @@ def test_the_measure_vocabulary_is_packaged_and_consistent():
     names = {k.lower() for k in vocab}
     aliases = [a.lower() for v in vocab.values() for a in v.get("aliases", [])]
     assert len(aliases) == len(set(aliases)) and not names & set(aliases)
-    assert canonical_measure("CSWF") == ("CSFF", False) and canonical_measure("Glx") == ("Glu+Gln", False)
+    assert canonical_measure("CSFF") == ("CSWF", False) and canonical_measure("Glx") == ("Glu+Gln", False)

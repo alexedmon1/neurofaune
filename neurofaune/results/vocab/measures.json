@@ -101,11 +101,11 @@
   "modality": "msme",
   "description": "intra- and extra-cellular water fraction (T2 spectrum between the cutoffs)"
  },
- "CSFF": {
+ "CSWF": {
   "modality": "msme",
   "description": "CSF water fraction (T2 spectrum above the upper cutoff)",
   "aliases": [
-   "CSWF"
+   "CSFF"
   ]
  },
  "ReHo": {

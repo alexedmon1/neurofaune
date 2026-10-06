@@ -136,7 +136,7 @@ tables by method — is written by the producer, in words every producer uses:
   reader can sort by the id alone; the id never contradicts the fields.
 - **`measures`** are written by their canonical names in the measure vocabulary,
   `neurofaune/results/vocab/measures.json` (canonical name → modality, description,
-  aliases: `FICVF` not `NDI`, `CSFF` not `CSWF`, `Cr+PCr` not `tCr`). A measure the
+  aliases: `FICVF` not `NDI`, `CSWF` not `CSFF`, `Cr+PCr` not `tCr`). A measure the
   vocabulary does not have is allowed and warned about; it is added to the vocabulary,
   in neurofaune, with a CHANGELOG line, rather than spelled anew by each producer.
 - **Tables name only listed measures**: a contract table's `measure` column holds
