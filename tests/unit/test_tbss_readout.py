@@ -336,4 +336,5 @@ def test_run_tbss_stats_writes_tests_and_named_clusters(run, tmp_path, monkeypat
     assert len(reports) == 1 and reports[0].ok, reports[0].errors
     analysis = json.loads((out / "analysis.json").read_text())
     assert analysis["analysis_type"] == "tbss" and analysis["inference"]["correction"]["p_kind"] == "fwe"
-    assert {m["kind"] for m in analysis["maps"]} == {"stat", "p_corrected", "p_uncorrected"}
+    assert {m["kind"] for m in analysis["maps"]} == {"stat", "p_corrected", "p_uncorrected", "mask"}
+    assert (out / "mask.nii.gz").exists()          # the folder is complete on its own

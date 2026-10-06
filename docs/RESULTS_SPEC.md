@@ -98,7 +98,10 @@ permutations, per contrast over the skeleton"). A table column may carry its own
 should show first (at most one per analysis).
 
 **`maps[].kind`**: `stat`, `p_corrected`, `p_uncorrected`, `effect`, `mask`,
-`input`, `other`. A map that belongs to one test names its `measure` and
+`background`, `input`, `other`. A `background` map is what the other maps are drawn
+on (a template, the mean FA); a reader draws on the `mask` when there is none.
+`p_corrected` / `p_uncorrected` maps follow the producer's convention, stated in the
+map's `description` (randomise writes 1 - p). A map that belongs to one test names its `measure` and
 `contrast`, matching that test's row. `space` names the template (e.g. `SIGMA`,
 `MNI152NLin2009cAsym`).
 

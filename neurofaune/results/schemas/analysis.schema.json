@@ -80,7 +80,8 @@
         "required": ["path", "kind", "description"],
         "properties": {
           "path": {"type": "string", "minLength": 1},
-          "kind": {"enum": ["stat", "p_corrected", "p_uncorrected", "effect", "mask", "input", "other"]},
+          "kind": {"enum": ["stat", "p_corrected", "p_uncorrected", "effect", "mask", "background", "input",
+                            "other"]},
           "description": {"type": "string", "minLength": 1},
           "space": {"type": "string"},
           "measure": {"type": "string"},

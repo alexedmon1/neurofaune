@@ -181,6 +181,8 @@ def write_readout_results(
     inputs: Sequence[Mapping[str, Any]] = (),
     settings: Mapping[str, Any] | None = None,
     caveats: Sequence[str] = (),
+    mask: Path | None = None,
+    background: Path | None = None,
     strict: bool = False,
 ):
     """Write tests.csv, clusters.csv, their dictionaries, analysis.json and provenance.json.
@@ -196,6 +198,9 @@ def write_readout_results(
             "3-D TFCE", or "voxel-wise maximum t".
         extra_columns: dictionary entries for other constant `labels` columns.
         design_record: the run's design.json content, when it has one.
+        mask, background: the analysis mask and an image to draw the maps on (e.g. the
+            mean FA), copied into the folder as mask.nii.gz / background.nii.gz so the
+            folder is complete on its own.
         strict: raise when the folder does not conform; otherwise log and return.
 
     Returns:
@@ -224,6 +229,14 @@ def write_readout_results(
                 maps.append({"path": f.relative_to(output_dir).as_posix(), "kind": kind, "space": space,
                              "measure": str(r[measure_column]), "contrast": str(r.contrast_name),
                              "description": f"{what}, {r.contrast_name} on {r[measure_column]}"})
+    import shutil
+    for src, name, kind, what in ((mask, "mask.nii.gz", "mask", f"the {mask_name}"),
+                                  (background, "background.nii.gz", "background",
+                                   "image the maps are drawn on")):
+        if src is not None and Path(src).exists():
+            if Path(src).resolve() != (output_dir / name).resolve():
+                shutil.copyfile(src, output_dir / name)
+            maps.append({"path": name, "kind": kind, "space": space, "description": what})
     records = [p.relative_to(output_dir).as_posix()
                for p in [output_dir / "design.json", *(Path(run_dirs[m]) / "design.json" for m in measures)]
                if p.exists()]

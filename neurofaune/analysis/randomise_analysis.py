@@ -550,7 +550,7 @@ class RandomiseAnalysis:
             run_dirs={m: output_dir / f"randomise_{m}" for m in metrics},
             n_permutations=n_permutations, alpha=alpha, mask_name="analysis mask", space="SIGMA",
             inference="3-D TFCE", design_record=design_record, started=started,
-            modality=self.MODALITY,
+            modality=self.MODALITY, mask=analysis_mask,
             inputs=[*({"path": str(metric_files[m]), "role": f"4-D {m}"} for m in metrics),
                     {"path": str(design_mat), "role": "design matrix"},
                     {"path": str(analysis_mask), "role": "analysis mask"}],
