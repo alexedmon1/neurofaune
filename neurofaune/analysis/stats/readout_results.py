@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -175,7 +175,10 @@ def write_readout_results(
     analysis_type: str,
     measure_column: str,
     measures: Sequence[str],
-    run_dirs: Mapping[str, Path],
+    run_dirs: Mapping[str, Path] | None = None,
+    run_dir_of: Callable[[pd.Series], Path] | None = None,
+    facet_column: str | None = None,
+    prefix: str = "randomise",
     n_permutations: int,
     alpha: float,
     mask_name: str,
@@ -191,6 +194,11 @@ def write_readout_results(
     caveats: Sequence[str] = (),
     mask: Path | None = None,
     background: Path | None = None,
+    design: Mapping[str, Any] | None = None,
+    decision: Mapping[str, Any] | None = None,
+    references: Sequence[Mapping[str, str]] = (),
+    tests_file: str = "tests.csv",
+    clusters_file: str = "clusters.csv",
     strict: bool = False,
 ):
     """Write tests.csv, clusters.csv, their dictionaries, analysis.json and provenance.json.
@@ -199,7 +207,16 @@ def write_readout_results(
         output_dir: the analysis folder (holds ``run_dirs``).
         tests, clusters: from `read_randomise`, concatenated over measures.
         measure_column: the `labels` key that names the measure (e.g. "metric").
-        run_dirs: measure -> its randomise folder (inside ``output_dir``).
+        run_dirs: measure -> its randomise folder (inside ``output_dir``), when each
+            measure has one run; otherwise ``run_dir_of(row)`` gives a test row's folder.
+        facet_column: a labels column that splits the tests further (e.g. window); it is
+            marked as the standard ``facet`` and maps carry it.
+        prefix: randomise's output prefix in the run folders.
+        design: the analysis's design block (n, groups, ...), for a battery of designs;
+            by default it is taken from ``design_record`` and the first test row.
+        decision, references: passed into analysis.json as the specification defines them.
+        tests_file, clusters_file: table names, so a folder that already holds other
+            tables of those names can adopt the specification without losing them.
         mask_name: what the mask is, in words ("TBSS skeleton", "brain mask").
         space: template space of the maps (e.g. "SIGMA").
         inference: how the maps were corrected, as a noun phrase: "2-D TFCE" (skeleton),
@@ -217,27 +234,36 @@ def write_readout_results(
         The conformance report.
     """
     output_dir = Path(output_dir)
+    if (run_dirs is None) == (run_dir_of is None):
+        raise ValueError("give exactly one of run_dirs and run_dir_of")
+    if run_dir_of is None:
+        def run_dir_of(row):
+            return Path(run_dirs[row[measure_column]])
     extra = {measure_column: {"Description": "the measure tested", "Standard": "measure"},
              "analysis": {"Description": "analysis name"}, **(extra_columns or {})}
+    if facet_column:
+        extra[facet_column] = {**extra.get(facet_column, {"Description": "the test within the battery"}),
+                               "Standard": "facet"}
     clusters = clusters if len(clusters.columns) else pd.DataFrame(columns=EMPTY_CLUSTERS)
-    tests.to_csv(output_dir / "tests.csv", index=False)
-    clusters.to_csv(output_dir / "clusters.csv", index=False)
+    tests.to_csv(output_dir / tests_file, index=False)
+    clusters.to_csv(output_dir / clusters_file, index=False)
     space_q = {"peak_xyz_mm": {**CLUSTERS_COLUMNS["peak_xyz_mm"], "Space": space}}
-    write_columns(output_dir / "tests.csv", TESTS_COLUMNS, extra)
-    write_columns(output_dir / "clusters.csv", CLUSTERS_COLUMNS, {**extra, **space_q})
+    write_columns(output_dir / tests_file, TESTS_COLUMNS, extra)
+    write_columns(output_dir / clusters_file, CLUSTERS_COLUMNS, {**extra, **space_q})
 
     from neurofaune.analysis.stats.readout import _map
     maps = []
-    names = tests.drop_duplicates(["contrast", measure_column])
-    for _, r in names.iterrows():
-        rd = Path(run_dirs[r[measure_column]])
+    keys = ["contrast", measure_column] + ([facet_column] if facet_column else [])
+    for _, r in tests.drop_duplicates(keys).iterrows():
+        rd = Path(run_dir_of(r))
         for kind, key, what in (("stat", "tstat", "t statistic"),
                                 ("p_corrected", "corrp", "1 - FWE-corrected p (randomise's convention)"),
                                 ("p_uncorrected", "p", "1 - uncorrected p (randomise's convention)")):
-            f = _map(rd, "randomise", key, int(r.contrast))
+            f = _map(rd, prefix, key, int(r.contrast))
             if f is not None:
                 maps.append({"path": f.relative_to(output_dir).as_posix(), "kind": kind, "space": space,
                              "measure": str(r[measure_column]), "contrast": str(r.contrast_name),
+                             **({"facet": str(r[facet_column])} if facet_column else {}),
                              "description": f"{what}, {r.contrast_name} on {r[measure_column]}",
                              **({"values": "one_minus_p"} if kind != "stat" else {})})
     import shutil
@@ -253,8 +279,9 @@ def write_readout_results(
             if Path(src).resolve() != (output_dir / name).resolve():
                 shutil.copyfile(src, output_dir / name)
             maps.append({"path": name, "kind": kind, "space": space, "description": what})
+    run_folders = sorted({Path(run_dir_of(r)) for _, r in tests.iterrows()})
     records = [p.relative_to(output_dir).as_posix()
-               for p in [output_dir / "design.json", *(Path(run_dirs[m]) / "design.json" for m in measures)]
+               for p in [output_dir / "design.json", *(d / "design.json" for d in run_folders)]
                if p.exists()]
 
     groups = dict((design_record or {}).get("groups") or {})
@@ -263,8 +290,9 @@ def write_readout_results(
     analysis = {
         "id": analysis_id, "title": title, "description": description,
         "analysis_type": analysis_type, "measures": list(measures), "role": role,
-        "design": {"n": int(tests["n"].iloc[0]), **({"groups": groups} if groups else {}),
-                   **({"test_kinds": kinds} if kinds else {}),
+        "design": {**(dict(design) if design else
+                      {"n": int(tests["n"].iloc[0]), **({"groups": groups} if groups else {}),
+                       **({"test_kinds": kinds} if kinds else {})}),
                    **({"records": records} if records else {})},
         "inference": {
             "method": f"FSL randomise, {inference}, {n_permutations} permutations",
@@ -279,24 +307,27 @@ def write_readout_results(
                                  "the voxels: pooled-SD Cohen's d for two groups without covariates, "
                                  "mean / SD for one sample; 95% CI exact under normal residuals"},
         "tables": [
-            {"path": "tests.csv", "role": "tests", "headline": True, "n_rows": int(len(tests)),
+            {"path": tests_file, "role": "tests", "headline": True, "n_rows": int(len(tests)),
              "rows": "one t-contrast on one measure, significant or not",
              "description": "every test with its whole-mask effect, CI, extent and peak"},
-            {"path": "clusters.csv", "role": "clusters", "n_rows": int(len(clusters)),
+            {"path": clusters_file, "role": "clusters", "n_rows": int(len(clusters)),
              "rows": "one cluster of one test",
              "description": "clusters with extent, peak, named regions and the (selected) cluster effect"},
         ],
         "maps": maps,
         **({"modality": modality} if modality else {}),
         **({"caveats": list(caveats)} if caveats else {}),
+        **({"decision": dict(decision)} if decision else {}),
+        **({"references": [dict(r) for r in references]} if references else {}),
     }
     from neurofaune.provenance import generated_by
     gen = generated_by()
     fsl = _fsl_version()
     prov = provenance_record(gen + ([fsl] if fsl else []), status="completed",
                              start=started or now(), end=now(), inputs=[dict(i) for i in inputs],
-                             subjects={"n": int(tests["n"].iloc[0]),
-                                       **({"groups": groups} if groups else {})},
+                             subjects={"n": int((design or {}).get("n", tests["n"].iloc[0])),
+                                       **({"groups": dict((design or {}).get("groups") or groups)}
+                                          if (design or {}).get("groups") or groups else {})},
                              settings=dict(settings or {}))
     report = write_analysis(output_dir, analysis, prov, strict=strict)
     for e in report.errors:

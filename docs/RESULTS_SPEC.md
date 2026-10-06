@@ -70,8 +70,8 @@ Fields marked * are required.
 | `inference`* | `{method*, correction*, n_permutations, notes}`; `correction` = `{p_kind*, family*, statement*, alpha}` (below) |
 | `effect`* | `{measure*, definition*, ci_level, scope}`, or `{measure: null, reason*}` where no effect size applies |
 | `tables`* | `[{path*, role*, rows*, description*, headline}]` (below) |
-| `maps` | `[{path*, kind*, description*, space, measure, contrast, values}]` |
-| `figures` | `[{path*, caption*, measure, contrast}]` |
+| `maps` | `[{path*, kind*, description*, space, measure, contrast, facet, values}]` |
+| `figures` | `[{path*, caption*, measure, contrast, facet}]` |
 | `decision` | where the analysis defines a decision rule: `{rule*, outcome*, criteria: [{name, description, passed}]}`; `outcome` is `holds`, `does_not_hold` or `not_assessed` |
 | `retired` | `{reason*, superseded_by}` — kept on disk, not to be read as current |
 | `caveats` | `[sentence, …]` that a reader must see beside the results |
@@ -105,8 +105,8 @@ the maps, which readers draw on voxel for voxel. It is not a study-derived image
 reference. A reader draws on the `mask` when there is no background.
 A `p_corrected` / `p_uncorrected` map states what its voxels hold: `values` is `p`
 or `one_minus_p` (randomise's convention). A reader does not threshold a p map that
-does not say. A map that belongs to one test names its `measure` and
-`contrast`, matching that test's row. `space` names the template (e.g. `SIGMA`,
+does not say. A map that belongs to one test names its `measure`,
+`contrast` and (where the tests table has one) `facet`, matching that test's row. `space` names the template (e.g. `SIGMA`,
 `MNI152NLin2009cAsym`).
 
 ## 4. `provenance.json`

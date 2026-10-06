@@ -377,3 +377,39 @@ def test_a_template_on_another_grid_is_not_listed(run, tmp_path):
     assert rep.ok
     kinds = {m["kind"] for m in json.loads((out / "analysis.json").read_text())["maps"]}
     assert "mask" in kinds and "background" not in kinds
+
+
+def test_a_battery_of_runs_adopts_a_folder_in_place(run, tmp_path):
+    """Several runs per measure (one per facet), named tables beside other tables."""
+    from neurofaune.analysis.stats.readout_results import write_readout_results
+    from neurofaune.results import check
+
+    out = tmp_path / "battery"
+    parts = []
+    for facet in ("p60", "p90"):
+        rd = out / facet / "FA"
+        rd.mkdir(parents=True)
+        for f in run["dir"].glob("randomise_*"):
+            (rd / f.name.replace("randomise_", "rand_")).write_bytes(f.read_bytes())
+        tests, clusters = ro.read_randomise(rd, run["dir"] / "data.nii.gz", run["dir"] / "design.mat",
+                                            run["dir"] / "mask.nii.gz", prefix="rand", atlas=run["atlas"],
+                                            labels={"window": facet, "measure": "FA"})
+        parts.append((tests, clusters))
+    (out / "clusters.csv").write_text("someone,else\n1,2\n")          # a table the folder already had
+    tests = pd.concat([t for t, _ in parts], ignore_index=True)
+    clusters = pd.concat([c for _, c in parts], ignore_index=True)
+    rep = write_readout_results(
+        out, tests, clusters, analysis_id="battery", title="b", description="b", analysis_type="tbss",
+        measure_column="measure", measures=["FA"], facet_column="window", prefix="rand",
+        run_dir_of=lambda r: out / r["window"] / r["measure"], n_permutations=10, alpha=0.05,
+        mask_name="skeleton", space="S", inference="2-D TFCE", design={"n": 12, "groups": {"A": 6, "B": 6}},
+        references=[{"label": "hypothesis", "value": "H0"}], tests_file="readout_tests.csv",
+        clusters_file="readout_clusters.csv", strict=True)
+    assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
+    assert (out / "clusters.csv").read_text() == "someone,else\n1,2\n"   # untouched
+    a = json.loads((out / "analysis.json").read_text())
+    assert {(m["facet"], m["kind"]) for m in a["maps"]} >= {("p60", "stat"), ("p90", "p_corrected")}
+    assert a["design"]["groups"] == {"A": 6, "B": 6} and "records" not in a["design"]   # none on disk
+    cols = json.loads((out / "readout_tests.json").read_text())
+    assert cols["window"]["Standard"] == "facet"
+    assert check(out)[0].ok

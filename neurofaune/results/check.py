@@ -260,9 +260,10 @@ def check_analysis(folder: Path) -> Report:
         got = _check_table(folder, entry, analysis, rep)
         if got and got[0] == "tests":
             _role, std, rows = got
-            mcol, ccol = std.get("measure"), std.get("contrast")
+            mcol, ccol, fcol = std.get("measure"), std.get("contrast"), std.get("facet")
             if ccol:
-                tested |= {(r.get(mcol, "") if mcol else "", r.get(ccol, "")) for r in rows}
+                tested |= {(r.get(mcol, "") if mcol else "", r.get(ccol, ""),
+                            r.get(fcol, "") if fcol else "") for r in rows}
     for item in analysis.get("maps") or []:
         if isinstance(item, dict) and item.get("kind") in ("p_corrected", "p_uncorrected") \
                 and "values" not in item:
@@ -274,8 +275,8 @@ def check_analysis(folder: Path) -> Report:
                 continue
             _inside(folder, item["path"], kind[:-1], rep)
             if tested and item.get("contrast"):
-                key = (item.get("measure", ""), item["contrast"])
-                if key not in tested and ("", item["contrast"]) not in tested:
+                key = (item.get("measure", ""), item["contrast"], item.get("facet", ""))
+                if key not in tested and ("", item["contrast"], item.get("facet", "")) not in tested:
                     rep.warnings.append(f"{kind[:-1]} {item['path']!r}: names a test with no "
                                         f"row in the tests table: {key}")
     for rec in (analysis.get("design") or {}).get("records") or []:
