@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from ._schema import load_schema, validate
 from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, PROVENANCE_JSON, SPEC,
-                                     SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, valid_axes)
+                                     SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, PER_SUBGROUP, valid_axes)
 
 #: Analysis types whose tests are voxelwise, so a test row must state its extent.
 VOXELWISE = ("tbss", "vbm", "tbm", "voxelwise", "fixel")
@@ -150,14 +150,21 @@ def _check_table(folder: Path, entry: dict, analysis: dict, rep: Report) -> tupl
         term = meta.get("Standard") if isinstance(meta, dict) else None
         if not term:
             continue
-        if term in std:
+        if term in std and term not in PER_SUBGROUP:
             rep.errors.append(f"{dict_path.name}: standard term {term!r} claimed by both "
                               f"{std[term]!r} and {col!r}")
             continue
-        std[term] = col
         for q in STANDARD_TERMS.get(term, ()):
             if not meta.get(q):
                 rep.errors.append(f"{dict_path.name}: {col!r} is {term!r} and must state {q}")
+        if term in PER_SUBGROUP:                     # once per subgroup, not once per table
+            key = f"{term}:{meta.get('Subgroup')}"
+            if key in std:
+                rep.errors.append(f"{dict_path.name}: {term!r} for subgroup {meta.get('Subgroup')!r} "
+                                  f"claimed by both {std[key]!r} and {col!r}")
+            std[key] = col
+            continue
+        std[term] = col
 
     if "n_rows" in entry and entry["n_rows"] != len(rows):
         rep.errors.append(f"{where}: {len(rows)} rows, analysis.json says {entry['n_rows']}")

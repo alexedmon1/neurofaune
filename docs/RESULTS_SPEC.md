@@ -157,7 +157,8 @@ A reader shows a run whose status is not `completed` as such, never silently.
   `Description` is required; `Units` and `Levels` (`{value: meaning}`) are BIDS's;
   `Standard` maps the column to the vocabulary below, so a reader finds "the
   effect size" without knowing the producer's column names. A standard term is
-  claimed by at most one column per table.
+  claimed by at most one column per table -- except `subgroup_effect` and `subgroup_n`,
+  claimed once per subgroup.
 
 **Standard terms** (qualifiers in brackets; * = required with the term):
 
@@ -188,6 +189,8 @@ A reader shows a run whose status is not `completed` as such, never silently.
 | `peak_region` | atlas region at the peak |
 | `regions` | every region covered, `"name:count; name:count"` |
 | `crosses_midline` | the cluster has voxels in both hemispheres |
+| `subgroup_effect` | [`EffectMeasure`*, `Subgroup`*] the test's effect within one subgroup (a cohort, a batch, a site); one column per subgroup, each naming it |
+| `subgroup_n` | [`Subgroup`*] that subgroup's size |
 
 Columns with no standard term are welcome; their dictionary entry describes them.
 

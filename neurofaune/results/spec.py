@@ -46,8 +46,12 @@ STANDARD_TERMS: dict[str, tuple[str, ...]] = {
     "stat": ("StatName",), "p_value": ("PKind",), "significant": (),
     "n_significant": (), "frac_significant": (), "n_voxels": (), "volume_mm3": (),
     "peak_xyz_mm": ("Space",), "peak_region": (), "regions": (), "crosses_midline": (),
+    "subgroup_effect": ("EffectMeasure", "Subgroup"), "subgroup_n": ("Subgroup",),
 }
+
+#: Standard terms a table may carry once per subgroup (each column names its Subgroup).
+PER_SUBGROUP = ("subgroup_effect", "subgroup_n")
 
 #: Qualifier keys a dictionary entry may carry, besides BIDS's Description / Units / Levels.
 QUALIFIERS = ("Standard", "EffectMeasure", "EffectScope", "CILevel", "StatName", "StatScope",
-              "PKind", "PScope", "Alpha", "Space")
+              "PKind", "PScope", "Alpha", "Space", "Subgroup")

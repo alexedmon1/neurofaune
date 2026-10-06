@@ -300,3 +300,24 @@ def test_study_space_axes_and_plane_come_from_the_config():
     assert study_space_axes({}) is None and display_plane(None) is None
     with pytest.raises(ValueError):
         study_space_axes({"atlas": {"study_space": {"axes": "LLA"}}})
+
+
+def test_subgroup_terms_repeat_once_per_subgroup(folder):
+    df = pd.read_csv(folder / "tests.tsv", sep="\t")
+    df["d_X"], df["d_Y"], df["n_X"] = [0.6, -0.2], [0.9, 0.1], [8, 8]
+    df.to_csv(folder / "tests.tsv", sep="\t", index=False)
+    extra = {"d_X": {"Description": "d in X", "Standard": "subgroup_effect", "EffectMeasure": "d",
+                     "Subgroup": "X"},
+             "d_Y": {"Description": "d in Y", "Standard": "subgroup_effect", "EffectMeasure": "d",
+                     "Subgroup": "Y"},
+             "n_X": {"Description": "n in X", "Standard": "subgroup_n", "Subgroup": "X"}}
+    write_columns(folder / "tests.tsv", COLUMNS, extra)
+    assert write_analysis(folder, _analysis(), _prov()).ok
+    extra["d_Y"]["Subgroup"] = "X"                                 # the same subgroup twice
+    write_columns(folder / "tests.tsv", COLUMNS, extra)
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    assert "for subgroup 'X' claimed by both" in _errors(folder)
+    del extra["d_Y"]["Subgroup"]                                   # a subgroup effect must name it
+    write_columns(folder / "tests.tsv", COLUMNS, extra)
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    assert "must state Subgroup" in _errors(folder)
