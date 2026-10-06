@@ -320,7 +320,9 @@ def test_run_tbss_stats_writes_tests_and_named_clusters(run, tmp_path, monkeypat
     out = tmp_path / "out"
     res = rts.run_tbss_statistical_analysis(
         tbss, design, out, "demo", metrics=["FA"], n_permutations=10,
-        config={"atlas": {"study_space": {"base_path": str(run["atlas_dir"])}}})
+        config={"atlas": {"name": "TESTATLAS", "study_space": {
+            "base_path": str(run["atlas_dir"]),
+            "template_masked": str(_save(run["atlas_dir"] / "template.nii.gz", run["mask"] * 100.0))}}})
     assert res["success"]
     tests = pd.read_csv(out / "tests.csv")
     clusters = pd.read_csv(out / "clusters.csv")
@@ -336,7 +338,42 @@ def test_run_tbss_stats_writes_tests_and_named_clusters(run, tmp_path, monkeypat
     assert len(reports) == 1 and reports[0].ok, reports[0].errors
     analysis = json.loads((out / "analysis.json").read_text())
     assert analysis["analysis_type"] == "tbss" and analysis["inference"]["correction"]["p_kind"] == "fwe"
-    assert {m["kind"] for m in analysis["maps"]} == {"stat", "p_corrected", "p_uncorrected", "mask"}
-    assert (out / "mask.nii.gz").exists()          # the folder is complete on its own
+    assert {m["kind"] for m in analysis["maps"]} == {"stat", "p_corrected", "p_uncorrected", "mask",
+                                                     "background"}
+    assert (out / "mask.nii.gz").exists() and (out / "background.nii.gz").exists()   # complete on its own
+    assert {m["space"] for m in analysis["maps"]} == {"TESTATLAS"}     # the atlas the config names
     assert all(m["values"] == "one_minus_p" for m in analysis["maps"] if m["kind"].startswith("p_"))
     assert not reports[0].warnings, reports[0].warnings
+
+
+def test_the_background_is_the_configured_atlas_template_on_the_maps_grid(tmp_path):
+    from neurofaune.atlas.study_space import atlas_space_name, study_space_template
+
+    assert study_space_template(None) is None and atlas_space_name(None) == "study atlas space"
+    full = _save(tmp_path / "t.nii.gz", np.ones(SHAPE))
+    masked = _save(tmp_path / "tm.nii.gz", np.ones(SHAPE))
+    cfg = {"atlas": {"name": "SIGMA", "study_space": {"template": str(full), "template_masked": str(masked)}}}
+    assert study_space_template(cfg) == masked and atlas_space_name(cfg) == "SIGMA"
+    cfg["atlas"]["study_space"]["template_masked"] = str(tmp_path / "absent.nii.gz")
+    assert study_space_template(cfg) == full
+
+
+def test_a_template_on_another_grid_is_not_listed(run, tmp_path):
+    from neurofaune.analysis.stats.readout_results import write_readout_results
+
+    out = tmp_path / "an"
+    rd = out / "randomise_FA"
+    rd.mkdir(parents=True)
+    for f in run["dir"].glob("randomise_*"):
+        (rd / f.name).write_bytes(f.read_bytes())
+    tests, clusters = _read(run, labels={"metric": "FA"})
+    other = tmp_path / "other.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((5, 5, 5), np.float32), AFFINE), str(other))
+    rep = write_readout_results(out, tests, clusters, analysis_id="x", title="x", description="x",
+                                analysis_type="tbss", measure_column="metric", measures=["FA"],
+                                run_dirs={"FA": rd}, n_permutations=10, alpha=0.05, mask_name="mask",
+                                space="S", inference="2-D TFCE", mask=run["dir"] / "mask.nii.gz",
+                                background=other, strict=True)
+    assert rep.ok
+    kinds = {m["kind"] for m in json.loads((out / "analysis.json").read_text())["maps"]}
+    assert "mask" in kinds and "background" not in kinds

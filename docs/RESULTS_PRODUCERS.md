@@ -69,6 +69,13 @@ needs numpy, scipy, pandas and nibabel, and is not standard-library.
 A non-conforming folder at the end of a long run is logged, not raised. Tests
 assert conformance for every writer.
 
+**Background and space come from the study's atlas config, never from code:** the
+background is `atlas.study_space.template_masked` (else `atlas.study_space.template`)
+and the space is named by `atlas.name` (`neurofaune.atlas.study_space`). SIGMA for the
+rat studies so far; a mouse study's config names its own atlas and nothing in
+neurofaune changes. A template on another grid than the analysis mask is left out
+with a warning.
+
 ## 4. neurovrai
 
 Surveyed on 2026-10-06 at neurovrai `4e830a2` (master), by reading the code.
@@ -139,8 +146,12 @@ regression stage 3:
    names, hemispheres), labels={"metric": m})` for every measure. neurovrai builds
    the `Atlas` from its own atlas (JHU, Harvard-Oxford) — `Atlas.from_files` with a
    label table reads SIGMA's format only.
-4. `write_readout_results(out, tests, clusters, analysis_type=..., space="MNI152NLin6Asym",
+4. `write_readout_results(out, tests, clusters, analysis_type=..., space=<the study's atlas>,
+   background=<that atlas's intensity template>, mask=<the analysis mask>,
    inference="2-D TFCE" | "3-D TFCE", mask_name="TBSS skeleton" | "brain mask", ...)`.
+   The space and the background are the atlas **the study registered to** (e.g. the
+   MNI152 template a study's config names), read from neurovrai's study config, not
+   hardcoded; resample the template to the maps' grid if the analysis ran on another.
 5. Keep `effect_size.py` maps if wanted, listed as `maps` of kind `effect`. The
    reported effect is the read-out's whole-mask d with its exact CI.
 

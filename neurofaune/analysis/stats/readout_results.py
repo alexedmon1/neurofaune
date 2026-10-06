@@ -156,6 +156,14 @@ def _fsl_version() -> dict | None:
         return None
 
 
+def _same_grid(a: Path, b: Path) -> bool:
+    import nibabel as nib
+    import numpy as np
+
+    ia, ib = nib.load(str(a)), nib.load(str(b))
+    return ia.shape[:3] == ib.shape[:3] and np.allclose(ia.affine, ib.affine, atol=1e-3)
+
+
 def write_readout_results(
     output_dir: Path,
     tests: pd.DataFrame,
@@ -198,9 +206,11 @@ def write_readout_results(
             "3-D TFCE", or "voxel-wise maximum t".
         extra_columns: dictionary entries for other constant `labels` columns.
         design_record: the run's design.json content, when it has one.
-        mask, background: the analysis mask and an image to draw the maps on (e.g. the
-            mean FA), copied into the folder as mask.nii.gz / background.nii.gz so the
-            folder is complete on its own.
+        mask, background: the analysis mask, and the intensity template of the atlas the
+            maps are in (``neurofaune.atlas.study_space.study_space_template``), copied into
+            the folder as mask.nii.gz / background.nii.gz so the folder is complete on its
+            own. A background on another grid than the mask is left out, with a warning:
+            readers draw maps on it voxel for voxel.
         strict: raise when the folder does not conform; otherwise log and return.
 
     Returns:
@@ -231,9 +241,14 @@ def write_readout_results(
                              "description": f"{what}, {r.contrast_name} on {r[measure_column]}",
                              **({"values": "one_minus_p"} if kind != "stat" else {})})
     import shutil
+    if background is not None and mask is not None and Path(background).exists() \
+            and Path(mask).exists() and not _same_grid(Path(background), Path(mask)):
+        logger.warning(f"results spec: {background} is not on the grid of {mask}; "
+                       "no background listed")
+        background = None
     for src, name, kind, what in ((mask, "mask.nii.gz", "mask", f"the {mask_name}"),
                                   (background, "background.nii.gz", "background",
-                                   "image the maps are drawn on")):
+                                   f"intensity template of the {space} atlas, on the maps' grid")):
         if src is not None and Path(src).exists():
             if Path(src).resolve() != (output_dir / name).resolve():
                 shutil.copyfile(src, output_dir / name)

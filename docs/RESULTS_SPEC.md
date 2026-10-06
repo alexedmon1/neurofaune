@@ -98,8 +98,11 @@ permutations, per contrast over the skeleton"). A table column may carry its own
 should show first (at most one per analysis).
 
 **`maps[].kind`**: `stat`, `p_corrected`, `p_uncorrected`, `effect`, `mask`,
-`background`, `input`, `other`. A `background` map is what the other maps are drawn
-on (a template, the mean FA); a reader draws on the `mask` when there is none.
+`background`, `input`, `other`. A `background` map is the **intensity template of
+the atlas the maps are in** -- the atlas the study registered to -- on the same grid as
+the maps, which readers draw on voxel for voxel. It is not a study-derived image
+(a mean FA, a group template): every analysis in one space is shown on the same
+reference. A reader draws on the `mask` when there is no background.
 A `p_corrected` / `p_uncorrected` map states what its voxels hold: `values` is `p`
 or `one_minus_p` (randomise's convention). A reader does not threshold a p map that
 does not say. A map that belongs to one test names its `measure` and
