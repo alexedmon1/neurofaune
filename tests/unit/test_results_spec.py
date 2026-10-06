@@ -270,3 +270,11 @@ def test_one_sample_readout_is_fully_described(tmp_path):
         n_permutations=10, alpha=0.05, mask_name="brain mask", space="test", inference="3-D TFCE",
         strict=True)
     assert rep.ok, rep.errors
+
+
+def test_an_effect_needs_its_interval_values_not_just_the_columns(folder):
+    df = pd.read_csv(folder / "tests.tsv", sep="\t")
+    df.loc[0, "lo"] = None
+    df.to_csv(folder / "tests.tsv", sep="\t", index=False)
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    assert "without its interval" in _errors(folder)

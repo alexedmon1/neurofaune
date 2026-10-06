@@ -203,6 +203,13 @@ def _contract(role: str, std: dict, rows: list, analysis: dict, where: str, rep:
                 blank = sum(1 for r in rows if r.get(std["effect_size"], "") == "")
                 if blank:
                     rep.warnings.append(f"{where}: {blank} test row(s) with no effect size")
+                lo, hi = std.get("effect_ci_low"), std.get("effect_ci_high")
+                if lo and hi:
+                    no_ci = sum(1 for r in rows if r.get(std["effect_size"], "") != ""
+                                and (r.get(lo, "") == "" or r.get(hi, "") == ""))
+                    if no_ci:
+                        rep.errors.append(f"{where} (tests): {no_ci} row(s) give an effect without its "
+                                          "interval -- the columns exist but the values are blank")
         if "n" not in std and not ("n_a" in std and "n_b" in std):
             rep.errors.append(f"{where} (tests): sample size -- needs 'n', or 'n_a' and 'n_b'")
         need("p_value", why="significance")
