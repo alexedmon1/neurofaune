@@ -228,7 +228,8 @@ def write_readout_results(
             if f is not None:
                 maps.append({"path": f.relative_to(output_dir).as_posix(), "kind": kind, "space": space,
                              "measure": str(r[measure_column]), "contrast": str(r.contrast_name),
-                             "description": f"{what}, {r.contrast_name} on {r[measure_column]}"})
+                             "description": f"{what}, {r.contrast_name} on {r[measure_column]}",
+                             **({"values": "one_minus_p"} if kind != "stat" else {})})
     import shutil
     for src, name, kind, what in ((mask, "mask.nii.gz", "mask", f"the {mask_name}"),
                                   (background, "background.nii.gz", "background",

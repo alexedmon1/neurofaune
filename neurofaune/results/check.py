@@ -263,6 +263,11 @@ def check_analysis(folder: Path) -> Report:
             mcol, ccol = std.get("measure"), std.get("contrast")
             if ccol:
                 tested |= {(r.get(mcol, "") if mcol else "", r.get(ccol, "")) for r in rows}
+    for item in analysis.get("maps") or []:
+        if isinstance(item, dict) and item.get("kind") in ("p_corrected", "p_uncorrected") \
+                and "values" not in item:
+            rep.warnings.append(f"map {item.get('path')!r}: a p map should say whether it holds "
+                                "p or 1 - p ('values')")
     for kind in ("maps", "figures"):
         for item in analysis.get(kind) or []:
             if not isinstance(item, dict) or not item.get("path"):

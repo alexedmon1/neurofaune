@@ -70,7 +70,7 @@ Fields marked * are required.
 | `inference`* | `{method*, correction*, n_permutations, notes}`; `correction` = `{p_kind*, family*, statement*, alpha}` (below) |
 | `effect`* | `{measure*, definition*, ci_level, scope}`, or `{measure: null, reason*}` where no effect size applies |
 | `tables`* | `[{path*, role*, rows*, description*, headline}]` (below) |
-| `maps` | `[{path*, kind*, description*, space, measure, contrast}]` |
+| `maps` | `[{path*, kind*, description*, space, measure, contrast, values}]` |
 | `figures` | `[{path*, caption*, measure, contrast}]` |
 | `decision` | where the analysis defines a decision rule: `{rule*, outcome*, criteria: [{name, description, passed}]}`; `outcome` is `holds`, `does_not_hold` or `not_assessed` |
 | `retired` | `{reason*, superseded_by}` — kept on disk, not to be read as current |
@@ -100,8 +100,9 @@ should show first (at most one per analysis).
 **`maps[].kind`**: `stat`, `p_corrected`, `p_uncorrected`, `effect`, `mask`,
 `background`, `input`, `other`. A `background` map is what the other maps are drawn
 on (a template, the mean FA); a reader draws on the `mask` when there is none.
-`p_corrected` / `p_uncorrected` maps follow the producer's convention, stated in the
-map's `description` (randomise writes 1 - p). A map that belongs to one test names its `measure` and
+A `p_corrected` / `p_uncorrected` map states what its voxels hold: `values` is `p`
+or `one_minus_p` (randomise's convention). A reader does not threshold a p map that
+does not say. A map that belongs to one test names its `measure` and
 `contrast`, matching that test's row. `space` names the template (e.g. `SIGMA`,
 `MNI152NLin2009cAsym`).
 

@@ -338,3 +338,5 @@ def test_run_tbss_stats_writes_tests_and_named_clusters(run, tmp_path, monkeypat
     assert analysis["analysis_type"] == "tbss" and analysis["inference"]["correction"]["p_kind"] == "fwe"
     assert {m["kind"] for m in analysis["maps"]} == {"stat", "p_corrected", "p_uncorrected", "mask"}
     assert (out / "mask.nii.gz").exists()          # the folder is complete on its own
+    assert all(m["values"] == "one_minus_p" for m in analysis["maps"] if m["kind"].startswith("p_"))
+    assert not reports[0].warnings, reports[0].warnings

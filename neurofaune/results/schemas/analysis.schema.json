@@ -85,7 +85,8 @@
           "description": {"type": "string", "minLength": 1},
           "space": {"type": "string"},
           "measure": {"type": "string"},
-          "contrast": {"type": "string"}
+          "contrast": {"type": "string"},
+          "values": {"enum": ["p", "one_minus_p"]}
         }
       }
     },
