@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/alexedmon1/neurofaune/neurofaune/results/schemas/analysis.schema.json",
+  "title": "neurofaune.results analysis.json",
+  "type": "object",
+  "required": ["spec", "spec_version", "id", "title", "description", "analysis_type", "role",
+               "design", "inference", "effect", "tables"],
+  "properties": {
+    "spec": {"const": "neurofaune.results"},
+    "spec_version": {"type": "string", "minLength": 5},
+    "id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "analysis_type": {"enum": ["tbss", "vbm", "tbm", "voxelwise", "roi", "covariance_network", "nbs",
+                               "graph", "connectome", "fixel", "other"]},
+    "modality": {"type": "string"},
+    "measures": {"type": "array", "items": {"type": "string"}},
+    "role": {"enum": ["confirmatory", "exploratory", "descriptive", "diagnostic"]},
+    "design": {
+      "type": "object",
+      "required": ["n"],
+      "properties": {
+        "n": {"type": "integer", "minimum": 1},
+        "groups": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "test_kinds": {"type": "array",
+                       "items": {"enum": ["two_group", "one_sample", "regression", "interaction", "custom"]}},
+        "records": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "inference": {
+      "type": "object",
+      "required": ["method", "correction"],
+      "properties": {
+        "method": {"type": "string", "minLength": 1},
+        "n_permutations": {"type": "integer", "minimum": 0},
+        "notes": {"type": "string"},
+        "correction": {
+          "type": "object",
+          "required": ["p_kind", "family", "statement"],
+          "properties": {
+            "p_kind": {"enum": ["fwe", "fdr", "perm", "uncorrected", "none"]},
+            "family": {"type": "string", "minLength": 1},
+            "statement": {"type": "string", "minLength": 1},
+            "alpha": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    },
+    "effect": {
+      "type": "object",
+      "required": ["measure"],
+      "properties": {
+        "measure": {"type": ["string", "null"]},
+        "definition": {"type": "string"},
+        "ci_level": {"type": "number", "minimum": 0},
+        "scope": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "tables": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "role", "rows", "description"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "role": {"enum": ["tests", "clusters", "elements", "descriptives", "other"]},
+          "rows": {"type": "string", "minLength": 1},
+          "description": {"type": "string", "minLength": 1},
+          "headline": {"type": "boolean"},
+          "n_rows": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "maps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "description"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["stat", "p_corrected", "p_uncorrected", "effect", "mask", "input", "other"]},
+          "description": {"type": "string", "minLength": 1},
+          "space": {"type": "string"},
+          "measure": {"type": "string"},
+          "contrast": {"type": "string"}
+        }
+      }
+    },
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "caption"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "caption": {"type": "string", "minLength": 1},
+          "measure": {"type": "string"},
+          "contrast": {"type": "string"}
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["rule", "outcome"],
+      "properties": {
+        "rule": {"type": "string", "minLength": 1},
+        "outcome": {"enum": ["holds", "does_not_hold", "not_assessed"]},
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string"}, "description": {"type": "string"},
+                           "passed": {"type": ["boolean", "null"]}}
+          }
+        }
+      }
+    },
+    "retired": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {"reason": {"type": "string", "minLength": 1}, "superseded_by": {"type": "string"}}
+    },
+    "caveats": {"type": "array", "items": {"type": "string"}},
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "value"],
+        "properties": {"label": {"type": "string"}, "value": {"type": "string"}}
+      }
+    }
+  }
+}
