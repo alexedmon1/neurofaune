@@ -278,6 +278,8 @@ def run_tbss_statistical_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logging(output_dir)
+    from neurofaune.results.write import now as _now
+    started = _now()
 
     logger.info("=" * 80)
     logger.info("TBSS STATISTICAL ANALYSIS")
@@ -356,8 +358,25 @@ def run_tbss_statistical_analysis(
     tests = pd.concat(all_tests, ignore_index=True)
     clusters = pd.concat(all_clusters, ignore_index=True) if any(len(c) for c in all_clusters) \
         else pd.DataFrame()
-    tests.to_csv(output_dir / 'tests.csv', index=False)
-    clusters.to_csv(output_dir / 'clusters.csv', index=False)
+    # tests.csv / clusters.csv with column dictionaries, analysis.json and provenance.json
+    # (docs/RESULTS_SPEC.md), so the results can be read without neurofaune.
+    from neurofaune.analysis.stats.readout_results import write_readout_results
+    record = design.get('design_record')
+    write_readout_results(
+        output_dir, tests, clusters, analysis_id=f"tbss/{analysis_name}",
+        title=f"TBSS: {analysis_name}",
+        description=(record or {}).get('summary') or f"TBSS group analysis of {', '.join(metrics)}",
+        analysis_type="tbss", measure_column="metric", measures=metrics,
+        run_dirs={m: output_dir / f"randomise_{m}" for m in metrics},
+        n_permutations=n_permutations, alpha=alpha, mask_name="TBSS skeleton", space="SIGMA",
+        inference="2-D TFCE" if tfce else "voxel-wise maximum t", design_record=record,
+        started=started,
+        inputs=[*({"path": str(prepared['metric_files'][m]), "role": f"skeletonised {m}"} for m in metrics),
+                {"path": str(design['design_mat']), "role": "design matrix"},
+                {"path": str(prepared['analysis_mask']), "role": "skeleton mask"}],
+        settings={"n_permutations": n_permutations, "tfce": tfce, "cluster_threshold": cluster_threshold,
+                  "min_cluster_size": min_cluster_size, "seed": seed},
+    )
     logger.info(f"  {len(tests)} test rows -> tests.csv, {len(clusters)} cluster rows -> clusters.csv")
 
     # Step 5: Summary -- every test with its whole-mask effect, not a significance count

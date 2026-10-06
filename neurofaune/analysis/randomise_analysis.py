@@ -161,6 +161,9 @@ class RandomiseAnalysis:
     DEFAULT_METRICS: List[str] = []
     TFCE_MODE_LABEL: str = "3D"
     CONFIG_PATH_KEY: str = ""
+    #: analysis_type and modality in the results specification (docs/RESULTS_SPEC.md)
+    SPEC_TYPE: str = "voxelwise"
+    MODALITY: Optional[str] = None
 
     def __init__(
         self,
@@ -332,6 +335,8 @@ class RandomiseAnalysis:
         dict with 'success', 'analysis_name', 'n_subjects', 'output_dir',
         'results'.
         """
+        from neurofaune.results.write import now as _now
+        started = _now()
         if metrics is None:
             metrics = list(self.DEFAULT_METRICS)
 
@@ -533,8 +538,25 @@ class RandomiseAnalysis:
         tests = pd.concat(all_tests, ignore_index=True)
         clusters = (pd.concat(all_clusters, ignore_index=True)
                     if any(len(c) for c in all_clusters) else pd.DataFrame())
-        tests.to_csv(output_dir / 'tests.csv', index=False)
-        clusters.to_csv(output_dir / 'clusters.csv', index=False)
+        # tests.csv / clusters.csv with column dictionaries, analysis.json and provenance.json
+        # (docs/RESULTS_SPEC.md), so the results can be read without neurofaune.
+        from neurofaune.analysis.stats.readout_results import write_readout_results
+        write_readout_results(
+            output_dir, tests, clusters, analysis_id=f"{self.ANALYSIS_TYPE}/{analysis_name}",
+            title=f"{self.ANALYSIS_TYPE}: {analysis_name}",
+            description=(design_record or {}).get('summary')
+            or f"voxelwise group analysis of {', '.join(metrics)}",
+            analysis_type=self.SPEC_TYPE, measure_column="metric", measures=metrics,
+            run_dirs={m: output_dir / f"randomise_{m}" for m in metrics},
+            n_permutations=n_permutations, alpha=alpha, mask_name="analysis mask", space="SIGMA",
+            inference="3-D TFCE", design_record=design_record, started=started,
+            modality=self.MODALITY,
+            inputs=[*({"path": str(metric_files[m]), "role": f"4-D {m}"} for m in metrics),
+                    {"path": str(design_mat), "role": "design matrix"},
+                    {"path": str(analysis_mask), "role": "analysis mask"}],
+            settings={"n_permutations": n_permutations, "cluster_threshold": cluster_threshold,
+                      "min_cluster_size": min_cluster_size, "seed": seed},
+        )
         for _, r in tests.iterrows():
             self.logger.info(
                 f"  {r.metric} {r.contrast_name} (tests {r.tested_direction}): "
@@ -604,6 +626,8 @@ class VBMAnalysis(RandomiseAnalysis):
     """VBM voxel-wise analysis with FSL randomise (3D TFCE)."""
 
     ANALYSIS_TYPE = "vbm"
+    SPEC_TYPE = "vbm"
+    MODALITY = "anat"
     DEFAULT_METRICS = ["GM", "WM"]
     TFCE_MODE_LABEL = "3D"
     CONFIG_PATH_KEY = "paths.analysis.vbm"
@@ -648,6 +672,8 @@ class VoxelwiseFMRIAnalysis(RandomiseAnalysis):
     """Whole-brain voxelwise fMRI analysis with FSL randomise (3D TFCE)."""
 
     ANALYSIS_TYPE = "voxelwise_fmri"
+    SPEC_TYPE = "voxelwise"
+    MODALITY = "func"
     DEFAULT_METRICS = ["fALFF", "ReHo"]
     TFCE_MODE_LABEL = "3D (-T)"
     CONFIG_PATH_KEY = "paths.analysis.voxelwise_fmri"

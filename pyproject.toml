@@ -108,7 +108,7 @@ build-backend = "setuptools.build_meta"
 include = ["neurofaune*"]
 
 [tool.setuptools.package-data]
-neurofaune = ["py.typed"]
+neurofaune = ["py.typed", "results/schemas/*.json"]
 
 [tool.black]
 line-length = 100

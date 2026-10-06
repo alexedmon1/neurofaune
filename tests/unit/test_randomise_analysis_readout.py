@@ -126,6 +126,11 @@ def test_every_test_is_read_out_with_effect_and_named_clusters(study, monkeypatc
     assert summary["tests_csv"] == "tests.csv"
     assert (out / "cluster_reports_GM").is_dir()                            # kept for consumers
 
+    from neurofaune.results import check                                    # docs/RESULTS_SPEC.md
+    reports = check(out)
+    assert len(reports) == 1 and reports[0].ok, reports[0].errors
+    assert json.loads((out / "analysis.json").read_text())["analysis_type"] == "vbm"
+
 
 def test_a_parcellation_on_another_grid_gives_unnamed_clusters_not_a_crash(study, monkeypatch, tmp_path):
     monkeypatch.setattr(ra, "run_randomise", _fake_randomise(study["maps"], []))

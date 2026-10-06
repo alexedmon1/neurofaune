@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/alexedmon1/neurofaune/neurofaune/results/schemas/columns.schema.json",
+  "title": "neurofaune.results column dictionary (<table>.json)",
+  "type": "object",
+  "minProperties": 1,
+  "additionalProperties": {
+    "type": "object",
+    "required": ["Description"],
+    "properties": {
+      "Description": {"type": "string", "minLength": 1},
+      "Units": {"type": "string"},
+      "Levels": {"type": "object", "additionalProperties": {"type": "string"}},
+      "Standard": {"enum": ["measure", "contrast", "contrast_label", "facet", "element", "test_kind",
+                            "tested_direction", "observed_direction", "group_a", "group_b", "n", "n_a",
+                            "n_b", "df", "effect_size", "effect_ci_low", "effect_ci_high",
+                            "effect_selected", "estimate", "mean_a", "mean_b", "mean", "stat",
+                            "p_value", "significant", "n_significant", "frac_significant", "n_voxels",
+                            "volume_mm3", "peak_xyz_mm", "peak_region", "regions", "crosses_midline"]},
+      "EffectMeasure": {"type": "string", "minLength": 1},
+      "EffectScope": {"type": "string"},
+      "CILevel": {"type": "number", "minimum": 0},
+      "StatName": {"type": "string", "minLength": 1},
+      "StatScope": {"type": "string"},
+      "PKind": {"enum": ["fwe", "fdr", "perm", "uncorrected", "none"]},
+      "PScope": {"type": "string"},
+      "Alpha": {"type": "number", "minimum": 0},
+      "Space": {"type": "string", "minLength": 1}
+    }
+  }
+}

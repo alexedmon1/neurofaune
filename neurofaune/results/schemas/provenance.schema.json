@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/alexedmon1/neurofaune/neurofaune/results/schemas/provenance.schema.json",
+  "title": "neurofaune.results provenance.json",
+  "type": "object",
+  "required": ["spec", "spec_version", "generated_by", "run"],
+  "properties": {
+    "spec": {"const": "neurofaune.results"},
+    "spec_version": {"type": "string", "minLength": 5},
+    "generated_by": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["Name", "Version"],
+        "properties": {
+          "Name": {"type": "string", "minLength": 1},
+          "Version": {"type": "string", "minLength": 1},
+          "CommitID": {"type": "string"},
+          "RequestedRevision": {"type": "string"},
+          "Description": {"type": "string"}
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["status", "start"],
+      "properties": {
+        "status": {"enum": ["completed", "partial", "failed", "running"]},
+        "start": {"type": "string", "minLength": 1},
+        "end": {"type": ["string", "null"]},
+        "id": {"type": "string"}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {"path": {"type": "string"}, "role": {"type": "string"}, "sha256": {"type": "string"}}
+      }
+    },
+    "subjects": {
+      "type": "object",
+      "properties": {
+        "n": {"type": "integer", "minimum": 0},
+        "groups": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "settings": {"type": "object"},
+    "environment": {"type": "object"}
+  }
+}

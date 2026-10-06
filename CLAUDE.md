@@ -334,6 +334,19 @@ sentence, a test kind (`two_group` names `group_a`, higher when the statistic is
 positive, and `group_b`) and its vector. Nothing vague is written: "Design column" or
 an empty "tests" is an error, not a placeholder.
 
+### Results are written to the results specification
+
+Every analysis writes a folder any reader can use without neurofaune
+(`docs/RESULTS_SPEC.md`): `analysis.json` (what it is, the correction and what it is
+over, the effect measure, each table's role), `provenance.json`, and every table with
+a column dictionary beside it, its columns mapped to the standard vocabulary. The
+reporting contract -- magnitude, direction, extent, location, nulls -- is checked:
+`neurofaune results check <dir>`. TBSS, VBM and voxelwise fMRI write it through
+`analysis.stats.readout_results`; other analyses are listed in
+`docs/RESULTS_PRODUCERS.md`, which also says how neurovrai and study scripts produce
+it. `neurofaune/results` is standard-library only and must stay that way: other
+producers run or copy it without neurofaune's imaging stack.
+
 ## Key Design Constraints
 
 1. **T2w is primary anatomical modality** (not T1w) - better rodent brain contrast
