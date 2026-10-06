@@ -231,6 +231,19 @@ setup_study_atlas(
 
 This avoids resampling every image to atlas orientation.
 
+**The reorientation is a rotation, never a mirror.** It goes from the atlas header's
+orientation (SIGMA: RAS) to the study's native voxel orientation, `study_axes`
+(default `RIA`: neurofaune's Bruker conversion writes identity affines, and its axial rat
+images run Right, Inferior, Anterior -- traced for every session of the cuprizone study).
+Both codes must be right-handed (`is_right_handed`); `atlas_metadata.json` records them and
+`reorientation_determinant` (+1), and the config gets `atlas.study_space.axes` /
+`display_plane`. **Until 2026-10-06 this was a transpose and two flips -- a mirror**: every
+study-space atlas built before then names each hemisphere by the other's name.
+`study_atlas_is_mirrored(dir)` tells; `setup_study_atlas` refuses to overwrite such an
+atlas unless `replace_mirrored=True`, because the study's registrations were made against
+it. A study already registered keeps it and swaps its `.L` / `.R` names (the cuprizone
+study: `preprocessing/code/relabel_atlas_hemispheres.py`).
+
 ### Tissue segmentation priors
 
 `segment_brain_tissue_atropos` (in `preprocess/workflows/anat_preprocess.py`) takes

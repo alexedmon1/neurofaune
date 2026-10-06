@@ -105,75 +105,126 @@ def reorient_template_to_sigma(
     return template_resampled, affine
 
 
+#: The anatomical direction each voxel axis of the study's native images runs toward, for
+#: neurofaune's Bruker conversion of axial rat acquisitions (identity affine, array in
+#: Bruker's order): Right, Inferior (ventral), Anterior. Established for the cuprizone study
+#: (all 92 sessions traced: acquisition, conversion, registration; its finding F021).
+STUDY_NATIVE_AXES = "RIA"
+
+
+def is_right_handed(axes: str) -> bool:
+    """True for an orientation code a real (unmirrored) image can have, e.g. "RAS", "RIA";
+    False for its mirror images, e.g. "LIA". Each letter from R/L, A/P, S/I, one per pair."""
+    from nibabel.orientations import axcodes2ornt
+
+    ornt = axcodes2ornt(tuple(axes.upper()))
+    m = np.zeros((3, 3))
+    for i, (ax, flip) in enumerate(ornt):
+        m[int(ax), i] = flip
+    return bool(np.linalg.det(m) > 0)
+
+
+def reorientation(source_axes: str, target_axes: str) -> np.ndarray:
+    """The nibabel orientation transform from source to target axes, refusing a mirror.
+
+    Both codes must be right-handed: a reorientation between them is then a rotation,
+    and an atlas reoriented by it keeps its left hemisphere on the left. (Until
+    2026-10-06 this module reoriented SIGMA by a transpose and two flips -- three
+    reflections, a mirror -- so every study-space atlas built with it named each
+    hemisphere by the other's name.)
+    """
+    from nibabel.orientations import axcodes2ornt, ornt_transform
+
+    for name, code in (("source", source_axes), ("target", target_axes)):
+        if not is_right_handed(code):
+            raise ValueError(f"{name} orientation {code!r} is a mirror image (left-handed): no real "
+                             "image has it; reorienting to or from it would swap the hemispheres")
+    return ornt_transform(axcodes2ornt(tuple(source_axes.upper())), axcodes2ornt(tuple(target_axes.upper())))
+
+
 def reorient_sigma_to_study(
     sigma_path: Union[str, Path],
     output_path: Optional[Union[str, Path]] = None,
-    is_labels: bool = False
+    is_labels: bool = False,
+    study_axes: str = STUDY_NATIVE_AXES,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Reorient SIGMA atlas to match BPA-Rat study native orientation.
+    Reorient the SIGMA atlas to the study's native voxel orientation, by a rotation.
 
-    This is the inverse of reorient_template_to_sigma(). Instead of reorienting
-    each template/image, we reorient the atlas once to match the study's native
-    acquisition space.
-
-    SIGMA atlas orientation: X=L-R, Y=A-P, Z=I-S
-    Study native orientation: X=L-R, Y=I-S, Z=A-P
-
-    Transformation:
-    1. transpose(0, 2, 1) to swap Y and Z axes
-    2. flip(axis=0) to correct L-R direction
-    3. flip(axis=1) to correct the new Y (I-S) direction
+    SIGMA's header describes its own anatomy (RAS). The study's native images, from
+    neurofaune's Bruker conversion, carry an identity affine and run Right, Inferior,
+    Anterior (``study_axes``, default :data:`STUDY_NATIVE_AXES`). The atlas is reoriented
+    to that voxel order with nibabel's orientation transform -- for RAS -> RIA a transpose
+    of Y and Z and a flip of the new Y: a rotation, never a mirror -- and saved with a
+    diagonal affine of the permuted voxel sizes, like the study's own images.
 
     Parameters
     ----------
     sigma_path : Path
-        Path to SIGMA atlas NIfTI file
+        SIGMA atlas NIfTI file (header describing its anatomy)
     output_path : Path, optional
-        Path to save reoriented atlas. If None, returns data without saving.
+        Where to save the reoriented atlas. If None, returns data without saving.
     is_labels : bool
-        If True, treat as label image (use int16, nearest neighbor)
+        If True, saved as int16 (label image)
+    study_axes : str
+        Anatomical direction of the study's voxel axes; must be right-handed
 
     Returns
     -------
     tuple
-        (reoriented_data, affine) - the reoriented array and its affine matrix
+        (reoriented_data, affine)
     """
+    from nibabel.orientations import aff2axcodes, apply_orientation
+
     sigma_path = Path(sigma_path)
     sigma_img = nib.load(sigma_path)
-    sigma_data = sigma_img.get_fdata()
-    sigma_voxels = sigma_img.header.get_zooms()
-
-    # Step 1: Swap Y and Z axes
-    reoriented = np.transpose(sigma_data, (0, 2, 1))
-
-    # Step 2: Flip X axis
-    reoriented = np.flip(reoriented, axis=0)
-
-    # Step 3: Flip Y axis (the new Y, which was Z)
-    reoriented = np.flip(reoriented, axis=1)
-
-    # Voxel sizes after transpose: (X, Z_orig, Y_orig)
-    new_voxel_sizes = (sigma_voxels[0], sigma_voxels[2], sigma_voxels[1])
-    affine = np.diag([new_voxel_sizes[0], new_voxel_sizes[1], new_voxel_sizes[2], 1.0])
+    transform = reorientation("".join(aff2axcodes(sigma_img.affine)), study_axes)
+    reoriented = apply_orientation(np.asanyarray(sigma_img.dataobj), transform)
+    zooms = sigma_img.header.get_zooms()[:3]
+    new_voxel_sizes = [0.0, 0.0, 0.0]
+    for src_axis, (dst_axis, _flip) in enumerate(transform):
+        new_voxel_sizes[int(dst_axis)] = float(zooms[src_axis])
+    affine = np.diag(new_voxel_sizes + [1.0])
 
     if output_path is not None:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
         if is_labels:
-            new_img = nib.Nifti1Image(reoriented.astype(np.int16), affine)
+            new_img = nib.Nifti1Image(np.asarray(reoriented).astype(np.int16), affine)
         else:
-            new_img = nib.Nifti1Image(reoriented.astype(np.float32), affine)
+            new_img = nib.Nifti1Image(np.asarray(reoriented).astype(np.float32), affine)
         nib.save(new_img, output_path)
 
     return reoriented, affine
+
+
+def study_atlas_is_mirrored(study_atlas_dir: Union[str, Path]) -> Optional[bool]:
+    """Whether a study-space atlas was built by the old, mirroring reorientation.
+
+    Reads ``atlas_metadata.json``: True for an atlas built before 2026-10-06 (transpose +
+    flip X + flip Y, three reflections -- its .L / .R names lie on the subjects' opposite
+    hemispheres), False for one whose metadata records a right-handed reorientation, None
+    when there is no metadata to tell.
+    """
+    import json
+
+    path = Path(study_atlas_dir) / "atlas_metadata.json"
+    if not path.exists():
+        return None
+    meta = json.loads(path.read_text())
+    if "reorientation_determinant" in meta:
+        return meta["reorientation_determinant"] < 0
+    steps = " ".join(str(v) for v in (meta.get("transformation") or {}).values())
+    reflections = steps.count("transpose") + steps.count("flip(")
+    return reflections % 2 == 1 if reflections else None
 
 
 def setup_study_atlas(
     sigma_base_path: Union[str, Path],
     study_atlas_dir: Union[str, Path],
     config_path: Optional[Union[str, Path]] = None,
+    study_axes: str = STUDY_NATIVE_AXES,
+    replace_mirrored: bool = False,
 ) -> Dict[str, Path]:
     """
     Set up study-space SIGMA atlas by reorienting all files to match study orientation.
@@ -191,7 +242,14 @@ def setup_study_atlas(
         Output directory for study-space atlas (e.g., {study_root}/atlas/SIGMA_study_space)
     config_path : Path, optional
         Path to study config YAML file to update. If provided, adds study_space_atlas
-        section with file paths.
+        section with file paths, and the declared orientation (``axes``, ``display_plane``).
+    study_axes : str
+        Anatomical direction of the study's native voxel axes (right-handed).
+    replace_mirrored : bool
+        An atlas built by the old, mirroring reorientation is refused unless this is True:
+        the study's registrations were made against it, and replacing it changes what every
+        transform to it means. A study already registered keeps it and renames its
+        hemispheres instead (see :func:`study_atlas_is_mirrored`).
 
     Returns
     -------
@@ -211,7 +269,13 @@ def setup_study_atlas(
 
     sigma_base_path = Path(sigma_base_path)
     study_atlas_dir = Path(study_atlas_dir)
+    if study_atlas_is_mirrored(study_atlas_dir) and not replace_mirrored:
+        raise RuntimeError(
+            f"{study_atlas_dir} holds a study-space atlas built by the old, mirroring "
+            "reorientation. Registrations made against it would no longer match a rebuilt one. "
+            "Keep it and swap its .L/.R names, or pass replace_mirrored=True and re-register.")
     study_atlas_dir.mkdir(parents=True, exist_ok=True)
+    transform = None
 
     # Define files to reorient
     # Format: (source_subpath, output_name, is_labels)
@@ -237,12 +301,8 @@ def setup_study_atlas(
 
     output_paths = {}
     metadata = {
-        "description": "SIGMA atlas reoriented to study native space",
-        "transformation": {
-            "step1": "transpose(0, 2, 1) - swap Y and Z axes",
-            "step2": "flip(axis=0) - flip X axis",
-            "step3": "flip(axis=1) - flip Y axis"
-        },
+        "description": "SIGMA atlas reoriented to study native space (a rotation, no mirror)",
+        "study_axes": study_axes.upper(),
         "files": {}
     }
 
@@ -263,8 +323,13 @@ def setup_study_atlas(
         source_shape = source_img.shape
 
         # Reorient and save
+        from nibabel.orientations import aff2axcodes
+        source_axes = "".join(aff2axcodes(source_img.affine))
+        transform = reorientation(source_axes, study_axes)
+        metadata["source_axes"] = source_axes
+        metadata["reorientation"] = [[int(a), int(f)] for a, f in transform]
         reoriented_data, affine = reorient_sigma_to_study(
-            source_path, output_path, is_labels=is_labels
+            source_path, output_path, is_labels=is_labels, study_axes=study_axes
         )
 
         # Track output
@@ -284,6 +349,12 @@ def setup_study_atlas(
             n_labels = len(np.unique(reoriented_data.astype(int)))
             metadata["files"][source_path.name]["unique_labels"] = n_labels
 
+    if transform is not None:
+        m = np.zeros((3, 3))
+        for i, (ax, flip) in enumerate(transform):
+            m[int(ax), i] = flip
+        metadata["reorientation_determinant"] = int(round(np.linalg.det(m)))
+
     # Save metadata
     metadata_path = study_atlas_dir / "atlas_metadata.json"
     with open(metadata_path, 'w') as f:
@@ -294,7 +365,7 @@ def setup_study_atlas(
     if config_path is not None:
         config_path = Path(config_path)
         if config_path.exists():
-            _update_config_with_atlas(config_path, study_atlas_dir, output_paths)
+            _update_config_with_atlas(config_path, study_atlas_dir, output_paths, study_axes)
         else:
             print(f"  Warning: Config file not found: {config_path}")
             print(f"  Creating new config section to add manually...")
@@ -307,7 +378,8 @@ def setup_study_atlas(
 def _update_config_with_atlas(
     config_path: Path,
     study_atlas_dir: Path,
-    output_paths: Dict[str, Path]
+    output_paths: Dict[str, Path],
+    study_axes: str = STUDY_NATIVE_AXES,
 ) -> None:
     """Update the config YAML file with study-space atlas paths."""
     import yaml
@@ -329,6 +401,10 @@ def _update_config_with_atlas(
         'wm_prob': str(output_paths.get('SIGMA_InVivo_WM', '')),
         'csf_prob': str(output_paths.get('SIGMA_InVivo_CSF', '')),
         'parcellation': str(output_paths.get('SIGMA_InVivo_Anatomical_Brain_Atlas', '')),
+        # Display only (results specification): the anatomical direction of the voxel axes,
+        # which the identity header does not say, and the plane to show maps in.
+        'axes': study_axes.upper(),
+        'display_plane': 'coronal',
     }
 
     # Write updated config
