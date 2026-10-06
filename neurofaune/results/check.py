@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from ._schema import load_schema, validate
-from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, PROVENANCE_JSON, SPEC,
-                                     SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, PER_SUBGROUP, valid_axes)
+from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, MODALITIES, PER_SUBGROUP, PROVENANCE_JSON, READS,
+                   SPEC, SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, canonical_measure, id_problem,
+                   measure_vocabulary, valid_axes, version_tuple)
 
 #: Analysis types whose tests are voxelwise, so a test row must state its extent.
 VOXELWISE = ("tbss", "vbm", "tbm", "voxelwise", "fixel")
@@ -86,15 +87,51 @@ def _inside(folder: Path, rel: str, what: str, rep: Report) -> Path | None:
     return full
 
 
-def _version_ok(version: str, rep: Report) -> None:
-    try:
-        got = [int(x) for x in version.split(".")[:2]]
-        want = [int(x) for x in SPEC_VERSION.split(".")[:2]]
-    except ValueError:
+def _version_ok(version: str, rep: Report) -> tuple[int, int] | None:
+    """The folder's (major, minor) when this checker reads it, else None (and an error)."""
+    got = version_tuple(version)
+    if got is None:
         rep.errors.append(f"spec_version {version!r} is not semver")
-        return
-    if got[0] != want[0] or (want[0] == 0 and got[1] != want[1]):
+        return None
+    if got not in READS:
         rep.errors.append(f"spec_version {version} is not readable by checker {SPEC_VERSION}")
+        return None
+    return got
+
+
+def _rules_0_2(analysis: dict, rep: Report) -> None:
+    """What 0.2 adds (RESULTS_SPEC.md §3.1): identity and vocabulary."""
+    modality, atype = analysis.get("modality"), analysis.get("analysis_type")
+    if modality is None:
+        rep.errors.append(f"{ANALYSIS_JSON}: modality is required from 0.2 (one of {', '.join(MODALITIES)})")
+    elif modality not in MODALITIES:
+        rep.errors.append(f"{ANALYSIS_JSON}: modality {modality!r} is not one of {', '.join(MODALITIES)}")
+    mods = analysis.get("modalities")
+    if modality == "multimodal":
+        if not mods:
+            rep.errors.append(f"{ANALYSIS_JSON}: a multimodal analysis lists its modalities")
+        else:
+            bad = [m for m in mods if m not in MODALITIES or m == "multimodal"]
+            if bad:
+                rep.errors.append(f"{ANALYSIS_JSON}: modalities {bad} are not modalities")
+    elif mods:
+        rep.errors.append(f"{ANALYSIS_JSON}: modalities is for multimodal analyses only")
+    if isinstance(analysis.get("id"), str) and isinstance(modality, str) and isinstance(atype, str):
+        why = id_problem(analysis["id"], modality, atype)
+        if why:
+            rep.errors.append(f"{ANALYSIS_JSON}: id {analysis['id']!r} {why}")
+    vocab = measure_vocabulary()
+    own = set(mods or []) if modality == "multimodal" else {modality}
+    for m in analysis.get("measures") or []:
+        canon, exact = canonical_measure(m, vocab)
+        if canon is None:
+            rep.warnings.append(f"{ANALYSIS_JSON}: measure {m!r} is not in the measure vocabulary "
+                                "(neurofaune/results/vocab/measures.json) -- add it there")
+        elif not exact:
+            rep.errors.append(f"{ANALYSIS_JSON}: measure {m!r} is written {canon!r} in the vocabulary")
+        elif vocab[canon]["modality"] not in own:
+            rep.warnings.append(f"{ANALYSIS_JSON}: measure {m!r} is a {vocab[canon]['modality']} measure, "
+                                f"in a {modality} analysis")
 
 
 def read_table(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -249,8 +286,10 @@ def check_analysis(folder: Path) -> Report:
     unknown = sorted(set(analysis) - known)
     if unknown:
         rep.warnings.append(f"{ANALYSIS_JSON}: fields this checker does not know: {unknown}")
-    if isinstance(analysis.get("spec_version"), str):
-        _version_ok(analysis["spec_version"], rep)
+    version = _version_ok(analysis["spec_version"], rep) if isinstance(analysis.get("spec_version"), str) else None
+    v02 = version is not None and version >= (0, 2)
+    if v02:
+        _rules_0_2(analysis, rep)
 
     prov = _load_json(folder / PROVENANCE_JSON, rep)
     if prov is not None:
@@ -270,8 +309,16 @@ def check_analysis(folder: Path) -> Report:
     if sum(1 for t in tables if t.get("headline")) > 1:
         rep.errors.append(f"{ANALYSIS_JSON}: more than one headline table")
     tested: set[tuple[str, str]] = set()
+    listed = set(analysis.get("measures") or [])
     for entry in tables:
         got = _check_table(folder, entry, analysis, rep)
+        if v02 and got and got[0] in CONTRACT_ROLES and "measure" in got[1] and listed:
+            # 0.2: a table names its measures as analysis.json lists them
+            col = got[1]["measure"]
+            unlisted = sorted({r.get(col, "") for r in got[2]} - listed - {""})
+            if unlisted:
+                rep.errors.append(f"table {entry.get('path')!r}: measures {unlisted} are not in "
+                                  "analysis.json's measures")
         if got and got[0] == "tests":
             _role, std, rows = got
             mcol, ccol, fcol = std.get("measure"), std.get("contrast"), std.get("facet")

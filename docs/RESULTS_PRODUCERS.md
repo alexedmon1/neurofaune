@@ -20,7 +20,7 @@ from neurofaune.results.write import now
 tests.to_csv(out / "tests.csv", index=False)
 write_columns(out / "tests.csv", MY_COLUMNS)            # every column described, or KeyError
 write_analysis(out, {
-    "id": "wmh/poor_vs_good", "title": "WMH burden by glycaemic control",
+    "id": "anat/roi/wmh_poor_vs_good", "title": "WMH burden by glycaemic control",
     "description": "...", "analysis_type": "roi", "modality": "anat",
     "measures": ["total_volume_mm3", "n_lesions"], "role": "exploratory",
     "design": {"n": 80, "groups": {"poor_control": 40, "good_control": 40}},
@@ -61,10 +61,16 @@ needs numpy, scipy, pandas and nibabel, and is not standard-library.
 
 | analysis | writes the spec | how |
 |---|---|---|
-| TBSS (`analysis.tbss.run_tbss_stats`) | yes | `readout_results.write_readout_results` |
-| VBM, voxelwise fMRI (`analysis.randomise_analysis`) | yes | the same |
+| TBSS (`analysis.tbss.run_tbss_stats`) | yes, `dwi/tbss/<name>` | `readout_results.write_readout_results` |
+| VBM, voxelwise fMRI (`analysis.randomise_analysis`) | yes, `anat/vbm/<name>`, `func/voxelwise/<name>` | the same |
 | ROI extraction / ROI statistics | not yet | an `elements` / `tests` writer |
 | covariance networks, NBS, connectomes, fixel, MCCA, classification | not yet | per §6 below, analysis by analysis |
+| MRS group statistics | not yet | `mrs/spectroscopy/<name>`, one `tests` row per metabolite and test |
+
+**Every runner writes its own folder at the end of its run** — the goal for every row
+above: a study then never needs an exporter of its own, and a new analysis arrives in a
+reader already identified. Ids come from `neurofaune.results.spec.analysis_id(modality,
+analysis_type, name)`, so they follow §3.1 of the specification by construction.
 
 A non-conforming folder at the end of a long run is logged, not raised. Tests
 assert conformance for every writer.
@@ -203,8 +209,16 @@ then FSL. The commit can be read from the installed package's PEP 610
 A study's own orchestration (the cuprizone study's `analyses/code/`) writes the same
 folders. Scripts that call `read_randomise` pass its tables to
 `write_readout_results`. Scripts that build their own tables write their own column
-dictionaries. Study records such as a pre-registration id or a finding id go in
-`references`; the spec does not know about them.
+dictionaries. Study records go in `references` under the agreed labels:
+`{"label": "registration", "value": "H011"}` for the pre-registered hypothesis an
+analysis tests, `{"label": "finding", "value": "F031"}` for a recorded finding it
+reports. The spec gives those labels a meaning and nothing more; how the study keeps
+its registrations and findings is its own.
+
+**Moving a 0.1 export to 0.2**: the id gains its modality and type
+(`tbss/h1h` → `dwi/tbss/h1h`), `modality` is set, measures take their vocabulary
+names, and the folder is re-checked. A reader that groups by id (a gallery section
+matched on an id prefix) is updated at the same time.
 
 ## 6. Writing a new producer for a new analysis type
 
@@ -212,3 +226,22 @@ Choose the table roles first: what one row is. Then map columns to standard term
 and fill in the contract (§6 of the specification). If a standard term is missing,
 propose it in neurofaune with a `spec_version` bump and a `CHANGELOG.md` entry —
 never repurpose an existing term.
+
+## 7. murinet
+
+murinet never imports neurofaune (separate environments; they exchange files), so it
+writes analysis folders itself: the JSON files with the standard library, or with a
+**copy** of `neurofaune/results/` vendored as §2 describes (a copy is not an import,
+and records the neurofaune commit it came from). Its own tests run the checker on a
+synthetic folder per analysis kind, in isolation:
+`uvx --from "neurofaune @ git+…@<ref>" neurofaune results check <folder>`.
+
+What it writes, by kind (the `id` per §3.1; `provenance.json`'s `generated_by` names
+murinet, which is how a reader knows the producer — not the id):
+
+| kind | `analysis_type` | `modality` | one row of the headline table |
+|---|---|---|---|
+| ROI-feature decoding | `decoding` | the features' (e.g. `dwi`), else `multimodal` | one decoder: accuracy / AUC with its permutation p (`tests`) |
+| searchlight | `decoding` | the maps' (e.g. `msme` for MWF) | one cluster of the accuracy map (`clusters`) |
+| radiomics | `radiomics` | the image's (e.g. `anat` for T2w) | one feature in one region (`elements`) |
+| segmentation evaluation | `other` | `anat` | one region: Dice, HD95 (`descriptives`) |

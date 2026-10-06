@@ -369,8 +369,8 @@ def test_a_template_on_another_grid_is_not_listed(run, tmp_path):
     tests, clusters = _read(run, labels={"metric": "FA"})
     other = tmp_path / "other.nii.gz"
     nib.save(nib.Nifti1Image(np.ones((5, 5, 5), np.float32), AFFINE), str(other))
-    rep = write_readout_results(out, tests, clusters, analysis_id="x", title="x", description="x",
-                                analysis_type="tbss", measure_column="metric", measures=["FA"],
+    rep = write_readout_results(out, tests, clusters, analysis_id="dwi/tbss/x", title="x", description="x",
+                                analysis_type="tbss", modality="dwi", measure_column="metric", measures=["FA"],
                                 run_dirs={"FA": rd}, n_permutations=10, alpha=0.05, mask_name="mask",
                                 space="S", inference="2-D TFCE", mask=run["dir"] / "mask.nii.gz",
                                 background=other, strict=True)
@@ -399,11 +399,11 @@ def test_a_battery_of_runs_adopts_a_folder_in_place(run, tmp_path):
     tests = pd.concat([t for t, _ in parts], ignore_index=True)
     clusters = pd.concat([c for _, c in parts], ignore_index=True)
     rep = write_readout_results(
-        out, tests, clusters, analysis_id="battery", title="b", description="b", analysis_type="tbss",
+        out, tests, clusters, analysis_id="dwi/tbss/battery", title="b", description="b", analysis_type="tbss", modality="dwi",
         measure_column="measure", measures=["FA"], facet_column="window", prefix="rand",
         run_dir_of=lambda r: out / r["window"] / r["measure"], n_permutations=10, alpha=0.05,
         mask_name="skeleton", space="S", inference="2-D TFCE", design={"n": 12, "groups": {"A": 6, "B": 6}},
-        references=[{"label": "hypothesis", "value": "H0"}], tests_file="readout_tests.csv",
+        references=[{"label": "registration", "value": "H0"}], tests_file="readout_tests.csv",
         clusters_file="readout_clusters.csv", strict=True)
     assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
     assert (out / "clusters.csv").read_text() == "someone,else\n1,2\n"   # untouched

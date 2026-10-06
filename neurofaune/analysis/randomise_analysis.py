@@ -543,8 +543,10 @@ class RandomiseAnalysis:
         from neurofaune.analysis.stats.readout_results import write_readout_results
         from neurofaune.atlas.study_space import (atlas_space_name, display_plane, study_space_axes,
                                                   study_space_template)
+        from neurofaune.results.spec import analysis_id
         write_readout_results(
-            output_dir, tests, clusters, analysis_id=f"{self.ANALYSIS_TYPE}/{analysis_name}",
+            output_dir, tests, clusters,
+            analysis_id=analysis_id(self.MODALITY, self.SPEC_TYPE, analysis_name),
             title=f"{self.ANALYSIS_TYPE}: {analysis_name}",
             description=(design_record or {}).get('summary')
             or f"voxelwise group analysis of {', '.join(metrics)}",

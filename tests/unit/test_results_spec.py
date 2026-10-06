@@ -26,7 +26,8 @@ COLUMNS = {
 
 
 def _analysis(**over):
-    a = {"id": "roi/demo", "title": "Demo", "description": "a demonstration", "analysis_type": "roi",
+    a = {"id": "dwi/roi/demo", "title": "Demo", "description": "a demonstration", "analysis_type": "roi",
+         "modality": "dwi",
          "measures": ["FA", "MD"], "role": "exploratory", "design": {"n": 20, "groups": {"A": 10, "B": 10}},
          "inference": {"method": "Welch t", "correction": {"p_kind": "fdr", "family": "ROIs x measures",
                                                            "statement": "BH-FDR q < 0.05 over ROIs x measures"}},
@@ -207,8 +208,8 @@ def test_a_standard_term_is_claimed_once(folder):
     assert "claimed by both" in _errors(folder)
 
 
-@pytest.mark.parametrize("version, ok", [(SPEC_VERSION, True), ("0.1.7", True), ("0.2.0", False),
-                                         ("1.0.0", False)])
+@pytest.mark.parametrize("version, ok", [(SPEC_VERSION, True), ("0.1.7", True), ("0.2.0", True),
+                                         ("0.3.0", False), ("1.0.0", False)])
 def test_spec_version(folder, version, ok):
     write_analysis(folder, {**_analysis(), "spec_version": version}, _prov(), strict=False)
     assert ("not readable" not in _errors(folder)) is ok
@@ -220,7 +221,7 @@ def test_analysis_folders_do_not_nest(folder):
     inner.mkdir()
     (inner / "tests.tsv").write_bytes((folder / "tests.tsv").read_bytes())
     (inner / "tests.json").write_bytes((folder / "tests.json").read_bytes())
-    write_analysis(inner, _analysis(id="roi/inner"), _prov())
+    write_analysis(inner, _analysis(id="dwi/roi/inner"), _prov())
     outer = next(r for r in check(folder.parent) if r.folder == folder)
     assert any("must not nest" in e for e in outer.errors)
 
@@ -235,7 +236,7 @@ def test_unfinished_runs_are_flagged(folder):
 def test_cli(folder, capsys):
     write_analysis(folder, _analysis(), _prov())
     assert cli(["check", str(folder.parent)]) == 0
-    assert "OK   roi/demo" in capsys.readouterr().out
+    assert "OK   dwi/roi/demo" in capsys.readouterr().out
     (folder / "provenance.json").unlink()
     assert cli(["check", str(folder), "--json"]) == 1
     assert json.loads(capsys.readouterr().out)[0]["ok"] is False
@@ -265,8 +266,8 @@ def test_one_sample_readout_is_fully_described(tmp_path):
                                         atlas=atlas, labels={"metric": "FA"})
     assert "whole_mean" in tests and "mean" in clusters                  # one-sample columns
     rep = write_readout_results(
-        tmp_path / "an", tests, clusters, analysis_id="vbm/one", title="one", description="one sample",
-        analysis_type="vbm", measure_column="metric", measures=["FA"], run_dirs={"FA": rd},
+        tmp_path / "an", tests, clusters, analysis_id="dwi/voxelwise/one", title="one", description="one sample",
+        analysis_type="voxelwise", modality="dwi", measure_column="metric", measures=["FA"], run_dirs={"FA": rd},
         n_permutations=10, alpha=0.05, mask_name="brain mask", space="test", inference="3-D TFCE",
         strict=True)
     assert rep.ok, rep.errors
@@ -321,3 +322,71 @@ def test_subgroup_terms_repeat_once_per_subgroup(folder):
     write_columns(folder / "tests.tsv", COLUMNS, extra)
     write_analysis(folder, _analysis(), _prov(), strict=False)
     assert "must state Subgroup" in _errors(folder)
+
+
+# ------------------------------------------------------------------- 0.2 ---
+def test_a_0_1_folder_is_still_read_by_0_1_rules(folder):
+    old = {k: v for k, v in _analysis(id="roi/demo").items() if k != "modality"}
+    write_analysis(folder, {**old, "spec_version": "0.1.0"}, _prov(), strict=False)
+    (rep,) = check(folder)
+    assert rep.ok, rep.errors
+
+
+@pytest.mark.parametrize("over, says", [
+    ({"modality": None}, "modality is required"),
+    ({"modality": "DWI"}, "is not one of"),
+    ({"id": "roi/demo"}, "is not <modality>/<analysis_type>/<name>"),
+    ({"id": "func/roi/demo"}, "not its modality"),
+    ({"id": "dwi/tbss/demo"}, "not its analysis_type"),
+    ({"id": "dwi/roi/Demo Run"}, "is not lowercase"),
+    ({"modality": "multimodal", "id": "multimodal/roi/demo"}, "lists its modalities"),
+    ({"modalities": ["dwi", "func"]}, "for multimodal analyses only"),
+    ({"measures": ["FA", "NDI"]}, "is written 'FICVF'"),
+    ({"measures": ["fa", "MD"]}, "is written 'FA'"),
+])
+def test_0_2_identity_and_vocabulary(folder, over, says):
+    a = _analysis(**over)
+    if a.get("modality") is None:
+        a.pop("modality")
+    write_analysis(folder, a, _prov(), strict=False)
+    assert says in _errors(folder)
+
+
+def test_0_2_multimodal_and_unknown_measures_warn_not_fail(folder):
+    write_analysis(folder, _analysis(id="multimodal/roi/demo", modality="multimodal",
+                                     modalities=["dwi", "func"], measures=["FA", "MD", "Zeta"]),
+                   _prov(), strict=False)
+    (rep,) = check(folder)
+    assert rep.ok, rep.errors
+    assert any("'Zeta' is not in the measure vocabulary" in w for w in rep.warnings)
+
+
+def test_0_2_a_measure_of_another_modality_warns(folder):
+    write_analysis(folder, _analysis(id="func/roi/demo", modality="func"), _prov(), strict=False)
+    (rep,) = check(folder)
+    assert rep.ok and any("is a dwi measure, in a func analysis" in w for w in rep.warnings)
+
+
+def test_0_2_a_table_names_only_listed_measures(folder):
+    write_analysis(folder, _analysis(measures=["FA"]), _prov(), strict=False)
+    assert "measures ['MD'] are not in analysis.json's measures" in _errors(folder)
+
+
+def test_analysis_id_helper():
+    from neurofaune.results.spec import analysis_id, id_problem
+
+    got = analysis_id("func", "voxelwise", "H1j ReHo", "p60 to p90")
+    assert got == "func/voxelwise/h1j_reho/p60_to_p90"
+    assert id_problem(got, "func", "voxelwise") is None
+
+
+def test_the_measure_vocabulary_is_packaged_and_consistent():
+    from neurofaune.results.spec import MODALITIES, canonical_measure, measure_vocabulary
+
+    vocab = measure_vocabulary()
+    assert {"FA", "MK", "FICVF", "T2", "MWF", "ReHo", "fALFF", "logJ_local", "Cr+PCr"} <= set(vocab)
+    assert all(v["modality"] in MODALITIES and v["modality"] != "multimodal" for v in vocab.values())
+    names = {k.lower() for k in vocab}
+    aliases = [a.lower() for v in vocab.values() for a in v.get("aliases", [])]
+    assert len(aliases) == len(set(aliases)) and not names & set(aliases)
+    assert canonical_measure("CSWF") == ("CSFF", False) and canonical_measure("Glx") == ("Glu+Gln", False)

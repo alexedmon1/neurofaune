@@ -14,3 +14,21 @@ a `background` map kind; p maps' `values` (p / one_minus_p); maps' `facet` and `
 `subgroup_effect` / `subgroup_n` with the `Subgroup` qualifier; a tests row giving an
 effect must give both interval bounds.
 
+
+## 0.2.0 — 2026-10-06 (draft)
+
+Identity and vocabulary (RESULTS_SPEC.md §3.1), so a reader can group analyses by what
+they are without matching on names:
+
+- an analysis is one modality and one method; `modality` is required and one of
+  `anat`, `dwi`, `func`, `msme`, `mrs`, `asl`, `multimodal` (with `modalities`);
+- `id` is `<modality>/<analysis_type>/<name>` (`spec.analysis_id` builds one);
+- `analysis_type` gains `decoding`, `radiomics`, `spectroscopy`;
+- measures take their canonical names from the measure vocabulary
+  (`vocab/measures.json`); an unknown measure is warned about, a known one under another
+  spelling is an error; a contract table's measures are those `analysis.json` lists;
+- `references` labels `registration`, `finding` and `doi` have an agreed meaning.
+
+The checker reads 0.1 and 0.2, each folder by the rules of the version it declares.
+neurofaune's TBSS and randomise writers now write 0.2 ids (`dwi/tbss/<name>`,
+`anat/vbm/<name>`, `func/voxelwise/<name>`).

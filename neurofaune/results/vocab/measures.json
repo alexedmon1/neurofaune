@@ -1,0 +1,219 @@
+{
+ "_comment": "The results specification's measure vocabulary (0.2): canonical name -> modality, description, aliases. A known measure is written by its canonical name; an analysis may list a measure not here (the checker warns) -- add it here, in neurofaune, with a CHANGELOG line, rather than inventing a spelling.",
+ "FA": {
+  "modality": "dwi",
+  "description": "fractional anisotropy (DTI)"
+ },
+ "MD": {
+  "modality": "dwi",
+  "description": "mean diffusivity (DTI)",
+  "aliases": [
+   "ADC"
+  ]
+ },
+ "AD": {
+  "modality": "dwi",
+  "description": "axial diffusivity (DTI)",
+  "aliases": [
+   "L1",
+   "lambda1"
+  ]
+ },
+ "RD": {
+  "modality": "dwi",
+  "description": "radial diffusivity (DTI)"
+ },
+ "MK": {
+  "modality": "dwi",
+  "description": "mean kurtosis (DKI)"
+ },
+ "AK": {
+  "modality": "dwi",
+  "description": "axial kurtosis (DKI)"
+ },
+ "RK": {
+  "modality": "dwi",
+  "description": "radial kurtosis (DKI)"
+ },
+ "KFA": {
+  "modality": "dwi",
+  "description": "kurtosis fractional anisotropy (DKI)"
+ },
+ "FICVF": {
+  "modality": "dwi",
+  "description": "intra-cellular volume fraction / neurite density (NODDI)",
+  "aliases": [
+   "NDI"
+  ]
+ },
+ "ODI": {
+  "modality": "dwi",
+  "description": "orientation dispersion index (NODDI)"
+ },
+ "FISO": {
+  "modality": "dwi",
+  "description": "isotropic (free-water) volume fraction (NODDI)",
+  "aliases": [
+   "ISOVF"
+  ]
+ },
+ "volume": {
+  "modality": "anat",
+  "description": "region or tissue volume (mm^3 unless the column dictionary says otherwise)"
+ },
+ "GM": {
+  "modality": "anat",
+  "description": "grey-matter probability or volume, as the analysis states"
+ },
+ "WM": {
+  "modality": "anat",
+  "description": "white-matter probability or volume, as the analysis states"
+ },
+ "CSF": {
+  "modality": "anat",
+  "description": "CSF probability or volume, as the analysis states"
+ },
+ "GM_mod": {
+  "modality": "anat",
+  "description": "grey-matter probability modulated by the Jacobian (VBM)"
+ },
+ "WM_mod": {
+  "modality": "anat",
+  "description": "white-matter probability modulated by the Jacobian (VBM)"
+ },
+ "logJ_total": {
+  "modality": "anat",
+  "description": "log-Jacobian of a deformation, affine included (TBM)"
+ },
+ "logJ_local": {
+  "modality": "anat",
+  "description": "log-Jacobian of a deformation, affine removed (TBM; change relative to the whole brain)"
+ },
+ "T2": {
+  "modality": "msme",
+  "description": "T2 relaxation time (multi-echo spin echo)"
+ },
+ "MWF": {
+  "modality": "msme",
+  "description": "myelin water fraction (T2 spectrum below the myelin cutoff)"
+ },
+ "IWF": {
+  "modality": "msme",
+  "description": "intra- and extra-cellular water fraction (T2 spectrum between the cutoffs)"
+ },
+ "CSFF": {
+  "modality": "msme",
+  "description": "CSF water fraction (T2 spectrum above the upper cutoff)",
+  "aliases": [
+   "CSWF"
+  ]
+ },
+ "ReHo": {
+  "modality": "func",
+  "description": "regional homogeneity (resting-state BOLD)"
+ },
+ "fALFF": {
+  "modality": "func",
+  "description": "fractional amplitude of low-frequency fluctuations (resting-state BOLD)"
+ },
+ "ALFF": {
+  "modality": "func",
+  "description": "amplitude of low-frequency fluctuations (resting-state BOLD)"
+ },
+ "FC": {
+  "modality": "func",
+  "description": "functional connectivity (correlation of regional BOLD time series)"
+ },
+ "NAA": {
+  "modality": "mrs",
+  "description": "N-acetylaspartate (MRS concentration, in the units the column dictionary states)"
+ },
+ "NAAG": {
+  "modality": "mrs",
+  "description": "N-acetylaspartylglutamate (MRS concentration, in the units the column dictionary states)"
+ },
+ "NAA+NAAG": {
+  "modality": "mrs",
+  "description": "total N-acetylaspartate (MRS concentration, in the units the column dictionary states)",
+  "aliases": [
+   "tNAA"
+  ]
+ },
+ "Cr": {
+  "modality": "mrs",
+  "description": "creatine (MRS concentration, in the units the column dictionary states)"
+ },
+ "PCr": {
+  "modality": "mrs",
+  "description": "phosphocreatine (MRS concentration, in the units the column dictionary states)"
+ },
+ "Cr+PCr": {
+  "modality": "mrs",
+  "description": "total creatine (MRS concentration, in the units the column dictionary states)",
+  "aliases": [
+   "tCr"
+  ]
+ },
+ "GPC": {
+  "modality": "mrs",
+  "description": "glycerophosphocholine (MRS concentration, in the units the column dictionary states)"
+ },
+ "PCh": {
+  "modality": "mrs",
+  "description": "phosphocholine (MRS concentration, in the units the column dictionary states)"
+ },
+ "GPC+PCh": {
+  "modality": "mrs",
+  "description": "total choline (MRS concentration, in the units the column dictionary states)",
+  "aliases": [
+   "tCho"
+  ]
+ },
+ "Ins": {
+  "modality": "mrs",
+  "description": "myo-inositol (MRS concentration, in the units the column dictionary states)",
+  "aliases": [
+   "mI",
+   "myo-inositol"
+  ]
+ },
+ "Glu": {
+  "modality": "mrs",
+  "description": "glutamate (MRS concentration, in the units the column dictionary states)"
+ },
+ "Gln": {
+  "modality": "mrs",
+  "description": "glutamine (MRS concentration, in the units the column dictionary states)"
+ },
+ "Glu+Gln": {
+  "modality": "mrs",
+  "description": "glutamate + glutamine (MRS concentration, in the units the column dictionary states)",
+  "aliases": [
+   "Glx"
+  ]
+ },
+ "GABA": {
+  "modality": "mrs",
+  "description": "gamma-aminobutyric acid (MRS concentration, in the units the column dictionary states)"
+ },
+ "GSH": {
+  "modality": "mrs",
+  "description": "glutathione (MRS concentration, in the units the column dictionary states)"
+ },
+ "Tau": {
+  "modality": "mrs",
+  "description": "taurine (MRS concentration, in the units the column dictionary states)"
+ },
+ "Lac": {
+  "modality": "mrs",
+  "description": "lactate (MRS concentration, in the units the column dictionary states)"
+ },
+ "Ala": {
+  "modality": "mrs",
+  "description": "alanine (MRS concentration, in the units the column dictionary states)"
+ },
+ "Asp": {
+  "modality": "mrs",
+  "description": "aspartate (MRS concentration, in the units the column dictionary states)"
+ }
+}

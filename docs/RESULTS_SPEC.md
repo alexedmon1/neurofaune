@@ -1,4 +1,4 @@
-# Results specification — `neurofaune.results` 0.1.0
+# Results specification — `neurofaune.results` 0.2.0
 
 What an analysis writes so that **anyone can read its results without the package
 that produced them**: a plain pandas script, a manuscript table, neuro-lightbox.
@@ -7,9 +7,11 @@ Producers are neurofaune, neurovrai and any study's own orchestration scripts;
 specification, its JSON Schemas (`neurofaune/results/schemas/`) and the
 conformance checker (`neurofaune results check`).
 
-**Status: 0.1.0, draft.** It becomes 1.0.0 when neuro-lightbox's MRI view and the
+**Status: 0.2.0, draft.** It becomes 1.0.0 when neuro-lightbox's MRI view and the
 first study read it end to end. Until then a minor version may change a field;
 from 1.0.0 on, versions follow semver and a reader written for 1.x reads every 1.y.
+0.2 adds identity and vocabulary (§3.1): what one analysis is, how it is named, and
+the words a reader groups analyses by.
 
 ## 1. Principles
 
@@ -33,7 +35,12 @@ from 1.0.0 on, versions follow semver and a reader written for 1.x reads every 1
 
 An **analysis** is one family of tests run together under one inference scheme —
 a TBSS battery over several measures, one VBM model, one covariance-network
-comparison. Each analysis is one folder:
+comparison — on **one modality, by one method** (0.2). Measures share an analysis
+only when they share its design and inference *and* a reader would look for them
+together: the 11 diffusion measures of one TBSS battery are one analysis; ReHo and
+fALFF, each a voxelwise battery of its own, are two. An analysis on several
+modalities at once (a decoder over diffusion and functional features) is
+`multimodal` and says which. Each analysis is one folder:
 
 ```
 <analysis>/
@@ -59,12 +66,13 @@ Fields marked * are required.
 | field | content |
 |---|---|
 | `spec`* | `"neurofaune.results"` |
-| `spec_version`* | `"0.1.0"` |
-| `id`* | identifier, unique under the results root and stable across re-runs, e.g. `"tbss/dose_p60"` |
+| `spec_version`* | `"0.2.0"` |
+| `id`* | identifier, unique under the results root and stable across re-runs; from 0.2 `<modality>/<analysis_type>/<name>`, e.g. `"dwi/tbss/dose_p60"` (§3.1) |
 | `title`*, `description`* | a heading, and what the analysis asks in a sentence or two |
-| `analysis_type`* | `tbss`, `vbm`, `tbm`, `voxelwise`, `roi`, `covariance_network`, `nbs`, `graph`, `connectome`, `fixel`, `other` |
-| `modality` | `anat`, `dwi`, `func`, `asl`, `msme`, `mrs`, `multimodal`, … |
-| `measures` | the measured quantities, in display order, e.g. `["FA", "MD", "RD"]` |
+| `analysis_type`* | `tbss`, `vbm`, `tbm`, `voxelwise`, `roi`, `covariance_network`, `nbs`, `graph`, `connectome`, `fixel`, `decoding`, `radiomics`, `spectroscopy`, `other` |
+| `modality`* (0.2) | `anat`, `dwi`, `func`, `msme`, `mrs`, `asl` or `multimodal` (§3.1) |
+| `modalities` | a `multimodal` analysis's modalities, e.g. `["dwi", "func"]`; only then |
+| `measures` | the measured quantities, in display order, e.g. `["FA", "MD", "RD"]`; from 0.2 by their names in the measure vocabulary (§3.1) |
 | `role`* | `confirmatory`, `exploratory`, `descriptive` or `diagnostic` |
 | `design`* | `{n*, groups: {name: n}, test_kinds: [...], records: [paths to design.json]}` |
 | `inference`* | `{method*, correction*, n_permutations, notes}`; `correction` = `{p_kind*, family*, statement*, alpha}` (below) |
@@ -76,7 +84,7 @@ Fields marked * are required.
 | `decision` | where the analysis defines a decision rule: `{rule*, outcome*, criteria: [{name, description, passed}]}`; `outcome` is `holds`, `does_not_hold` or `not_assessed` |
 | `retired` | `{reason*, superseded_by}` — kept on disk, not to be read as current |
 | `caveats` | `[sentence, …]` that a reader must see beside the results |
-| `references` | `[{label, value}]`, opaque to the spec |
+| `references` | `[{label, value}]`; the labels `registration` (a pre-registered hypothesis this analysis tests), `finding` (a recorded finding it reports) and `doi` have that meaning; any other label is opaque to the spec |
 
 **`inference.correction`.** `p_kind` is `fwe`, `fdr`, `perm` (permutation p of a
 single test statistic), `uncorrected` or `none`. `family` says what the correction
@@ -113,6 +121,32 @@ or `one_minus_p` (randomise's convention). A reader does not threshold a p map t
 does not say. A map that belongs to one test names its `measure`,
 `contrast` and (where the tests table has one) `facet`, matching that test's row. `space` names the template (e.g. `SIGMA`,
 `MNI152NLin2009cAsym`).
+
+### 3.1 Identity and vocabulary (0.2)
+
+What a reader groups analyses by — a gallery's sections by modality, a manuscript's
+tables by method — is written by the producer, in words every producer uses:
+
+- **`modality`** is required and is one of `anat` (structural T1w/T2w: volumes,
+  morphometry, VBM / TBM), `dwi`, `func`, `msme` (multi-echo relaxometry: T2, MWF),
+  `mrs`, `asl`, or `multimodal` with `modalities` listing at least two of the others.
+- **`id`** is `<modality>/<analysis_type>/<name>`: the folder's own modality and
+  analysis type, then a name whose parts are lowercase letters, digits, `_`, `.` or
+  `-` (`neurofaune.results.spec.analysis_id(modality, type, name...)` builds one). A
+  reader can sort by the id alone; the id never contradicts the fields.
+- **`measures`** are written by their canonical names in the measure vocabulary,
+  `neurofaune/results/vocab/measures.json` (canonical name → modality, description,
+  aliases: `FICVF` not `NDI`, `CSFF` not `CSWF`, `Cr+PCr` not `tCr`). A measure the
+  vocabulary does not have is allowed and warned about; it is added to the vocabulary,
+  in neurofaune, with a CHANGELOG line, rather than spelled anew by each producer.
+- **Tables name only listed measures**: a contract table's `measure` column holds
+  names from `analysis.json`'s `measures`.
+
+The checker enforces these for folders that declare 0.2 (errors: a missing or unknown
+modality, an id that does not follow the pattern or contradicts the fields, a known
+measure under another spelling, a table measure not listed; warnings: a measure not in
+the vocabulary, a measure of another modality than the analysis's). A 0.1 folder is
+read by 0.1's rules.
 
 ## 4. `provenance.json`
 
@@ -236,7 +270,9 @@ neurofaune results check <analysis folder or results root> [--json]
 
 checks every analysis folder it finds: the JSON files against the schemas, every
 listed file present and inside the folder, every table against its dictionary, the
-standard terms and their qualifiers, and the contract (§6). Exit status 0 when every
+standard terms and their qualifiers, the contract (§6), and — for folders that declare
+0.2 — identity and vocabulary (§3.1). Each folder is checked by the rules of the
+version it declares. Exit status 0 when every
 folder conforms. The schemas in `neurofaune/results/schemas/` are plain JSON Schema
 (draft 2020-12) and work with any validator; the checker itself needs only the
 standard library, so it can run where neurofaune's imaging dependencies cannot.
@@ -244,6 +280,7 @@ standard library, so it can run where neurofaune's imaging dependencies cannot.
 ## 8. Versioning
 
 `spec_version` is semver. A reader accepts any version with the major version it
-was written for and reports, never guesses, a field it does not know. Producers
-write the version they were built against. Changes are listed in
+was written for — while the major is 0, every minor up to its own (a 0.2 reader reads
+0.1 and 0.2) — and reports, never guesses, a field it does not know. Producers write
+the version they were built against. Changes are listed in
 `neurofaune/results/CHANGELOG.md`.
