@@ -1534,8 +1534,10 @@ def run_functional_preprocessing(
         with open(json_file, 'r') as f:
             sidecar_meta = json.load(f)
             tr = sidecar_meta.get('RepetitionTime', tr)
-            n_shots = sidecar_meta.get('NumberOfShots', 1)
-            tr_per_shot = sidecar_meta.get('RepetitionTimePerShot', None)
+            # neurofaune's names first, then the BIDS ones (NumberShots, RepetitionTimeExcitation)
+            n_shots = sidecar_meta.get('NumberOfShots', sidecar_meta.get('NumberShots', 1))
+            tr_per_shot = sidecar_meta.get('RepetitionTimePerShot',
+                                           sidecar_meta.get('RepetitionTimeExcitation', None))
             # Sanity check: if per-shot TR is available, verify effective TR
             if tr_per_shot is not None and n_shots > 1:
                 expected_tr = n_shots * tr_per_shot

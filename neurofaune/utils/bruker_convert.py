@@ -130,6 +130,64 @@ def classify_scan(scan_dir: Path) -> Optional[Dict[str, str]]:
 
 
 
+def _resolve_repetition_time(method: Dict[str, any]) -> Dict[str, any]:
+    """Resolve BIDS ``RepetitionTime`` (seconds) from a parsed Bruker ``method``
+    dict (brukerapi ``{key: {'value': ...}}``).
+
+    BIDS ``RepetitionTime`` is the time from the start of one volume to the
+    start of the next. Bruker's ``PVM_RepetitionTime`` is the time per
+    excitation. They agree for single-shot sequences, but a segmented
+    (multi-shot) EPI needs ``PVM_EpiNShots`` excitations per volume, each
+    repeated ``PVM_NAverages`` times, so for any EPI method (one that carries
+    ``PVM_EpiNShots``) the volume TR is per-shot TR x shots x averages -- for
+    any number of shots. Non-EPI sequences (RARE, FLASH, MSME, ...) keep
+    ``PVM_RepetitionTime`` as their TR.
+
+    For segmented EPI the per-excitation time is also written, as BIDS
+    ``RepetitionTimeExcitation`` and ``NumberShots`` and as the
+    ``RepetitionTimePerShot`` / ``NumberOfShots`` fields that neurofaune's
+    functional workflow cross-checks. When ``PVM_ScanTime`` and the number of
+    acquired volumes (``PVM_NRepetitions`` x ``PVM_DwNDiffExp`` where present)
+    are known, the volume TR is checked against scan time / volumes and a
+    mismatch is logged (the computed TR is still written). Returns {} if
+    there is no ``PVM_RepetitionTime``.
+    """
+    def _val(key):
+        entry = method.get(key)
+        v = entry.get('value') if isinstance(entry, dict) else None
+        return v[0] if isinstance(v, (list, tuple)) and len(v) == 1 else v
+
+    def _int(key, default=1):
+        try:
+            return int(_val(key))
+        except (TypeError, ValueError):
+            return default
+
+    tr_ms = _val('PVM_RepetitionTime')
+    if tr_ms is None:
+        return {}
+    tr_shot = float(tr_ms) / 1000.0
+    if 'PVM_EpiNShots' not in method:
+        return {'RepetitionTime': tr_shot}
+
+    shots, averages = max(_int('PVM_EpiNShots'), 1), max(_int('PVM_NAverages'), 1)
+    tr_volume = tr_shot * shots * averages
+    out: Dict[str, any] = {'RepetitionTime': tr_volume}
+    if shots > 1:
+        out.update({'NumberShots': shots, 'RepetitionTimeExcitation': tr_shot,
+                    'NumberOfShots': shots, 'RepetitionTimePerShot': tr_shot})
+
+    scan_ms = _val('PVM_ScanTime')
+    n_volumes = _int('PVM_NRepetitions') * (_int('PVM_DwNDiffExp') if 'PVM_DwNDiffExp' in method else 1)
+    if scan_ms is not None and n_volumes > 0:
+        implied = float(scan_ms) / 1000.0 / n_volumes
+        if abs(implied - tr_volume) > 1e-3 * max(tr_volume, 1.0):
+            logger.warning(
+                "RepetitionTime %.4f s (per-shot %.4f s x %d shots x %d averages) disagrees with "
+                "PVM_ScanTime / volumes = %.4f s", tr_volume, tr_shot, shots, averages, implied)
+    return out
+
+
 def _resolve_echo_time(method: Dict[str, any],
                        echo_index: Optional[int] = None) -> Dict[str, any]:
     """Resolve BIDS ``EchoTime`` (seconds), and ``EchoNumber`` for multi-echo,
@@ -239,9 +297,9 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
             if protocol_name:
                 metadata['ProtocolName'] = protocol_name
 
-        # Common timing parameters
-        if 'PVM_RepetitionTime' in method:
-            metadata['RepetitionTime'] = float(method['PVM_RepetitionTime']['value']) / 1000.0  # Convert ms to s
+        # Timing: the volume TR (segmented EPI: per-shot TR x shots x averages; see
+        # _resolve_repetition_time), plus the per-excitation fields for multi-shot EPI.
+        metadata.update(_resolve_repetition_time(method))
 
         # Echo time, incl. per-echo TEs for multi-echo (see _resolve_echo_time).
         metadata.update(_resolve_echo_time(method, echo_index))
