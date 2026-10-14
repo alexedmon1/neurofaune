@@ -130,6 +130,92 @@ def classify_scan(scan_dir: Path) -> Optional[Dict[str, str]]:
 
 
 
+def _resolve_repetition_time(method: Dict[str, any]) -> Dict[str, any]:
+    """Resolve BIDS ``RepetitionTime`` (seconds) from a parsed Bruker ``method``
+    dict (brukerapi ``{key: {'value': ...}}``).
+
+    BIDS ``RepetitionTime`` is the time from the start of one volume to the
+    start of the next. Bruker's ``PVM_RepetitionTime`` is the time per
+    excitation. They agree for single-shot sequences, but a segmented
+    (multi-shot) EPI needs ``PVM_EpiNShots`` excitations per volume, each
+    repeated ``PVM_NAverages`` times, so for any EPI method (one that carries
+    ``PVM_EpiNShots``) the volume TR is per-shot TR x shots x averages -- for
+    any number of shots. Non-EPI sequences (RARE, FLASH, MSME, ...) keep
+    ``PVM_RepetitionTime`` as their TR.
+
+    For segmented EPI the per-excitation time is also written, as BIDS
+    ``RepetitionTimeExcitation`` and ``NumberShots`` and as the
+    ``RepetitionTimePerShot`` / ``NumberOfShots`` fields that neurofaune's
+    functional workflow cross-checks. When ``PVM_ScanTime`` and the number of
+    acquired volumes (``PVM_NRepetitions`` x ``PVM_DwNDiffExp`` where present)
+    are known, the volume TR is checked against scan time / volumes and a
+    mismatch is logged (the computed TR is still written). Returns {} if
+    there is no ``PVM_RepetitionTime``.
+    """
+    def _val(key):
+        entry = method.get(key)
+        v = entry.get('value') if isinstance(entry, dict) else None
+        return v[0] if isinstance(v, (list, tuple)) and len(v) == 1 else v
+
+    def _int(key, default=1):
+        try:
+            return int(_val(key))
+        except (TypeError, ValueError):
+            return default
+
+    tr_ms = _val('PVM_RepetitionTime')
+    if tr_ms is None:
+        return {}
+    tr_shot = float(tr_ms) / 1000.0
+    if 'PVM_EpiNShots' not in method:
+        return {'RepetitionTime': tr_shot}
+
+    shots, averages = max(_int('PVM_EpiNShots'), 1), max(_int('PVM_NAverages'), 1)
+    tr_volume = tr_shot * shots * averages
+    out: Dict[str, any] = {'RepetitionTime': tr_volume}
+    if shots > 1:
+        out.update({'NumberShots': shots, 'RepetitionTimeExcitation': tr_shot,
+                    'NumberOfShots': shots, 'RepetitionTimePerShot': tr_shot})
+
+    scan_ms = _val('PVM_ScanTime')
+    n_volumes = _int('PVM_NRepetitions') * (_int('PVM_DwNDiffExp') if 'PVM_DwNDiffExp' in method else 1)
+    if scan_ms is not None and n_volumes > 0:
+        implied = float(scan_ms) / 1000.0 / n_volumes
+        if abs(implied - tr_volume) > 1e-3 * max(tr_volume, 1.0):
+            logger.warning(
+                "RepetitionTime %.4f s (per-shot %.4f s x %d shots x %d averages) disagrees with "
+                "PVM_ScanTime / volumes = %.4f s", tr_volume, tr_shot, shots, averages, implied)
+    return out
+
+
+def _gradient_arrays(bval, bvec) -> Tuple[np.ndarray, np.ndarray]:
+    """b-values as a 1-D array and gradient vectors as an (N, 3) array, whatever
+    shape brukerapi returns -- a single-volume scan gives a scalar b-value and a
+    single 3-vector; a flat vector of 3N values becomes (N, 3)."""
+    bvals = np.atleast_1d(np.asarray(bval, dtype=float)).ravel()
+    bvecs = np.asarray(bvec, dtype=float)
+    if bvecs.ndim <= 1:
+        flat = np.atleast_1d(bvecs).ravel()
+        bvecs = flat.reshape(-1, 3) if flat.size % 3 == 0 else flat.reshape(1, -1)
+    return bvals, bvecs
+
+
+def _dwi_fields(method: Dict[str, any]) -> Dict[str, any]:
+    """``MaxBValue``, ``NumberOfVolumes`` and ``NumberOfDirections`` from a parsed
+    Bruker ``method`` dict, for any number of diffusion volumes (one included)."""
+    out: Dict[str, any] = {}
+    bval = method.get('PVM_DwEffBval', {}).get('value') if isinstance(method.get('PVM_DwEffBval'), dict) else None
+    bvec = method.get('PVM_DwGradVec', {}).get('value') if isinstance(method.get('PVM_DwGradVec'), dict) else None
+    if bval is not None:
+        bvals, _ = _gradient_arrays(bval, bvec if bvec is not None else [0.0, 0.0, 0.0])
+        out['MaxBValue'] = float(np.max(bvals))
+        out['NumberOfVolumes'] = int(bvals.size)
+    if bvec is not None:
+        _, bvecs = _gradient_arrays(bval if bval is not None else 0.0, bvec)
+        out['NumberOfDirections'] = int(bvecs.shape[0])
+    return out
+
+
 def _resolve_echo_time(method: Dict[str, any],
                        echo_index: Optional[int] = None) -> Dict[str, any]:
     """Resolve BIDS ``EchoTime`` (seconds), and ``EchoNumber`` for multi-echo,
@@ -239,9 +325,9 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
             if protocol_name:
                 metadata['ProtocolName'] = protocol_name
 
-        # Common timing parameters
-        if 'PVM_RepetitionTime' in method:
-            metadata['RepetitionTime'] = float(method['PVM_RepetitionTime']['value']) / 1000.0  # Convert ms to s
+        # Timing: the volume TR (segmented EPI: per-shot TR x shots x averages; see
+        # _resolve_repetition_time), plus the per-excitation fields for multi-shot EPI.
+        metadata.update(_resolve_repetition_time(method))
 
         # Echo time, incl. per-echo TEs for multi-echo (see _resolve_echo_time).
         metadata.update(_resolve_echo_time(method, echo_index))
@@ -267,15 +353,8 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
 
         # Modality-specific fields
         if modality == 'dwi':
-            # Diffusion parameters
-            if 'PVM_DwEffBval' in method:
-                bvals = method['PVM_DwEffBval']['value']
-                metadata['MaxBValue'] = float(np.max(bvals))
-                metadata['NumberOfVolumes'] = len(bvals)
-
-            if 'PVM_DwGradVec' in method:
-                bvecs = np.array(method['PVM_DwGradVec']['value'])
-                metadata['NumberOfDirections'] = bvecs.shape[0] if bvecs.ndim > 1 else 1
+            # Diffusion parameters (a single-volume scan stores scalars; see _dwi_fields)
+            metadata.update(_dwi_fields(method))
 
         elif modality == 'func':
             # Functional MRI parameters
@@ -342,10 +421,7 @@ def extract_bvec_bval(scan_dir: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]
         method = dataset.parameters['method'].to_dict()
 
         # Extract b-values and gradient vectors
-        bval = method['PVM_DwEffBval']['value']
-        bvec = method['PVM_DwGradVec']['value']
-
-        return np.array(bval), np.array(bvec)
+        return _gradient_arrays(method['PVM_DwEffBval']['value'], method['PVM_DwGradVec']['value'])
 
     except (KeyError, Exception) as e:
         logger.debug(f"Could not extract b-values/vectors from {scan_dir}: {e}")
