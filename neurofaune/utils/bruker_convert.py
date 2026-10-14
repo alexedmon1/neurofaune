@@ -188,6 +188,34 @@ def _resolve_repetition_time(method: Dict[str, any]) -> Dict[str, any]:
     return out
 
 
+def _gradient_arrays(bval, bvec) -> Tuple[np.ndarray, np.ndarray]:
+    """b-values as a 1-D array and gradient vectors as an (N, 3) array, whatever
+    shape brukerapi returns -- a single-volume scan gives a scalar b-value and a
+    single 3-vector; a flat vector of 3N values becomes (N, 3)."""
+    bvals = np.atleast_1d(np.asarray(bval, dtype=float)).ravel()
+    bvecs = np.asarray(bvec, dtype=float)
+    if bvecs.ndim <= 1:
+        flat = np.atleast_1d(bvecs).ravel()
+        bvecs = flat.reshape(-1, 3) if flat.size % 3 == 0 else flat.reshape(1, -1)
+    return bvals, bvecs
+
+
+def _dwi_fields(method: Dict[str, any]) -> Dict[str, any]:
+    """``MaxBValue``, ``NumberOfVolumes`` and ``NumberOfDirections`` from a parsed
+    Bruker ``method`` dict, for any number of diffusion volumes (one included)."""
+    out: Dict[str, any] = {}
+    bval = method.get('PVM_DwEffBval', {}).get('value') if isinstance(method.get('PVM_DwEffBval'), dict) else None
+    bvec = method.get('PVM_DwGradVec', {}).get('value') if isinstance(method.get('PVM_DwGradVec'), dict) else None
+    if bval is not None:
+        bvals, _ = _gradient_arrays(bval, bvec if bvec is not None else [0.0, 0.0, 0.0])
+        out['MaxBValue'] = float(np.max(bvals))
+        out['NumberOfVolumes'] = int(bvals.size)
+    if bvec is not None:
+        _, bvecs = _gradient_arrays(bval if bval is not None else 0.0, bvec)
+        out['NumberOfDirections'] = int(bvecs.shape[0])
+    return out
+
+
 def _resolve_echo_time(method: Dict[str, any],
                        echo_index: Optional[int] = None) -> Dict[str, any]:
     """Resolve BIDS ``EchoTime`` (seconds), and ``EchoNumber`` for multi-echo,
@@ -325,15 +353,8 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
 
         # Modality-specific fields
         if modality == 'dwi':
-            # Diffusion parameters
-            if 'PVM_DwEffBval' in method:
-                bvals = method['PVM_DwEffBval']['value']
-                metadata['MaxBValue'] = float(np.max(bvals))
-                metadata['NumberOfVolumes'] = len(bvals)
-
-            if 'PVM_DwGradVec' in method:
-                bvecs = np.array(method['PVM_DwGradVec']['value'])
-                metadata['NumberOfDirections'] = bvecs.shape[0] if bvecs.ndim > 1 else 1
+            # Diffusion parameters (a single-volume scan stores scalars; see _dwi_fields)
+            metadata.update(_dwi_fields(method))
 
         elif modality == 'func':
             # Functional MRI parameters
@@ -400,10 +421,7 @@ def extract_bvec_bval(scan_dir: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]
         method = dataset.parameters['method'].to_dict()
 
         # Extract b-values and gradient vectors
-        bval = method['PVM_DwEffBval']['value']
-        bvec = method['PVM_DwGradVec']['value']
-
-        return np.array(bval), np.array(bvec)
+        return _gradient_arrays(method['PVM_DwEffBval']['value'], method['PVM_DwGradVec']['value'])
 
     except (KeyError, Exception) as e:
         logger.debug(f"Could not extract b-values/vectors from {scan_dir}: {e}")

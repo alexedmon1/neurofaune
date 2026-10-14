@@ -72,3 +72,35 @@ def test_scalar_values_in_lists():
     # brukerapi sometimes returns single values as one-element lists
     out = _resolve_repetition_time({"PVM_RepetitionTime": {"value": [1140]}, "PVM_EpiNShots": {"value": [2]}})
     assert out["RepetitionTime"] == pytest.approx(2.28)
+
+
+# --- single-volume DWI: scalar b-value, single 3-vector (was "float has no len()") ---------------------
+import numpy as np  # noqa: E402
+
+from neurofaune.utils.bruker_convert import _dwi_fields, _gradient_arrays  # noqa: E402
+
+
+def test_dwi_fields_single_volume_scalar_bval():
+    out = _dwi_fields(_m(PVM_DwEffBval=32.0, PVM_DwGradVec=[0.0, 0.0, 0.0]))
+    assert out == {"MaxBValue": 32.0, "NumberOfVolumes": 1, "NumberOfDirections": 1}
+
+
+def test_dwi_fields_multi_volume_unchanged():
+    bvals = [0.0] * 5 + [1000.0] * 30 + [2000.0] * 30 + [3000.0] * 30
+    bvecs = [[1.0, 0.0, 0.0]] * 95
+    out = _dwi_fields(_m(PVM_DwEffBval=bvals, PVM_DwGradVec=bvecs))
+    assert out == {"MaxBValue": 3000.0, "NumberOfVolumes": 95, "NumberOfDirections": 95}
+
+
+def test_dwi_fields_partial():
+    assert _dwi_fields(_m(PVM_DwEffBval=[0.0, 1000.0])) == {"MaxBValue": 1000.0, "NumberOfVolumes": 2}
+    assert _dwi_fields(_m(PVM_EchoTime=20)) == {}
+
+
+def test_gradient_arrays_shapes():
+    b, v = _gradient_arrays(32.0, [0.0, 0.0, 1.0])
+    assert b.shape == (1,) and v.shape == (1, 3)
+    b, v = _gradient_arrays([0.0, 1000.0], [[0, 0, 1], [1, 0, 0]])
+    assert b.shape == (2,) and v.shape == (2, 3)
+    b, v = _gradient_arrays([0.0, 1000.0], [0, 0, 1, 1, 0, 0])        # flattened 3N
+    assert v.shape == (2, 3) and np.allclose(v[1], [1, 0, 0])
