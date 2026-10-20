@@ -1,0 +1,64 @@
+# Species profile: mouse
+#
+# Overrides the rat-tuned values in configs/default.yaml that depend on brain
+# size or on the reference atlas. Merge order:
+#   configs/default.yaml < configs/species/mouse.yaml < study config
+#
+# Scale: 10x, the same as rat and as the Antwerp template's inflated headers
+# (decided 2026-10; fall back to 20x only if FSL/ANTs misbehave at mouse size).
+# A mouse brain is ~0.45-0.55 cm3 against ~2 cm3 for rat, about half the
+# linear size, so length-like parameters below are roughly halved and
+# volume-like ones divided by ~4. They are STARTING values, set from that
+# scaling and not yet validated on a mouse cohort -- check them against the QC
+# output before trusting them.
+
+study:
+  species: "mouse"
+  strain: "C57BL/6"
+
+bids:
+  voxel_scale: 10.0
+  # Mouse protocols mix slice orientations within a session (sagittal 3D RARE,
+  # axial and coronal EPI), so write the real scanner geometry in animal RAS.
+  affine: "scanner"
+
+# Reference space: the Antwerp C57BL/6 MRI template, shared with the EEG
+# source-localization atlas, so MRI and EEG use the same parcels (allen26 /
+# allen32). CCFv3 labels are re-derived into it through DSURQE.
+# The study-space files are not built yet: they stay null so anything that
+# needs them fails loudly instead of silently reading SIGMA file names.
+atlas:
+  name: "Antwerp"
+  base_path: "/mnt/arborea/atlases/Antwerp"
+  study_space:
+    base_path: "${paths.study_root}/atlas/Antwerp_study_space"
+    template: null
+    template_masked: null
+    brain_mask: null
+    gm_prob: null
+    wm_prob: null
+    csf_prob: null
+    parcellation: null
+
+ants:
+  n4:
+    bspline_fitting_distance: 25   # rat 50 (scaled mm); half the brain length
+
+anatomical:
+  skull_strip:
+    refine:
+      qc:
+        volume_mm3: [400, 650]     # plausible mouse brain incl. surface CSF (true mm3); Antwerp mask 564
+        non_brain_mm3: 100         # rat 400
+    # bet4animal sweep (used when skull_strip.method = 'bet4animal').
+    bet4animal:
+      radii: [60]                  # rat 125 (scaled mm)
+      cov_range: [3.0, 15.0]       # brain as % of FOV; mouse protocols have proportionally larger FOVs
+
+functional:
+  smoothing:
+    fwhm: 3                        # rat 6 (scaled mm)
+
+tractography:
+  connectome:
+    assignment_radius_mm: 0.2      # rat 0.4 (real mm)

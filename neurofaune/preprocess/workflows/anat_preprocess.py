@@ -1282,6 +1282,12 @@ def run_anatomical_preprocessing(
     ss_atropos_conv = get_config_value(config, 'anatomical.skull_strip.atropos_convergence', default=0.0)
     ss_mrf_smooth = get_config_value(config, 'anatomical.skull_strip.mrf_smoothing_factor', default=0.1)
     ss_mrf_radius = get_config_value(config, 'anatomical.skull_strip.mrf_radius', default=[1, 1, 1])
+    # bet4animal sweep overrides (radii, zscales, fs, cov_range, ...). The
+    # built-in defaults are sized for a rat brain; species profiles set these.
+    ss_bet4animal = get_config_value(config, 'anatomical.skull_strip.bet4animal', default=None)
+    if ss_bet4animal:
+        ss_bet4animal = {k: tuple(v) if isinstance(v, list) else v
+                         for k, v in ss_bet4animal.items()}
 
     brain_file, mask_file, skull_strip_info = skull_strip(
         input_file=t2w_n4_file,
@@ -1295,6 +1301,7 @@ def run_anatomical_preprocessing(
         atropos_convergence=ss_atropos_conv,
         mrf_smoothing_factor=ss_mrf_smooth,
         mrf_radius=ss_mrf_radius,
+        bet4animal_params=ss_bet4animal,
     )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")

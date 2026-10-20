@@ -239,7 +239,8 @@ def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:
 
     This is the main entry point for loading configs. It:
     1. Loads the study config
-    2. Loads and merges default config
+    2. Merges default config < species profile (``study.species``) < study
+       config; see :mod:`neurofaune.species`
     3. Substitutes variables
     4. Validates the result
 
@@ -273,13 +274,15 @@ def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:
         package_dir = Path(__file__).parent.parent
         default_path = package_dir / 'configs' / 'default.yaml'
 
+    from neurofaune.species import apply_species_profile
+
     if default_path.exists():
         default_config = load_yaml(default_path)
-        # Merge: defaults + study overrides
-        config = merge_configs(default_config, study_config)
+        # Merge: defaults < species profile < study overrides
+        config = apply_species_profile(default_config, study_config)
     else:
-        # No default config found - use study config only
-        config = study_config
+        # No default config found - species profile + study config only
+        config = apply_species_profile({}, study_config)
 
     # Substitute variables
     config = substitute_variables(config)

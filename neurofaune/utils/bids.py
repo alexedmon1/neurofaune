@@ -53,6 +53,15 @@ DEFAULT_SEQUENCE_MAP: Dict[str, Tuple[str, str]] = {
 # Modalities discovered but not written as NIfTI (handled elsewhere).
 DEFAULT_SKIP_MODALITIES = {"spec"}
 
+# How the NIfTI affine is written (``bids.affine``):
+#   identity -- scaled identity (voxel sizes only). Every scan lives in its own
+#               voxel frame; the study-space atlas is rotated to match it. Right
+#               for single-orientation protocols (the axial rat studies).
+#   scanner  -- the scan's real geometry from visu_pars, rotated into animal
+#               RAS and scaled by voxel_scale (neurofaune.utils.bruker_geometry).
+#               Needed when a session mixes slice orientations.
+AFFINE_MODES = ("identity", "scanner")
+
 # How a frame-group axis is treated when assembling a modality volume.
 _CYCLE_NAMES = {"cycle", "movie", "repetition", "rep"}
 
@@ -194,7 +203,8 @@ class BidsConfig:
                  session_relabel: Optional[Dict[str, str]] = None,
                  sequence_map: Optional[Dict[str, Tuple[str, str]]] = None,
                  skip_modalities: Optional[set] = None,
-                 voxel_scale: float = 10.0):
+                 voxel_scale: float = 10.0,
+                 affine: str = "identity"):
         self.raw_root = Path(raw_root)
         self.bids_root = Path(bids_root)
         self.layout = layout
@@ -203,6 +213,9 @@ class BidsConfig:
         self.sequence_map = {**DEFAULT_SEQUENCE_MAP, **(sequence_map or {})}
         self.skip_modalities = set(skip_modalities) if skip_modalities is not None else set(DEFAULT_SKIP_MODALITIES)
         self.voxel_scale = voxel_scale
+        if affine not in AFFINE_MODES:
+            raise ValueError(f"bids.affine must be one of {AFFINE_MODES}, got {affine!r}")
+        self.affine = affine
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "BidsConfig":
@@ -219,6 +232,7 @@ class BidsConfig:
             sequence_map=seqmap or None,
             skip_modalities=set(b["skip_modalities"]) if "skip_modalities" in b else None,
             voxel_scale=float(b.get("voxel_scale", 10.0)),
+            affine=b.get("affine", "identity"),
         )
 
 
@@ -278,7 +292,8 @@ def _numbered_scans(session_dir: Path) -> List[Path]:
 
 
 def convert_scan(scan_dir: Path, modality: str, suffix: str, base_stem: str,
-                 out_dir: Path, voxel_scale: float = 10.0) -> List[Path]:
+                 out_dir: Path, voxel_scale: float = 10.0,
+                 affine: str = "identity") -> List[Path]:
     """Convert one Bruker scan into one-or-more analysis-ready BIDS NIfTIs.
 
     Returns the list of written .nii.gz paths.
@@ -310,10 +325,29 @@ def convert_scan(scan_dir: Path, modality: str, suffix: str, base_stem: str,
     except Exception:  # noqa: BLE001
         pass
 
+    scanner_affine = None
+    if affine == "scanner":
+        from neurofaune.utils.bruker_geometry import anatomical_affine
+        try:
+            scanner_affine = anatomical_affine(scan_dir, voxel_scale)
+        except ValueError as e:
+            # e.g. a tri-plane localizer: several slice packages in different
+            # orientations, which no single affine describes.
+            logger.warning("no single affine for %s, not written: %s", scan_dir.name, e)
+            return []
+
     import nibabel as nib
     for entity, vol in volumes.items():
         vol = np.squeeze(vol)
         out_file = out_dir / (bids_filename(base_stem, entity, suffix) + ".nii.gz")
+        if scanner_affine is not None:
+            # Voxel sizes come from the affine itself; no header patching.
+            img = nib.Nifti1Image(np.asarray(vol), scanner_affine)
+            img.set_qform(scanner_affine, code=1)
+            img.set_sform(scanner_affine, code=1)
+            nib.save(img, str(out_file))
+            written.append(out_file)
+            continue
         nib.save(nib.Nifti1Image(np.asarray(vol), np.eye(4)), str(out_file))
         if voxel is not None:
             try:
@@ -412,7 +446,8 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
             base_stem = f"sub-{sub}_ses-{ses}_run-{num}"
             out_dir = ses_dir / modality
             if convert:
-                files = convert_scan(sd, modality, suffix, base_stem, out_dir, cfg.voxel_scale)
+                files = convert_scan(sd, modality, suffix, base_stem, out_dir,
+                                     cfg.voxel_scale, cfg.affine)
                 status = "written" if files else "failed"
                 for f in files:
                     # Per-echo sidecar: pass the echo index so multi-echo files

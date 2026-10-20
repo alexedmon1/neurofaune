@@ -428,7 +428,8 @@ def extract_bvec_bval(scan_dir: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]
         return None
 
 
-def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
+def convert_bruker_to_nifti(scan_dir: Path, output_file: Path,
+                            voxel_scale: float = 10.0) -> bool:
     """
     Convert Bruker scan to NIfTI using brukerapi.
 
@@ -440,6 +441,9 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
         Bruker scan directory (containing pdata/1/2dseq)
     output_file : Path
         Output NIfTI file path
+    voxel_scale : float
+        Voxel-size inflation for FSL/ANTs (the species profile's
+        ``bids.voxel_scale``; 10 for rat and mouse)
 
     Returns
     -------
@@ -480,8 +484,8 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
             try:
                 params = parse_bruker_method(method_file)
                 if 'voxel_size' in params:
-                    logger.debug(f"Fixing voxel sizes: {params['voxel_size']} → scaled 10x")
-                    update_nifti_header(output_file, params['voxel_size'], scale_factor=10.0)
+                    logger.debug(f"Fixing voxel sizes: {params['voxel_size']} → scaled {voxel_scale:g}x")
+                    update_nifti_header(output_file, params['voxel_size'], scale_factor=voxel_scale)
                 else:
                     logger.warning(f"Could not extract voxel size from {method_file}")
             except Exception as e:

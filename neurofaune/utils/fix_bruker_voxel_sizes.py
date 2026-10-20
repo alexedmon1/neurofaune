@@ -315,7 +315,8 @@ def find_bruker_scan_dir(
 def fix_bids_nifti_headers(
     bids_root: Path,
     bruker_root: Path,
-    dry_run: bool = False
+    dry_run: bool = False,
+    voxel_scale: float = 10.0,
 ) -> Dict[str, int]:
     """
     Fix voxel sizes for all NIfTI files in BIDS dataset.
@@ -328,6 +329,8 @@ def fix_bids_nifti_headers(
         Root directory of Bruker data
     dry_run : bool
         If True, only report what would be done
+    voxel_scale : float
+        Voxel-size inflation (the species profile's ``bids.voxel_scale``)
 
     Returns
     -------
@@ -413,16 +416,16 @@ def fix_bids_nifti_headers(
                 continue
 
             voxel_size = params['voxel_size']
-            scaled_voxel_size = tuple(v * 10.0 for v in voxel_size)
+            scaled_voxel_size = tuple(v * voxel_scale for v in voxel_size)
 
             # Update NIfTI header and JSON sidecar
             if not dry_run:
-                update_nifti_header(nifti_file, voxel_size)
-                update_json_sidecar(json_file, voxel_size)
+                update_nifti_header(nifti_file, voxel_size, scale_factor=voxel_scale)
+                update_json_sidecar(json_file, voxel_size, scale_factor=voxel_scale)
                 stats['updated'] += 1
             else:
                 print(f"  [DRY RUN] Bruker voxel sizes: {voxel_size}")
-                print(f"  [DRY RUN] Would update to (10x scaled): {scaled_voxel_size}")
+                print(f"  [DRY RUN] Would update to ({voxel_scale:g}x scaled): {scaled_voxel_size}")
                 print(f"  [DRY RUN] Would add PixelSpacing: [{scaled_voxel_size[0]}, {scaled_voxel_size[1]}]")
                 print(f"  [DRY RUN] Would update SliceThickness: {scaled_voxel_size[2]}")
                 stats['updated'] += 1
