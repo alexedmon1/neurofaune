@@ -17,7 +17,7 @@
                             "effect_selected", "estimate", "mean_a", "mean_b", "mean", "stat",
                             "p_value", "significant", "n_significant", "frac_significant", "n_voxels",
                             "volume_mm3", "peak_xyz_mm", "peak_region", "regions", "crosses_midline",
-                            "subgroup_effect", "subgroup_n"]},
+                            "subgroup_effect", "subgroup_n", "se", "mde", "mde_percent", "mde_note"]},
       "EffectMeasure": {"type": "string", "minLength": 1},
       "EffectScope": {"type": "string"},
       "CILevel": {"type": "number", "minimum": 0},
@@ -26,6 +26,7 @@
       "PKind": {"enum": ["fwe", "fdr", "perm", "uncorrected", "none"]},
       "PScope": {"type": "string"},
       "Alpha": {"type": "number", "minimum": 0},
+      "Power": {"type": "number", "minimum": 0},
       "Space": {"type": "string", "minLength": 1},
       "Subgroup": {"type": "string", "minLength": 1}
     }

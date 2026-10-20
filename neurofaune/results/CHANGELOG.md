@@ -39,3 +39,31 @@ they are without matching on names:
 The checker reads 0.1 and 0.2, each folder by the rules of the version it declares.
 neurofaune's TBSS and randomise writers now write 0.2 ids (`dwi/tbss/<name>`,
 `anat/vbm/<name>`, `func/voxelwise/<name>`).
+
+
+## 0.3.0 — 2026-10-20 (draft)
+
+The minimum detectable effect (RESULTS_SPEC.md §5.1): beside each test, the smallest
+difference its design could have detected, so a finding's size -- and a null -- is read
+against what the study could see. Asked for by DUET (OPEN.md #151); the same names and
+formula are written by neurofaune, source-analytics and neurovrai.
+
+- standard terms `se` (standard error of the estimate, from the fitted model),
+  `mde` (`(t(1 - Alpha/2, df) + t(Power, df)) * se`, normal quantiles without a finite
+  df; requires the new `Power` qualifier and `Alpha`), `mde_percent` (percent of the
+  reference group's mean) and `mde_note` (why an `mde` is not given, starting
+  `not computed: `);
+- the producers write power 0.80 and two-sided alpha 0.05, nominal (no
+  multiple-comparison correction);
+- the checker, for folders that declare 0.3: an `mde` is positive and its `Power` /
+  `Alpha` lie in (0, 1); a row without an `mde` carries an `mde_note`, and a row with one
+  leaves it empty; `mde_percent` is positive and only beside an `mde`; `se` is >= 0; a
+  tests table with neither `mde` nor `mde_note` is warned about. A folder declaring an
+  earlier version may not use the 0.3 terms.
+
+The checker reads 0.1, 0.2 and 0.3, each folder by the rules of the version it declares.
+neurofaune's randomise read-out (TBSS, VBM, voxelwise fMRI) writes 0.3: `whole_se`,
+`whole_mde`, `whole_mde_percent`, `whole_mde_note` on tests rows (the test on each
+subject's whole-mask mean), `mde_note` "not computed: cluster selected by the test" on
+cluster rows, and a caveat that the voxelwise maps' MDE is not computed (randomise
+corrects them).
