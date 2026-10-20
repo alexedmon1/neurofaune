@@ -2,7 +2,8 @@
 
 Answers "how far did each region move?" when a parcellation is rebuilt, e.g.
 CCFv3 labels re-warped into Antwerp space through a T2w bridge instead of a
-direct Nissl-to-MRI warp. Distances are in world mm (RAS) from the affine.
+direct registration of the CCFv3 autofluorescence template onto the MRI.
+Distances are in world mm (RAS) from the affine.
 """
 
 from typing import Dict, List, Optional
