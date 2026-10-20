@@ -50,3 +50,15 @@ def test_singleecho_uses_pvm_echotime():
 
 def test_no_echo_info_returns_empty():
     assert _resolve_echo_time(_method(), None) == {}
+
+
+def test_rare_uses_effective_te_not_the_echo_spacing():
+    # RARE: PVM_EchoTime is the echo spacing; EffectiveTE is the contrast TE.
+    m = _method(PVM_EchoTime=8.0, EffectiveTE=[40.0])
+    assert _resolve_echo_time(m, None) == {"EchoTime": pytest.approx(0.040)}
+
+
+def test_epi_uses_method_echo_time_not_pvm_echo_time():
+    # Mouse pilot GE-EPI: EchoTime=8.6 ms, PVM_EchoTime=0.3616 ms (spacing).
+    m = _method(EchoTime=8.6, PVM_EchoTime=0.3616)
+    assert _resolve_echo_time(m, None)["EchoTime"] == pytest.approx(0.0086)

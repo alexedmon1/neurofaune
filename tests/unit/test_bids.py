@@ -37,6 +37,11 @@ def test_frame_group_names():
     assert frame_group_names(None) == []
 
 
+def test_frame_group_names_single_flat_row():
+    # brukerapi returns a lone frame group as one flat row, not a list of rows.
+    assert frame_group_names([13, "<FG_SLICE>", "<>", 0, 2]) == ["slice"]
+
+
 def test_assemble_dwi_averages_cycle():
     """DWI (x,y,slice,diffusion,cycle): cycle axis (the 2 acquisitions) is AVERAGED."""
     X, Y, Z, NDIFF = 4, 5, 3, 7
@@ -115,3 +120,29 @@ def test_sequence_map_defaults_and_override():
 def test_bids_config_from_config_requires_roots():
     with pytest.raises(ValueError):
         BidsConfig.from_config({"bids": {"raw_root": "/x"}})  # no bids_root
+
+
+def test_scan_rules_match_name_and_parameters():
+    from neurofaune.utils.bids import ScanRule, first_matching_rule
+    import numpy as np
+    rules = [
+        ScanRule(where={"PVM_EpiBlipsOff": "Yes"}, skip="epi-reference"),
+        ScanRule(name="^T2star.*RevPE_No", where={"PVM_SPackArrNSlices": 13},
+                 modality="fmap", suffix="epi", entities="acq-geax_dir-fwd"),
+    ]
+    ref = {"PVM_EpiBlipsOff": "Yes", "PVM_SPackArrNSlices": np.array([13.0])}
+    run = {"PVM_EpiBlipsOff": "No", "PVM_SPackArrNSlices": np.array([13.0])}
+    cor = {"PVM_EpiBlipsOff": "No", "PVM_SPackArrNSlices": np.array([9.0])}
+    name = "T2star_FID_EPI_sat_RevPE_No (E14)"
+    assert first_matching_rule(rules, name, ref).skip == "epi-reference"
+    # one-element arrays unwrap and 13.0 == 13
+    assert first_matching_rule(rules, name, run).entities == "acq-geax_dir-fwd"
+    assert first_matching_rule(rules, name, cor) is None
+
+
+def test_scan_rule_validation():
+    from neurofaune.utils.bids import ScanRule
+    with pytest.raises(ValueError, match="'name' and/or 'where'"):
+        ScanRule(modality="func", suffix="bold")
+    with pytest.raises(ValueError, match="'skip' or both"):
+        ScanRule(name="x", modality="func")

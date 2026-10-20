@@ -225,7 +225,11 @@ def _resolve_echo_time(method: Dict[str, any],
     ``EffectiveEchoTime`` array; there ``PVM_EchoTime`` is the echo SPACING
     (~0.29 ms) and must NOT be used as a TE. Prefer the per-echo array and index
     it by ``echo_index`` (0-based) when known; otherwise use the first echo.
-    Falls back to scalar ``PVM_EchoTime`` for single-echo. Returns {} if no TE.
+    Single-echo: ``EffectiveTE`` (RARE -- the effective TE at the k-space
+    centre; ``PVM_EchoTime`` there is the echo spacing) or the method's own
+    ``EchoTime`` (EPI/DtiEpi -- ``PVM_EchoTime`` there is also an echo
+    spacing: 0.36 ms against a real 8.6 ms on the mouse pilot's GE-EPI) win
+    over scalar ``PVM_EchoTime``, which is the last resort. Returns {} if no TE.
     """
     def _val(key):
         entry = method.get(key)
@@ -254,10 +258,13 @@ def _resolve_echo_time(method: Dict[str, any],
         else:
             out['EchoTime'] = te_array[0] / 1000.0
     else:
-        scalar = _val('PVM_EchoTime')
-        if scalar is not None:
+        for key in ('EffectiveTE', 'EchoTime', 'PVM_EchoTime'):
+            scalar = _val(key)
+            if scalar is None:
+                continue
             te = scalar[0] if isinstance(scalar, (list, tuple)) else scalar
             out['EchoTime'] = float(te) / 1000.0
+            break
     return out
 
 
