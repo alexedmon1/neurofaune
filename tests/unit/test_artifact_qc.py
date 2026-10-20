@@ -151,3 +151,22 @@ class TestEdgeShift:
         rows = maps.edge_shift_along_axis(epi, m, axis=1, voxel_mm=0.25, smooth_sigma=0)
         assert rows[0]["start_frac_unresolved"] == pytest.approx(1.0)
         assert np.isnan(rows[0]["start_median_mm"])
+
+
+class TestDipole:
+    def test_fit_recovers_a_synthetic_dipole(self):
+        from neurofaune.preprocess.qc.artifacts.dipole import dipole_field, fit_point_dipole
+        rng = np.random.default_rng(0)
+        X = rng.uniform(-8, 8, size=(4000, 3))
+        X = X[np.linalg.norm(X - [1, -2, 3], axis=1) > 2.5]
+        y = dipole_field(X, [1, -2, 3], 4000.0) + 15 + 2 * X[:, 0] + rng.normal(0, 2, len(X))
+        fit = fit_point_dipole(y, X, starts=np.array([[0, 0, 0], [2, -3, 2]]))
+        assert fit["centre_mm"] == pytest.approx([1, -2, 3], abs=0.1)
+        assert fit["moment_hz_mm3"] == pytest.approx(4000, rel=0.05)
+        assert fit["rms_dipole_hz"] < fit["rms_background_only_hz"]
+
+    def test_r2star_loglinear(self):
+        from neurofaune.preprocess.qc.artifacts.dipole import r2star_loglinear
+        te = np.array([0.008, 0.0202, 0.0324])
+        s = 1000 * np.exp(-40 * te)
+        assert r2star_loglinear(s[None, :], te)[0] == pytest.approx(40)

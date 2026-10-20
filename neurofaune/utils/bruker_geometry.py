@@ -48,6 +48,11 @@ SUBJECT_TO_ANATOMICAL = {
         [0.0, 0.0, 1.0],
         [0.0, -1.0, 0.0],
     ]),
+    # Phantoms (VisuSubjectType "Other") have no anatomy to orient: keep
+    # Bruker's subject frame unchanged so every scan of the session still
+    # shares one frame and overlays. RAS labels on these images are the
+    # scanner's patient-frame labels, not anatomical directions.
+    ("Other", "Head_Supine"): np.eye(3),
 }
 
 

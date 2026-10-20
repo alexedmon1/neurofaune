@@ -81,6 +81,11 @@ class TestSubjectToAnatomical:
         assert rotation @ [0, -1, 0] == pytest.approx([0, 0, 1])
         assert rotation @ [1, 0, 0] == pytest.approx([1, 0, 0])
 
+    def test_phantom_keeps_the_subject_frame(self, tmp_path):
+        d = write_visu(tmp_path / "8", size=(64, 64), extent=(24, 24), orientation=np.eye(3),
+                       positions=[(0, 0, 0)], subject_type="Other")
+        assert subject_to_anatomical(d) == pytest.approx(np.eye(3))
+
     def test_uncalibrated_position_is_refused(self, tmp_path):
         d = write_visu(tmp_path / "9", size=(64, 64), extent=(24, 24), orientation=np.eye(3),
                        positions=[(0, 0, 0)], subject_position="Head_Prone")
