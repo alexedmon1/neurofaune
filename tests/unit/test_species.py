@@ -64,8 +64,11 @@ def test_mouse_profile_overrides_size_dependent_values(tmp_path):
 def test_mouse_atlas_study_space_does_not_inherit_sigma_file_names(tmp_path):
     cfg = load_config(write_study(tmp_path, species="mouse"), validate=False)
     space = cfg["atlas"]["study_space"]
-    assert "SIGMA" not in space["base_path"]
-    assert space["template"] is None and space["parcellation"] is None
+    assert not any("SIGMA" in str(v) for v in space.values())
+    assert space["template"].endswith("Antwerp/scaled10/template_T2w.nii.gz")
+    assert space["parcellation_eeg"].endswith("allen26_labels.nii.gz")
+    # tissue priors are not built for the mouse hub: they stay null, not SIGMA's
+    assert space["gm_prob"] is None
 
 
 def test_study_config_overrides_species_profile(tmp_path):

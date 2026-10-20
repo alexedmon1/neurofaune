@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 187 across 11 stages.
+**Entry points:** 190 across 11 stages.
 
 
 ## analysis
@@ -39,6 +39,9 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `build_antwerp_hub` | `neurofaune.atlas.antwerp` | Build the Antwerp hub atlas package. See the module docstring for outputs. | — |
+| `register_templates` | `neurofaune.atlas.label_transfer` | Rigid -> affine -> (SyN) registration of ``moving`` onto ``fixed``. | — |
+| `warp_labels` | `neurofaune.atlas.label_transfer` | Warp an integer label volume with ``GenericLabel`` (no label mixing at boundaries). | — |
 | `extract_modality_slices` | `neurofaune.atlas.slice_extraction` | Extract slices for a specific modality based on configuration. | — |
 | `extract_slices` | `neurofaune.atlas.slice_extraction` | Extract contiguous slices from a 3D image along specified axis. | — |
 | `build_atlas_extent_mask` | `neurofaune.atlas.tissue_priors` | Binary mask of the labelled brain, for use instead of the brain mask. | — |

@@ -1,0 +1,112 @@
+"""Unit tests for BrainGlobe I/O and the Antwerp hub parcellation rebuild."""
+
+import nibabel as nib
+import numpy as np
+import pytest
+
+from neurofaune.atlas.antwerp import hub_grid, parcellate, scale_header
+from neurofaune.atlas.brainglobe import dice, orientation_affine
+
+
+class TestOrientation:
+    def test_asr_axes_point_posterior_inferior_left(self):
+        a = orientation_affine("asr", (25, 25, 25), (10, 10, 10))
+        assert nib.aff2axcodes(a) == ("P", "I", "L")
+        assert np.linalg.norm(a[:3, :3], axis=0) == pytest.approx([0.025] * 3)
+
+    def test_volume_is_centred(self):
+        a = orientation_affine("asr", (25, 25, 25), (11, 21, 31))
+        centre = a @ np.array([5, 10, 15, 1.0])
+        assert centre[:3] == pytest.approx([0, 0, 0])
+
+    def test_bad_orientation(self):
+        with pytest.raises(ValueError):
+            orientation_affine("aar", (1, 1, 1), (2, 2, 2))
+
+
+def ras_volume(shape=(20, 30, 10), vox=0.1):
+    return np.diag([vox, vox, vox, 1.0])
+
+
+class TestParcellate:
+    def _annotation(self):
+        ann = np.zeros((20, 30, 10), np.uint32)
+        ann[2:18, 5:25, 2:8] = 100           # one bilateral structure
+        ann[2:18, 10:20, 2:4] = 200          # "hippocampus", y 10..19
+        return nib.Nifti1Image(ann, ras_volume())
+
+    def test_hemispheres_split_at_the_centre_of_mass(self):
+        mapping = {"rois": {
+            "0": {"id": 0, "name": "Background"},
+            "1": {"id": 1, "name": "S_L", "hemisphere": "L", "allen_structure_ids": [100]},
+            "2": {"id": 2, "name": "S_R", "hemisphere": "R", "allen_structure_ids": [100]},
+        }}
+        img, m = parcellate(self._annotation(), mapping)
+        d = np.asanyarray(img.dataobj)
+        assert (d[:10] == 1).any() and not (d[:10] == 2).any()   # low x = left in RAS
+        assert (d[10:] == 2).any() and not (d[10:] == 1).any()
+        assert m["hemisphere_split_x_mm"] == pytest.approx(0.95, abs=0.05)
+
+    def test_hippocampus_ant_is_rostral(self):
+        mapping = {"rois": {
+            "7": {"id": 7, "name": "Hippocampus_Ant_L", "hemisphere": "B", "allen_structure_ids": [200]},
+            "8": {"id": 8, "name": "Hippocampus_Post_L", "hemisphere": "B", "allen_structure_ids": [200]},
+        }}
+        img, m = parcellate(self._annotation(), mapping, caudal_hippocampus_fraction=0.3)
+        d = np.asanyarray(img.dataobj)
+        ys_ant = np.nonzero(d == 7)[1]
+        ys_post = np.nonzero(d == 8)[1]
+        assert ys_ant.min() > ys_post.max()                       # Ant = higher y = rostral
+        frac = (d == 8).sum() / ((d == 7).sum() + (d == 8).sum())
+        assert frac == pytest.approx(0.3, abs=0.06)
+        assert "swapped" in m["hippocampus_split"]["naming"]
+
+
+def test_hub_grid_covers_native_fov():
+    native = nib.Nifti1Image(np.zeros((64, 256, 50)), np.diag([0.203, 0.08, 0.2, 1.0]))
+    hub = hub_grid(native, 0.1)
+    assert np.allclose(np.diag(hub.affine)[:3], 0.1)
+    far = hub.affine @ np.r_[np.array(hub.shape) - 1, 1]
+    assert (far[:3] >= np.array([63 * 0.203, 255 * 0.08, 49 * 0.2]) - 1e-6).all()
+
+
+def test_scale_header_inflates_affine_only():
+    img = nib.Nifti1Image(np.ones((2, 2, 2)), np.diag([0.1, 0.1, 0.1, 1.0]))
+    s = scale_header(img, 10.0)
+    assert s.header.get_zooms() == pytest.approx((1.0, 1.0, 1.0))
+    assert np.array_equal(np.asanyarray(s.dataobj), np.ones((2, 2, 2)))
+
+
+def test_dice():
+    a = np.zeros(10, bool); a[:4] = True
+    b = np.zeros(10, bool); b[2:6] = True
+    assert dice(a, b) == pytest.approx(0.5)
+    assert dice(np.zeros(3, bool), np.zeros(3, bool)) is None
+
+
+def test_warp_labels_preserves_ids_beyond_float32(tmp_path):
+    import shutil
+    if shutil.which("antsApplyTransforms") is None:
+        pytest.skip("ANTs not installed")
+    from neurofaune.atlas.label_transfer import warp_labels
+    data = np.zeros((8, 8, 8), np.uint32)
+    data[2:6, 2:6, 2:6] = 614454277          # CCFv3 layer-subdivision ID
+    data[2:6, 2:6, 6:8] = 526157193
+    src = tmp_path / "lab.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), str(src))
+    out = warp_labels(src, src, ["identity"], tmp_path / "out.nii.gz", n_threads=1)
+    got = np.asanyarray(nib.load(str(out)).dataobj)
+    assert set(np.unique(got)) == {0, 614454277, 526157193}
+    assert np.array_equal(got, data)
+
+
+def test_compare_parcellations_reports_shift_in_world_mm():
+    from neurofaune.atlas.compare import compare_parcellations
+    aff = np.diag([0.1, 0.2, 0.1, 1.0])
+    a = np.zeros((20, 20, 20), np.uint16); a[5:10, 5:10, 5:10] = 3
+    b = np.zeros_like(a); b[5:10, 7:12, 5:10] = 3          # moved +2 voxels in y = +0.4 mm rostral
+    rows = compare_parcellations(nib.Nifti1Image(a, aff), nib.Nifti1Image(b, aff), {3: "X"})
+    r = rows[0]
+    assert r["name"] == "X" and r["shift_A_mm"] == pytest.approx(0.4)
+    assert r["shift_R_mm"] == pytest.approx(0) and r["dice"] == pytest.approx(0.6)
+    assert r["mean_boundary_distance_mm"] > 0

@@ -22,23 +22,27 @@ bids:
   # axial and coronal EPI), so write the real scanner geometry in animal RAS.
   affine: "scanner"
 
-# Reference space: the Antwerp C57BL/6 MRI template, shared with the EEG
-# source-localization atlas, so MRI and EEG use the same parcels (allen26 /
-# allen32). CCFv3 labels are re-derived into it through DSURQE.
-# The study-space files are not built yet: they stay null so anything that
-# needs them fails loudly instead of silently reading SIGMA file names.
+# Reference space: the Antwerp C57BL/6 in vivo T2w template, shared with the
+# EEG source-localization atlas, so MRI and EEG use the same parcels (allen26 /
+# allen32 / allen64). CCFv3 labels come through the Perens et al. 2023 T2w
+# template (CCFv3 labels on MRI contrast), built by neurofaune.atlas.antwerp
+# into /mnt/arborea/atlases/Antwerp (README.md there). Mouse sessions use
+# scanner affines, so the atlas needs no per-study reorientation: the
+# "study space" files point straight at the 10x-inflated package.
 atlas:
   name: "Antwerp"
   base_path: "/mnt/arborea/atlases/Antwerp"
   study_space:
-    base_path: "${paths.study_root}/atlas/Antwerp_study_space"
-    template: null
-    template_masked: null
-    brain_mask: null
+    base_path: "${atlas.base_path}/scaled10"
+    template: "${atlas.study_space.base_path}/template_T2w.nii.gz"
+    template_masked: "${atlas.study_space.base_path}/brain.nii.gz"
+    brain_mask: "${atlas.study_space.base_path}/brain_mask.nii.gz"
     gm_prob: null
     wm_prob: null
     csf_prob: null
-    parcellation: null
+    parcellation: "${atlas.study_space.base_path}/allen32_labels.nii.gz"
+    parcellation_fine: "${atlas.study_space.base_path}/ccfv3_annotation.nii.gz"
+    parcellation_eeg: "${atlas.study_space.base_path}/allen26_labels.nii.gz"
 
 ants:
   n4:
