@@ -146,3 +146,11 @@ def test_scan_rule_validation():
         ScanRule(modality="func", suffix="bold")
     with pytest.raises(ValueError, match="'skip' or both"):
         ScanRule(name="x", modality="func")
+
+
+def test_unit_bvecs():
+    from neurofaune.utils.bids import unit_bvecs
+    v = np.array([[0.0, 0.0, 0.0], [0.094, 0.041, 0.479], [0.0, 0.0, 1.0]])
+    u = unit_bvecs(v)
+    assert np.allclose(u[0], 0)
+    assert np.linalg.norm(u[1]) == pytest.approx(1.0) and np.allclose(u[2], [0, 0, 1])

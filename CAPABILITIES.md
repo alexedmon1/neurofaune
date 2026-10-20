@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 193 across 11 stages.
+**Entry points:** 194 across 11 stages.
 
 
 ## analysis
@@ -13,6 +13,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 |---|---|---|---|
 | `compute_falff_map` | `neurofaune.analysis.func.falff` | Compute ALFF and fALFF maps for whole brain using vectorized FFT. | — |
 | `compute_falff_zscore` | `neurofaune.analysis.func.falff` | Standardize ALFF and fALFF maps to z-scores within the brain mask. | — |
+| `register_bold_to_t2w` | `neurofaune.analysis.func.hub_rest` | Rigid (MI) BOLD-mean -> T2w; the EPI partial coverage makes anything looser fragile. | — |
 | `run_dual_regression` | `neurofaune.analysis.func.melodic` | Run FSL dual regression to obtain subject-specific IC spatial maps. | — |
 | `run_group_melodic` | `neurofaune.analysis.func.melodic` | Run FSL MELODIC group ICA on SIGMA-space BOLD timeseries. | — |
 | `build_rsn_mosaic` | `neurofaune.analysis.func.melodic_clean` | Generate a mosaic figure of RSN spatial maps. | — |

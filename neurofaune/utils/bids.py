@@ -451,6 +451,19 @@ def space_entity(source) -> str:
     return f"{m.group(1)}_" if m else ""
 
 
+def unit_bvecs(bvec: np.ndarray) -> np.ndarray:
+    """Normalise gradient directions to unit length (zero vectors stay zero).
+
+    Bruker ``PVM_DwGradVec`` is amplitude-scaled (|g| = 0.49 for the b=500
+    shell of a b=2000 protocol), but BIDS ``.bvec`` must hold unit directions;
+    the magnitude lives in the per-volume effective b-value (``PVM_DwEffBval``,
+    the ``.bval``). FSL eddy and other consumers assume unit vectors.
+    """
+    v = np.atleast_2d(np.asarray(bvec, float))
+    n = np.linalg.norm(v, axis=1, keepdims=True)
+    return np.where(n > 1e-6, v / np.where(n > 1e-6, n, 1.0), 0.0)
+
+
 def _set_time_spacing(nifti: Path, tr_s: float) -> None:
     """Write the volume TR (s) into a 4-D NIfTI's pixdim[4] and xyzt units.
 
@@ -562,6 +575,7 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
                     gi = extract_bvec_bval(sd)
                     if gi is not None:
                         bval, bvec = gi
+                        bvec = unit_bvecs(bvec)
                         bvec_t = bvec.T if bvec.ndim > 1 else bvec.reshape(-1, 1).T
                         np.savetxt(files[0].with_suffix("").with_suffix(".bvec"), bvec_t, fmt="%.6f")
                         np.savetxt(files[0].with_suffix("").with_suffix(".bval"), bval.reshape(1, -1), fmt="%.1f")
