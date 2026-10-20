@@ -3,9 +3,9 @@
 Moves a labelled template onto another template of the same contrast
 (MRI-to-MRI), then applies the transform to the labels with ``GenericLabel``
 interpolation. Same-contrast registration is the point: warping CCFv3 labels
-from the Nissl/STPT average onto an MRI template is a cross-modality problem
-(the source-localization Antwerp warp reached r = 0.57 and ~20% AP
-compression). A T2w template that already carries CCFv3 labels (e.g. Perens
+from the CCFv3 average template (two-photon autofluorescence) onto an MRI
+template is a cross-modality problem (the source-localization Antwerp warp
+reached r = 0.57). A T2w template that already carries CCFv3 labels (e.g. Perens
 et al. 2023) reduces that to a T2w-to-T2w registration.
 """
 

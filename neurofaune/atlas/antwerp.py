@@ -4,8 +4,10 @@ The hub space is the Antwerp template (UAntwerpen C57BL/6 in vivo T2w MRI) as
 used by the EEG source-localization pipeline, so MRI and EEG share one
 coordinate frame and one set of parcels (allen26 / allen32 / allen64).
 
-Those parcels were originally made by warping Allen CCFv3 directly onto
-Antwerp, Nissl/STPT to MRI (r = 0.57, ~20% AP compression). Here the CCFv3
+Those parcels were originally made by registering Antwerp directly to the
+Allen CCFv3 average template (``average_template_25``, the serial two-photon
+tomography autofluorescence average -- not an MRI), a cross-modality
+registration (r = 0.57). Here the CCFv3
 annotation comes instead from a **T2w template that already carries CCFv3
 labels** -- Perens et al. 2023, BrainGlobe ``perens_stereotaxic_mri_mouse`` --
 so the transfer is a same-contrast T2w-to-T2w registration.
