@@ -30,6 +30,25 @@ contrast compares two groups or one mean. The CI is exact under normal residuals
 the observed t is inverted through the noncentral t distribution (Steiger &
 Fouladi 1997) and the noncentrality bounds scaled by sqrt(c'(X'X)^-1 c).
 
+**Minimum detectable effect** (`power`; DUET #151). Each test row also carries the
+standard error of the whole-mask estimate, se = s * sqrt(c'(X'X)^-1 c) -- the same
+residual SD and contrast variance d is built from, so covariates are in it -- and the
+MDE, the difference in the measure's units the design detects with power 0.80 at
+two-sided alpha 0.05, nominal and uncorrected by the user's decision. It is the MDE of
+the one GLM fitted to each subject's mean over the mask, not of the voxelwise map:
+randomise corrects the map by permutation, which has no closed-form power, so the map
+gets "not computed" (written as a caveat with the results) instead of a number.
+`mde_percent` is the MDE as a percent of the reference group's mean. A two-group
+contrast tests "<+ group> > <- group", so the group weighted -1 is the comparison the
+other is measured against (the control in "cuprizone > control"); its mean, scaled by
+the weight so it is on the estimate's scale, is the reference. Two contrasts that
+differ only in sign share an MDE and name opposite references; read the one whose -1
+group is the baseline. The percent is left blank where that mean is within one
+residual SD of zero (a change score, a centred or log measure: a percent of it is not
+a scale), and for one-sample, single-column (regression) and general contrasts, which
+have no reference group. Cluster rows say "not computed: cluster selected by the
+test": an MDE on voxels chosen for significance would describe the selection.
+
 **Selection.** A cluster's effect is computed over voxels chosen because they
 were significant, so it is inflated and its CI does not hold its nominal
 coverage; cluster rows say so (`effect_selected`). The whole-mask effect on the
@@ -58,6 +77,7 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage, optimize, stats
 
+from neurofaune.analysis.stats import power
 from neurofaune.analysis.stats.effect_size import read_fsl_vest
 
 logger = logging.getLogger("neurofaune.stats")
@@ -204,7 +224,8 @@ def contrast_effect(y: np.ndarray, X: np.ndarray, c: np.ndarray, desc: dict,
     res = {"effect_n": int(n), "effect_df": int(df)}
     if df < 1:
         return {**res, "estimate": np.nan, "d": np.nan, "d_ci_low": np.nan, "d_ci_high": np.nan,
-                "d_raw": np.nan}
+                "d_raw": np.nan, "se": np.nan, "mde": np.nan, "mde_percent": np.nan,
+                "mde_note": power.NOT_COMPUTED + "no residual degrees of freedom"}
     pinv = np.linalg.pinv(X.T @ X)
     beta = pinv @ X.T @ y
     resid = y - X @ beta
@@ -213,12 +234,21 @@ def contrast_effect(y: np.ndarray, X: np.ndarray, c: np.ndarray, desc: dict,
     v = float(c @ pinv @ c)
     d = est / s if s > 0 else np.nan
     lo, hi = _d_ci(d / np.sqrt(v), df, v, level) if s > 0 and v > 0 else (np.nan, np.nan)
-    res.update(estimate=est, d=float(d), d_ci_low=lo, d_ci_high=hi, d_raw=np.nan)
+    se = s * np.sqrt(v) if v > 0 else np.nan
+    mde = power.mde(se, df)
+    note = "" if np.isfinite(mde) else power.NOT_COMPUTED + (
+        "zero residual variance" if s == 0 else "the contrast is not estimable")
+    res.update(estimate=est, d=float(d), d_ci_low=lo, d_ci_high=hi, d_raw=np.nan,
+               se=float(se), mde=mde, mde_percent=np.nan, mde_note=note)
 
     if desc["kind"] == "two-group":
         a, b = y[X[:, desc["pos"]] == 1], y[X[:, desc["neg"]] == 1]
         res.update(mean_pos=float(a.mean()) if len(a) else np.nan,
                    mean_neg=float(b.mean()) if len(b) else np.nan, n_pos=len(a), n_neg=len(b))
+        # reference: the group weighted -1, put on the estimate's scale by its weight
+        w = abs(float(c[desc["neg"]]))
+        if len(b):
+            res["mde_percent"] = power.mde_percent(mde, w * float(b.mean()), near_zero=w * s)
         if len(a) > 1 and len(b) > 1:
             sp = np.sqrt(((len(a) - 1) * a.var(ddof=1) + (len(b) - 1) * b.var(ddof=1))
                          / (len(a) + len(b) - 2))
@@ -392,6 +422,8 @@ def read_randomise(
                            crosses_midline=({"L", "R"} <= {atlas.hemispheres.get(int(r)) for r in inside.index})
                            if atlas.hemispheres else None)
             eff = contrast_effect(np.nanmean(y[s], axis=0), X, c, desc, ci_level)
+            # an MDE on voxels the test chose would describe the selection, not the design
+            eff.update(mde=np.nan, mde_percent=np.nan, mde_note=power.CLUSTER_NOTE)
             row.update({**eff, "effect_selected": True})
             clusters.append(row)
     return pd.DataFrame(tests), pd.DataFrame(clusters)

@@ -1,4 +1,4 @@
-# Results specification — `neurofaune.results` 0.2.0
+# Results specification — `neurofaune.results` 0.3.0
 
 What an analysis writes so that **anyone can read its results without the package
 that produced them**: a plain pandas script, a manuscript table, neuro-lightbox.
@@ -7,12 +7,13 @@ Producers are neurofaune, neurovrai and any study's own orchestration scripts;
 specification, its JSON Schemas (`neurofaune/results/schemas/`) and the
 conformance checker (`neurofaune results check`).
 
-**Status: 0.2.0, draft.** It becomes 1.0.0 when neuro-lightbox's MRI view and the
+**Status: 0.3.0, draft.** It becomes 1.0.0 when neuro-lightbox's MRI view and the
 first study read it end to end. Until then a minor version may change a field;
 from 1.0.0 on, versions follow semver and a reader written for 1.x reads every 1.y.
 0.2 adds identity and vocabulary (§3.1): what one analysis is, how it is named, and
 the words a reader groups analyses by; and runs (§3.2): the tests of one analysis run
-at different times, each run in a folder of its own.
+at different times, each run in a folder of its own. 0.3 adds the minimum detectable
+effect (§5.1): beside each test, the smallest difference its design could have detected.
 
 ## 1. Principles
 
@@ -71,7 +72,7 @@ Fields marked * are required.
 | field | content |
 |---|---|
 | `spec`* | `"neurofaune.results"` |
-| `spec_version`* | `"0.2.0"` |
+| `spec_version`* | `"0.3.0"` |
 | `id`* | the analysis, stable across re-runs; from 0.2 `<modality>/<analysis_type>/<name>`, e.g. `"dwi/tbss/dose_p60"` (§3.1), shared by its runs (§3.2); a 0.1 id is unique under the results root |
 | `run`* (0.2) | this folder's run of the analysis: `{id*, label, supersedes}` (§3.2) |
 | `title`*, `description`* | a heading, and what the analysis asks in a sentence or two |
@@ -270,8 +271,43 @@ A reader shows a run whose status is not `completed` as such, never silently.
 | `crosses_midline` | the cluster has voxels in both hemispheres |
 | `subgroup_effect` | [`EffectMeasure`*, `Subgroup`*] the test's effect within one subgroup (a cohort, a batch, a site); one column per subgroup, each naming it |
 | `subgroup_n` | [`Subgroup`*] that subgroup's size |
+| `se` (0.3) | standard error of `estimate` from the fitted model (covariates included), in its units |
+| `mde` (0.3) | [`Power`*, `Alpha`*] minimum detectable effect, in `estimate`'s units (§5.1) |
+| `mde_percent` (0.3) | `mde` as a percent of the reference group's mean (§5.1) |
+| `mde_note` (0.3) | empty when `mde` is given; otherwise why not, starting `not computed: ` |
 
 Columns with no standard term are welcome; their dictionary entry describes them.
+
+### 5.1 The minimum detectable effect (0.3)
+
+A test that found nothing is a result only together with what it could have found, and
+a finding's size means more beside the size its design could see. So a tests row gives
+its **minimum detectable effect**: the difference the design detects with power `Power`
+at two-sided `Alpha`,
+
+    mde = (t(1 - Alpha/2, df) + t(Power, df)) * se
+
+with `se` the standard error of the estimate from the fitted model (covariates
+included) and `df` the test's degrees of freedom; with no finite `df`, the normal
+quantiles. It is a positive number in the estimate's units. The `mde` column states
+`Power` and `Alpha` in its dictionary entry, so the number never travels without them.
+neurofaune, source-analytics and neurovrai write it at **power 0.80 and alpha 0.05,
+nominal**: no multiple-comparison correction (the decision behind DUET's OPEN.md #151,
+which reads every finding against it). Reference values every producer reproduces:
+se 1, df 10 → 3.107197; se 1, df 26 → 2.911195; se 2.09, df 24 → 6.104376; se 1, df ∞
+→ 2.801585; se 0.5, df 4 → 1.858705.
+
+`mde_percent` is `100 * mde / |reference mean|`, the reference being the reference
+group's mean (the control, the baseline) on the estimate's scale. It is empty where
+there is no reference group (a regression slope, a one-sample mean) or the mean is near
+zero; the column's description says which group is the reference.
+
+**Never blank without a reason.** A row whose `mde` is empty says why in `mde_note`,
+starting `not computed: ` — `not computed: voxelwise map, corrected by randomise`,
+`not computed: cluster selected by the test`, `not computed: permutation test with no
+standard error`. A voxelwise map has no closed-form detectable effect (its permutation
+correction depends on the effect's spatial extent); a cluster's effect is measured on
+the voxels the test chose. A row that gives an `mde` leaves the note empty.
 
 ## 6. The reporting contract
 
@@ -288,7 +324,10 @@ Columns with no standard term are welcome; their dictionary entry describes them
 - sample: `n`, or `n_a` and `n_b`;
 - significance: `p_value` with its `PKind`; the family it is corrected over is in
   `analysis.json`;
-- extent, for voxelwise tests: `n_significant` or `frac_significant`.
+- extent, for voxelwise tests: `n_significant` or `frac_significant`;
+- what the design could detect (0.3): `mde` with its `Power` and `Alpha`, or an
+  `mde_note` on each row saying why not (§5.1). A tests table with neither is warned
+  about, not refused.
 
 **`clusters`** — every cluster under a stated definition:
 - which test: `contrast` (and `measure`), matching a `tests` row;
@@ -315,9 +354,13 @@ neurofaune results check <analysis folder or results root> [--json]
 
 checks every analysis folder it finds: the JSON files against the schemas, every
 listed file present and inside the folder, every table against its dictionary, the
-standard terms and their qualifiers, the contract (§6), and — for folders that declare
-0.2 — identity and vocabulary (§3.1) and, across the folders it finds, the runs of each
-analysis against each other (§3.2). Each folder is checked by the rules of the version
+standard terms and their qualifiers, the contract (§6), for folders that declare
+0.2 or later identity and vocabulary (§3.1) and, across the folders it finds, the runs of
+each analysis against each other (§3.2), and for folders that declare 0.3 the minimum
+detectable effect (§5.1): an `mde` is positive, with `Power` and `Alpha` between 0 and 1;
+a row without one carries an `mde_note` starting `not computed: `; an `mde_percent` is
+positive and only beside an `mde`; an `se` is a number >= 0. A folder that declares an
+earlier version may not use the 0.3 terms. Each folder is checked by the rules of the version
 it declares. Exit status 0 when every
 folder conforms. The schemas in `neurofaune/results/schemas/` are plain JSON Schema
 (draft 2020-12) and work with any validator; the checker itself needs only the
@@ -326,7 +369,7 @@ standard library, so it can run where neurofaune's imaging dependencies cannot.
 ## 8. Versioning
 
 `spec_version` is semver. A reader accepts any version with the major version it
-was written for — while the major is 0, every minor up to its own (a 0.2 reader reads
-0.1 and 0.2) — and reports, never guesses, a field it does not know. Producers write
+was written for — while the major is 0, every minor up to its own (a 0.3 reader reads
+0.1, 0.2 and 0.3) — and reports, never guesses, a field it does not know. Producers write
 the version they were built against. Changes are listed in
 `neurofaune/results/CHANGELOG.md`.

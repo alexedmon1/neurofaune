@@ -8,6 +8,15 @@ any reader can use the results without neurofaune.
 
 The column dictionary below covers every column `read_randomise` can produce;
 a test fails if it ever writes one that is not described here.
+
+**Minimum detectable effect** (DUET #151, `power`). A test row carries ``whole_se``
+and ``whole_mde`` -- the difference the whole-mask GLM detects with power 0.80 at
+two-sided alpha 0.05, nominal and uncorrected by the user's decision -- with power and
+alpha written on the column (``Power`` / ``Alpha``), ``whole_mde_percent`` against the
+group weighted -1, and ``whole_mde_note`` when no MDE could be computed. Cluster rows
+carry ``mde_note`` "not computed: cluster selected by the test". The voxelwise maps get
+no number -- randomise corrects them by permutation -- and the folder says so in a
+caveat (``power.MAP_NOTE``).
 """
 from __future__ import annotations
 
@@ -17,6 +26,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
+from neurofaune.analysis.stats import power
 from neurofaune.results import provenance as provenance_record
 from neurofaune.results import write_analysis, write_columns
 from neurofaune.results.write import now
@@ -88,6 +98,23 @@ TESTS_COLUMNS: dict[str, dict[str, Any]] = {
     "whole_mean": {"Description": "whole-mask mean (one-sample tests)", "Standard": "mean"},
     "whole_observed_direction": {"Description": "the direction the whole-mask effect went",
                                  "Standard": "observed_direction"},
+    "whole_se": {"Description": "standard error of whole_estimate from the fitted GLM (covariates "
+                                "included): residual SD * sqrt(c'(X'X)^-1 c), in the measure's units",
+                 "Standard": "se"},
+    "whole_mde": {"Description": "minimum detectable effect: the whole_estimate the design detects with "
+                                 "power 0.80 at two-sided alpha 0.05 (nominal, no multiple-comparison "
+                                 "correction), (t(0.975, df) + t(0.80, df)) * whole_se on "
+                                 "whole_effect_df, in the measure's units. It is the MDE of the test on "
+                                 "each subject's whole-mask mean, not of the voxelwise map (not computed: "
+                                 "randomise corrects the map by permutation)",
+                  "Standard": "mde", "Power": power.POWER, "Alpha": power.ALPHA},
+    "whole_mde_percent": {"Description": "whole_mde as a percent of the whole-mask mean of the group "
+                                         "weighted -1 (the comparison group of a two-group contrast), "
+                                         "scaled by its weight; empty for one-sample, regression and "
+                                         "general contrasts, and where that mean is within one residual "
+                                         "SD of zero", "Standard": "mde_percent", "Units": "%"},
+    "whole_mde_note": {"Description": "empty when whole_mde is given; otherwise why not, starting "
+                                      "'not computed: '", "Standard": "mde_note"},
 }
 
 CLUSTERS_COLUMNS: dict[str, dict[str, Any]] = {
@@ -135,6 +162,15 @@ CLUSTERS_COLUMNS: dict[str, dict[str, Any]] = {
                            "Standard": "observed_direction"},
     "effect_selected": {"Description": "the effect was computed on voxels chosen for significance",
                         "Standard": "effect_selected"},
+    "se": {"Description": "standard error of the cluster estimate from the fitted GLM -- on voxels "
+                          "chosen for significance", "Standard": "se"},
+    "mde": {"Description": "minimum detectable effect; always empty here (see mde_note): an MDE on "
+                           "voxels chosen for significance would describe the selection, not the design",
+            "Standard": "mde", "Power": power.POWER, "Alpha": power.ALPHA},
+    "mde_percent": {"Description": "mde as a percent of the comparison group's mean; empty, as mde is",
+                    "Standard": "mde_percent", "Units": "%"},
+    "mde_note": {"Description": "why mde is not given: 'not computed: cluster selected by the test'",
+                 "Standard": "mde_note"},
 }
 
 #: Header of an empty clusters table, so a run with no clusters still writes a readable file.
@@ -296,6 +332,11 @@ def write_readout_results(
                for p in [output_dir / "design.json", *(d / "design.json" for d in run_folders)]
                if p.exists()]
 
+    caveats = list(caveats)
+    if "whole_mde" in tests.columns:
+        caveats.append(f"Minimum detectable effects (whole_mde) are for the test on each subject's "
+                       f"whole-mask mean, at power {power.POWER:g} and two-sided alpha {power.ALPHA:g}, "
+                       f"uncorrected; for the voxelwise maps, {power.MAP_NOTE}.")
     groups = dict((design_record or {}).get("groups") or {})
     kinds = sorted({c.get("test_kind") for c in (design_record or {}).get("contrasts", [])
                     if c.get("test_kind")})
@@ -328,7 +369,7 @@ def write_readout_results(
         ],
         "maps": maps,
         **({"modality": modality} if modality else {}),
-        **({"caveats": list(caveats)} if caveats else {}),
+        **({"caveats": caveats} if caveats else {}),
         **({"decision": dict(decision)} if decision else {}),
         **({"display": {"plane": plane}} if plane else {}),
         **({"references": [dict(r) for r in references]} if references else {}),
