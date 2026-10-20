@@ -110,3 +110,25 @@ def test_compare_parcellations_reports_shift_in_world_mm():
     assert r["name"] == "X" and r["shift_A_mm"] == pytest.approx(0.4)
     assert r["shift_R_mm"] == pytest.approx(0) and r["dice"] == pytest.approx(0.6)
     assert r["mean_boundary_distance_mm"] > 0
+
+
+def test_fit_frame_recovers_bregma_and_axes():
+    from neurofaune.atlas.stereotaxic import fit_frame, world_to_stereo
+    shape = (40, 50, 30)
+    affine = np.diag([0.05, 0.05, 0.05, 1.0])
+    affine[:3, 3] = [-1.0, -1.25, -0.75]
+    ijk = np.indices(shape).reshape(3, -1).T
+    world = (affine @ np.column_stack([ijk, np.ones(len(ijk))]).T).T[:, :3].reshape(*shape, 3)
+    bregma = np.array([0.0, 0.3, 0.9])                 # above the "brain"
+    ml = world[..., 0] - bregma[0]
+    ap = world[..., 1] - bregma[1]
+    dv = -(world[..., 2] - bregma[2])                    # + ventral
+    brain = (np.abs(ml) < 0.8) & (np.abs(ap) < 1.0) & (dv > 0.2)
+    x = np.where(brain, np.abs(ml), 0); y = np.where(brain, ap, 0); z = np.where(brain, dv, 0)
+    hem = np.where(brain & (ml > 0), 1, 0)
+    fr = fit_frame((x, y, z), hem, affine)
+    assert fr["bregma_world_mm"] == pytest.approx(bregma, abs=1e-6)
+    assert fr["ml_axis"] == pytest.approx([1, 0, 0], abs=1e-6)
+    assert fr["dv_axis"] == pytest.approx([0, 0, -1], abs=1e-6)
+    assert world_to_stereo(fr, [bregma + [0, -1, 0]])[0] == pytest.approx([0, -1, 0], abs=1e-6)
+    assert fr["residual_mm"]["rms"] < 1e-9

@@ -157,7 +157,7 @@ def transform_points_mm(points: np.ndarray, transforms: Sequence[str], work: Pat
     for t in transforms:
         cmd += ["-t", t]
     _run(cmd, n_threads)
-    out = np.loadtxt(dst, delimiter=",", skiprows=1)[:, :3].reshape(-1, 3)
+    out = np.atleast_2d(np.loadtxt(dst, delimiter=",", skiprows=1))[:, :3]
     return out * np.array([-1, -1, 1])
 
 

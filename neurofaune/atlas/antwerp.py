@@ -324,3 +324,80 @@ def build_antwerp_hub(source_dir: Path, perens_dir: Path, out_dir: Path, work_di
     (out_dir / "atlas_metadata.json").write_text(json.dumps(meta, indent=2))
     (out_dir / "validation.json").write_text(json.dumps(validation, indent=2))
     return meta
+
+
+def add_stereotaxic_frame(out_dir: Path, perens_original_dir: Path, perens_bg_dir: Path,
+                          work_dir: Path, n_threads: int = 4) -> Dict[str, Any]:
+    """Carry the Perens skull-derived stereotaxic frame (bregma origin) into the hub.
+
+    ``perens_original_dir`` is ``Multimodal_mouse_brain_atlas_files/MRI_space_oriented``
+    from the original Perens release. Its arrays are the BrainGlobe package's arrays
+    re-indexed (``bg[a, b, c] = orig[454 - c, a, 296 - b]``, verified voxel-exact on
+    the annotation), so the coordinate maps line up with the image registered in
+    :func:`build_antwerp_hub` without resampling.
+
+    Writes ``stereotaxic.json`` (bregma in Antwerp world mm and voxels, by the
+    full warp and the affine part alone, and the local skull frame fitted in
+    Antwerp space) and ``stereotaxic_{ml,ap,dv}_mm.nii.gz`` maps on the native and
+    hub grids (signed ML: + = right; AP: + = rostral; DV: + = ventral of bregma).
+    """
+    from neurofaune.atlas.label_transfer import apply_transforms, transform_points_mm
+    from neurofaune.atlas.stereotaxic import fit_frame, stereo_to_world
+
+    out_dir, work_dir = Path(out_dir), Path(work_dir)
+    orig = Path(perens_original_dir)
+    bg = BrainGlobeAtlas(Path(perens_bg_dir))
+    to_bg = lambda a: np.transpose(np.asanyarray(a)[::-1, :, ::-1], (1, 2, 0))  # noqa: E731
+    load = lambda n: to_bg(nib.load(str(orig / f"{n}.nii.gz")).dataobj)  # noqa: E731
+    if not np.array_equal(load("mri_ano"), np.asanyarray(bg.annotation().dataobj)):
+        raise ValueError("Perens original and BrainGlobe annotations do not match; index mapping is wrong")
+    ref_affine = bg.reference().affine
+    x, y, z, hem = load("mri_coords_x"), load("mri_coords_y"), load("mri_coords_z"), load("mri_hem_mask")
+    frame = fit_frame((x, y, z), hem, ref_affine)
+
+    t = out_dir / "transforms"
+    aff, warp, iwarp = (str(t / f"perens_to_antwerp_{n}") for n in
+                        ("0GenericAffine.mat", "1Warp.nii.gz", "1InverseWarp.nii.gz"))
+    p2a_full, p2a_affine = [f"[{aff},1]", iwarp], [f"[{aff},1]"]
+
+    # Bregma, and a grid over the dorsal head to fit the skull frame locally in Antwerp space.
+    grid = np.array([[ml, ap, dv] for ml in (-3, 0, 3) for ap in (-5, -3, -1, 0, 1, 3) for dv in (0, 1.5, 3)], float)
+    world_p = stereo_to_world(frame, np.vstack([[0, 0, 0], grid]))
+    full = transform_points_mm(world_p, p2a_full, work_dir / "points")
+    affine_only = transform_points_mm(world_p[:1], p2a_affine, work_dir / "points")
+    design = np.column_stack([full[1:], np.ones(len(grid))])
+    sol, *_ = np.linalg.lstsq(design, grid, rcond=None)
+    local = np.eye(4)
+    local[:3, :3], local[:3, 3] = sol[:3].T, sol[3]
+    resid = grid - design @ sol
+
+    native = nib.load(str(out_dir / "brain.nii.gz"))
+    hub = nib.load(str(out_dir / "hub100um" / "brain_mask.nii.gz"))
+    vox = lambda img, p: (np.linalg.inv(img.affine) @ np.r_[p, 1])[:3]  # noqa: E731
+    info = {
+        "source": "Perens et al. 2023 skull-derived coordinates (micro-CT sutures), mri_coords_{x,y,z}",
+        "perens_frame_fit_residual_mm": frame["residual_mm"],
+        "bregma_antwerp_mm": full[0].tolist(),
+        "bregma_antwerp_mm_affine_only": affine_only[0].tolist(),
+        "bregma_warp_vs_affine_mm": float(np.linalg.norm(full[0] - affine_only[0])),
+        "bregma_native_voxel": vox(native, full[0]).tolist(),
+        "bregma_hub100um_voxel": vox(hub, full[0]).tolist(),
+        "antwerp_to_stereotaxic_local_affine": local.tolist(),
+        "local_affine_fit_residual_mm_rms": float(np.sqrt((resid ** 2).mean())),
+        "antwerp_mm_per_stereotaxic_mm": (1.0 / np.linalg.norm(local[:3, :3], axis=1)).tolist(),
+        "note": "Bregma lies on the skull, outside the brain the registration was driven by; "
+                "warp-vs-affine difference bounds the extrapolation error. Lambda is not "
+                "provided by the release.",
+    }
+    (out_dir / "stereotaxic.json").write_text(json.dumps(info, indent=2))
+
+    # Coordinate maps (signed ML) into the native and hub grids.
+    # Signed ML consistent with the fitted frame (+ = right).
+    world_x = _world_coords(nib.Nifti1Image(np.zeros(x.shape, np.uint8), ref_affine), 0)
+    maps = {"ml": np.sign(world_x - frame["bregma_world_mm"][0]) * x, "ap": y, "dv": z}
+    for key, arr in maps.items():
+        src = _save(nib.Nifti1Image(arr.astype(np.float32), ref_affine), work_dir / f"perens_stereo_{key}.nii.gz")
+        for grid_name, reference, dest in (("native", out_dir / "brain.nii.gz", out_dir),
+                                           ("hub", out_dir / "hub100um" / "brain_mask.nii.gz", out_dir / "hub100um")):
+            apply_transforms(src, reference, [warp, aff], dest / f"stereotaxic_{key}_mm.nii.gz", "Linear", n_threads)
+    return info
