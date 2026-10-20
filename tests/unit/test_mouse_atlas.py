@@ -132,3 +132,19 @@ def test_fit_frame_recovers_bregma_and_axes():
     assert fr["dv_axis"] == pytest.approx([0, 0, -1], abs=1e-6)
     assert world_to_stereo(fr, [bregma + [0, -1, 0]])[0] == pytest.approx([0, -1, 0], abs=1e-6)
     assert fr["residual_mm"]["rms"] < 1e-9
+
+
+def test_rabies_roles_and_component_description():
+    from neurofaune.atlas.functional import describe_components, rabies_role
+    assert rabies_role(5) == "bold" and rabies_role(0) == "confound" and rabies_role(1) == "unassigned"
+    lab = np.zeros((20, 10, 10), np.uint16)
+    lab[2:10, 2:8, 2:8] = 1          # left parcel
+    lab[10:18, 2:8, 2:8] = 2         # right parcel
+    ic = np.zeros(lab.shape + (2,), np.float32)
+    ic[3:9, 3:7, 3:7, 0] = 5.0       # left only
+    ic[11:17, 3:7, 3:7, 0] = 0.0
+    ic[3:9, 3:7, 3:7, 1] = 5.0       # bilateral, mirrored
+    ic[11:17, 3:7, 3:7, 1] = 5.0
+    rows = describe_components(nib.Nifti1Image(ic, np.eye(4)), nib.Nifti1Image(lab, np.eye(4)), {1: "L", 2: "R"})
+    assert rows[0]["top_parcels"].startswith("L (100%)")
+    assert rows[1]["lr_symmetry_r"] > rows[0]["lr_symmetry_r"]

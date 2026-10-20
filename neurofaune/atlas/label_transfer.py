@@ -97,10 +97,12 @@ def inverse_transforms(reg: Dict[str, Path]) -> List[str]:
 
 
 def apply_transforms(moving: Path, reference: Path, transforms: Sequence[str], out: Path,
-                     interpolation: str = "Linear", n_threads: int = 4) -> Path:
+                     interpolation: str = "Linear", n_threads: int = 4,
+                     time_series: bool = False) -> Path:
+    """antsApplyTransforms; ``time_series=True`` warps every volume of a 4-D image (``-e 3``)."""
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     cmd = ["antsApplyTransforms", "-d", "3", "-i", moving, "-r", reference, "-o", out,
-           "-n", interpolation, "--float", "1"]
+           "-n", interpolation, "--float", "1"] + (["-e", "3"] if time_series else [])
     for t in transforms:
         cmd += ["-t", t]
     _run(cmd, n_threads)
