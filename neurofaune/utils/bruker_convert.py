@@ -358,6 +358,18 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
                 # In-plane resolution in mm [x, y]
                 metadata['PixelSpacing'] = [float(spat_resol[0]), float(spat_resol[1])]
 
+        # EPI readout geometry for distortion correction (topup / fieldmaps):
+        # PhaseEncodingDirection, EffectiveEchoSpacing, TotalReadoutTime.
+        if modality in ('func', 'dwi', 'fmap'):
+            from neurofaune.utils.bruker_epi import epi_readout
+            try:
+                readout = epi_readout(scan_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"EPI readout fields unavailable for {scan_dir.name}: {e}")
+                readout = None
+            if readout:
+                metadata.update(readout)
+
         # Modality-specific fields
         if modality == 'dwi':
             # Diffusion parameters (a single-volume scan stores scalars; see _dwi_fields)

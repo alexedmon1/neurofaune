@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 185 across 11 stages.
+**Entry points:** 187 across 11 stages.
 
 
 ## analysis
@@ -86,6 +86,8 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `run_implant_artifact_qc` | `neurofaune.preprocess.qc.artifacts.implant` | Run the implant artifact QC for one BIDS session. | — |
+| `run_topup_pair` | `neurofaune.preprocess.qc.artifacts.topup` | topup on one fwd/rev pair. Returns paths of the field (Hz), unwarped pair and mean. | — |
 | `compute_slice_metrics` | `neurofaune.preprocess.qc.batch_summary` | Compute per-slice QC metrics for a DTI FA map. | — |
 | `select_absolute_gates` | `neurofaune.preprocess.qc.batch_summary` | Split configured gates into ones that discriminate and ones that don't. | — |
 | `select_zscore_metrics` | `neurofaune.preprocess.qc.batch_summary` | Decide which metrics may be z-scored, and in which direction. | — |
