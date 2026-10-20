@@ -147,4 +147,5 @@ def test_rabies_roles_and_component_description():
     ic[11:17, 3:7, 3:7, 1] = 5.0
     rows = describe_components(nib.Nifti1Image(ic, np.eye(4)), nib.Nifti1Image(lab, np.eye(4)), {1: "L", 2: "R"})
     assert rows[0]["top_parcels"].startswith("L (100%)")
-    assert rows[1]["lr_symmetry_r"] > rows[0]["lr_symmetry_r"]
+    assert rows[1]["lr_symmetry_r"] == pytest.approx(1.0)     # mirrored bilateral network
+    assert rows[0]["lr_symmetry_r"] < 0                        # one-sided network

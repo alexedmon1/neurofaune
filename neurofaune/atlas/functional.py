@@ -96,7 +96,9 @@ def describe_components(ic_img: nib.Nifti1Image, parcels: nib.Nifti1Image, names
     lab = np.asanyarray(parcels.dataobj)
     cov = np.ones(lab.shape, bool) if coverage is None else coverage
     brain = (lab > 0) & cov
-    mid = int(round(np.argwhere(lab > 0)[:, 0].mean()))
+    centre = np.argwhere(lab > 0)[:, 0].mean()
+    xi = np.clip(np.rint(2 * centre - np.arange(lab.shape[0])).astype(int), 0, lab.shape[0] - 1)
+    mirror_idx = (xi[:, None, None], np.arange(lab.shape[1])[None, :, None], np.arange(lab.shape[2])[None, None, :])
     rows = []
     for ic in range(data.shape[3]):
         z = np.where(cov, data[..., ic], 0.0)
@@ -112,12 +114,14 @@ def describe_components(ic_img: nib.Nifti1Image, parcels: nib.Nifti1Image, names
             row["peak_parcel"] = names.get(int(lab[peak]), str(lab[peak]))
             if stereo is not None:
                 row.update({f"peak_{k}_mm": float(v[peak]) for k, v in stereo.items()})
-        # symmetry about the midline column
-        half = min(mid, lab.shape[0] - mid - 1)
-        left = z[mid - half:mid]
-        right = z[mid + 1:mid + 1 + half][::-1]
-        sel = brain[mid - half:mid] & brain[mid + 1:mid + 1 + half][::-1]
-        row["lr_symmetry_r"] = float(np.corrcoef(left[sel], right[sel])[0, 1]) if sel.sum() > 10 else None
+        # Mirror the whole map about the continuous midline; correlate over brain voxels
+        # whose mirror is also brain. A one-sided network then scores low or negative
+        # instead of undefined.
+        mirrored = z[mirror_idx]
+        sel = brain & brain[mirror_idx]
+        a, b = z[sel], mirrored[sel]
+        row["lr_symmetry_r"] = (float(np.corrcoef(a, b)[0, 1])
+                                if sel.sum() > 10 and a.std() > 0 and b.std() > 0 else None)
         rows.append(row)
     return rows
 
