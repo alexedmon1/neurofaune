@@ -97,3 +97,28 @@ def run_topup_pair(fwd: Path, rev: Path, out_dir: Path, n_threads: int = 2,
              str(outputs["unwarped_mean"]))
     (out_dir / "pair.nii.gz").unlink(missing_ok=True)
     return outputs
+
+
+def apply_topup(image: Path, topup_outputs: Dict[str, Path], inindex: int, out: Path) -> Path:
+    """applytopup (Jacobian modulation) of one image acquired like row ``inindex`` (1-based).
+
+    The image must share the topup pair's grid. It is padded the same way the
+    pair was and cropped back afterwards.
+    """
+    image, out = Path(image), Path(out)
+    img = nib.load(str(image))
+    data, shape = _pad_even(np.asarray(img.dataobj, dtype=np.float32))
+    work = Path(topup_outputs["field"]).parent
+    padded = work / f"_apply_in_{out.name}"
+    nib.save(nib.Nifti1Image(data, img.affine), str(padded))
+    env = dict(os.environ, FSLOUTPUTTYPE="NIFTI_GZ")
+    stem = str(out).replace(".nii.gz", "")
+    cmd = ["applytopup", f"--imain={padded}", f"--inindex={inindex}",
+           f"--datain={topup_outputs['acqparams']}", f"--topup={work / 'topup'}",
+           "--method=jac", f"--out={stem}"]
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    padded.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"applytopup failed ({proc.returncode}): {proc.stderr[-2000:]}")
+    _crop(out, shape, img.affine)
+    return out

@@ -126,3 +126,49 @@ def plot_map_montage(maps_dir: Path, ref: nib.Nifti1Image, brain: np.ndarray, ou
         fig.colorbar(im, ax=row.tolist(), fraction=0.025, pad=0.01).ax.tick_params(labelsize=7, colors=TEXT_2)
     fig.savefig(out, dpi=110, facecolor=SURFACE, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_edge_shift(rows: List[Dict], out: Path) -> None:
+    """Per-slice brain-edge shift along phase encoding, raw vs topup, one panel per acquisition.
+
+    Colour = which edge (anatomically named); solid = uncorrected, dashed =
+    topup-corrected. Line = median over columns; dots = 90th percentile.
+    Positive = the EPI edge lies inside the reference brain.
+    """
+    groups = defaultdict(dict)
+    for r in rows:
+        acq, label = r["image"].rsplit("_", 1)
+        groups[acq].setdefault(label, []).append(r)
+    acqs = sorted(groups)
+    if not acqs:
+        return
+    fig, axes = plt.subplots(1, len(acqs), figsize=(4.0 * len(acqs), 3.6), facecolor=SURFACE, sharey=True)
+    axes = np.atleast_1d(axes)
+    for ax, acq in zip(axes, acqs):
+        _style(ax)
+        labels = groups[acq]
+        first = next(iter(labels.values()))
+        edges = sorted({k.rsplit("_median_mm", 1)[0] for k in first[0] if k.endswith("_median_mm")})
+        colour = {e: CATEGORICAL[i] for i, e in enumerate(edges)}
+        for label, rs in sorted(labels.items()):
+            if label == "rev":
+                continue                      # fwd is the run's own polarity; rev mirrors it
+            rs = sorted(rs, key=lambda r: r["slice"])
+            sl = [r["slice"] for r in rs]
+            corrected = label == "topup"
+            for e in edges:
+                ax.plot(sl, [r[f"{e}_median_mm"] for r in rs], color=colour[e], linewidth=2,
+                        linestyle="--" if corrected else "-",
+                        label=f"{e} edge, {'topup' if corrected else 'uncorrected'}")
+                ax.scatter(sl, [r[f"{e}_p90_mm"] for r in rs], s=14, color=colour[e],
+                           marker="o" if not corrected else "x", alpha=0.7)
+        ax.axhline(0, color=TEXT_2, linewidth=0.8, linestyle=":")
+        ax.set_title(acq, fontsize=9, color=TEXT, loc="left")
+        ax.set_xlabel("slice", fontsize=8, color=TEXT_2)
+        ax.legend(fontsize=6.5, frameon=False, labelcolor=TEXT_2)
+    axes[0].set_ylabel("edge shift, inward + (mm)", fontsize=8, color=TEXT_2)
+    fig.suptitle("Brain-edge displacement along phase encoding vs the T2w, per slice "
+                 "(line = median, markers = p90)", fontsize=10, color=TEXT, x=0.01, ha="left")
+    fig.tight_layout()
+    fig.savefig(out, dpi=130, facecolor=SURFACE)
+    plt.close(fig)

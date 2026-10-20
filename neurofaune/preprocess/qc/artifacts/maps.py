@@ -137,3 +137,77 @@ def summarise(values: np.ndarray, mask: np.ndarray, quantiles: Sequence[float] =
             out[f"p{int(q)}"] = float(np.percentile(x, q))
         out["mean"] = float(x.mean())
     return out
+
+
+def edge_shift_along_axis(epi: np.ndarray, mask: np.ndarray, axis: int, voxel_mm: float,
+                          slice_axis: int = 2, threshold_frac: float = 0.5,
+                          search_vox: int = 10, smooth_sigma: float = 0.7,
+                          min_column_vox: int = 6) -> List[Dict[str, float]]:
+    """Per-slice displacement of the brain edges along one axis (normally phase encoding).
+
+    Both images must be on the same (EPI) grid; ``mask`` is the reference
+    (distortion-free) brain mask resampled there. For every column along
+    ``axis`` the reference edges are the first and last mask voxels; the EPI
+    edges are the first and last voxels above ``threshold_frac`` x the slice's
+    median in-mask EPI signal, searched within ``search_vox`` of the
+    reference edge.
+
+    Shifts are signed **inward**: positive = the EPI edge lies inside the
+    reference brain (signal compressed toward the centre, or lost at the
+    surface); negative = stretched outward. A topup-corrected image that still
+    shows a positive shift at an edge points to signal loss, which unwarping
+    cannot restore.
+
+    This is a local measure. Surface-shell medians hide a distortion confined
+    to a few slices; this does not.
+
+    Where the brain touches bright extracranial tissue (temporal muscle
+    laterally, skull-base tissue ventrally) the EPI signal runs on past the
+    brain and no edge is found inside the search window. Those columns are
+    counted as *unresolved* and left out of the statistics rather than
+    reported as a large outward shift. The measure is reliable where the brain
+    borders low-signal tissue -- e.g. the dorsal surface under skull and cement.
+
+    Returns one row per slice with columns ``slice``, ``n_columns`` and, for
+    ``edge`` in (``start``, ``end``) -- the low- and high-index ends of
+    ``axis`` -- the median, p90, fraction of resolved columns beyond 2 voxels,
+    and the fraction of columns unresolved.
+    """
+    from scipy import ndimage
+
+    epi = np.moveaxis(np.asarray(epi, float), (slice_axis, axis), (0, 2))
+    mask = np.moveaxis(np.asarray(mask, bool), (slice_axis, axis), (0, 2))
+    rows = []
+    for k in range(epi.shape[0]):
+        m = mask[k]
+        cols = [c for c in range(m.shape[0]) if m[c].sum() >= min_column_vox]
+        if len(cols) < 5:
+            continue
+        sm = ndimage.gaussian_filter(epi[k], smooth_sigma) if smooth_sigma else epi[k]
+        thr = threshold_frac * np.median(sm[m])
+        start, end = [], []
+        unresolved = {"start": 0, "end": 0}
+        n = sm.shape[1]
+        for c in cols:
+            idx = np.nonzero(m[c])[0]
+            lo, hi = idx.min(), idx.max()
+            above = np.nonzero(sm[c] > thr)[0]
+            a = above[(above >= lo - search_vox) & (above <= hi)]
+            if a.size and (a.min() > lo - search_vox or lo - search_vox < 0) and a.min() > 0:
+                start.append((a.min() - lo) * voxel_mm)
+            else:
+                unresolved["start"] += 1
+            b = above[(above >= lo) & (above <= hi + search_vox)]
+            if b.size and b.max() < min(hi + search_vox, n - 1):
+                end.append((hi - b.max()) * voxel_mm)
+            else:
+                unresolved["end"] += 1
+        row: Dict[str, float] = {"slice": k, "n_columns": len(cols)}
+        for name, v in (("start", np.array(start)), ("end", np.array(end))):
+            row[f"{name}_median_mm"] = float(np.median(v)) if v.size else float("nan")
+            row[f"{name}_p90_mm"] = float(np.percentile(v, 90)) if v.size else float("nan")
+            row[f"{name}_frac_gt_2vox"] = float(np.mean(np.abs(v) > 2 * voxel_mm)) if v.size else float("nan")
+            row[f"{name}_frac_unresolved"] = unresolved[name] / len(cols)
+        rows.append(row)
+    return rows
+

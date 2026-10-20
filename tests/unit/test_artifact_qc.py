@@ -120,3 +120,34 @@ class TestTopupHelpers:
         padded, shape = _pad_even(data)
         assert shape == (3, 4, 13) and padded.shape == (4, 4, 14, 2)
         assert np.array_equal(padded[:, :, 13], padded[:, :, 12])
+
+
+class TestEdgeShift:
+    def _brain(self):
+        m = np.zeros((20, 30, 3), bool)
+        m[5:15, 10:20, :] = True             # columns along axis 1; edges at 10 and 19
+        return m
+
+    def test_inward_shift_is_positive_and_measured_per_slice(self):
+        m = self._brain()
+        epi = np.zeros(m.shape)
+        epi[5:15, 12:20, :] = 100.0          # dorsal (start) edge lost 2 voxels
+        rows = maps.edge_shift_along_axis(epi, m, axis=1, voxel_mm=0.25, smooth_sigma=0)
+        assert len(rows) == 3
+        assert rows[0]["start_median_mm"] == pytest.approx(0.5)
+        assert rows[0]["end_median_mm"] == pytest.approx(0.0)
+
+    def test_outward_shift_is_negative(self):
+        m = self._brain()
+        epi = np.zeros(m.shape)
+        epi[5:15, 8:20, :] = 100.0           # stretched 2 voxels outward
+        rows = maps.edge_shift_along_axis(epi, m, axis=1, voxel_mm=0.25, smooth_sigma=0)
+        assert rows[0]["start_median_mm"] == pytest.approx(-0.5)
+
+    def test_contiguous_bright_tissue_is_unresolved_not_a_huge_shift(self):
+        m = self._brain()
+        epi = np.zeros(m.shape)
+        epi[5:15, 0:20, :] = 100.0           # signal runs on to the FOV edge
+        rows = maps.edge_shift_along_axis(epi, m, axis=1, voxel_mm=0.25, smooth_sigma=0)
+        assert rows[0]["start_frac_unresolved"] == pytest.approx(1.0)
+        assert np.isnan(rows[0]["start_median_mm"])

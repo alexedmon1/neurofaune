@@ -37,7 +37,7 @@ from nibabel.processing import resample_from_to
 from scipy import ndimage
 
 from neurofaune.preprocess.qc.artifacts import maps
-from neurofaune.preprocess.qc.artifacts.topup import run_topup_pair, sidecar
+from neurofaune.preprocess.qc.artifacts.topup import apply_topup, run_topup_pair, sidecar
 from neurofaune.utils.bruker_epi import chemical_shift_hz
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,51 @@ def motion_correct(bold: Path, work: Path) -> Dict[str, Any]:
     d = np.abs(np.diff(par, axis=0))
     fd = d[:, :3].sum(axis=1) * rad + d[:, 3:].sum(axis=1)
     return {"path": Path(str(out) + ".nii.gz"), "fd_scaled_mm": fd}
+
+
+_ANATOMICAL = {"R": "right", "L": "left", "A": "rostral", "P": "caudal", "S": "dorsal", "I": "ventral"}
+_OPPOSITE = {"R": "L", "L": "R", "A": "P", "P": "A", "S": "I", "I": "S"}
+
+
+def edge_labels(img: nib.Nifti1Image, axis: int) -> Dict[str, str]:
+    """Anatomical names of the low-index (start) and high-index (end) ends of a voxel axis."""
+    code = nib.aff2axcodes(img.affine)[axis]          # direction of increasing index
+    return {"start": _ANATOMICAL[_OPPOSITE[code]], "end": _ANATOMICAL[code]}
+
+
+def edge_shift_table(epi: np.ndarray, grid: nib.Nifti1Image, ref: nib.Nifti1Image,
+                     brain: np.ndarray, axis: int, voxel_scale: float) -> List[Dict[str, Any]]:
+    """Per-slice brain-edge shifts of ``epi`` (on ``grid``) along ``axis``, edges named anatomically."""
+    mask = resample_from_to(nib.Nifti1Image(brain.astype(np.float32), ref.affine), grid,
+                            order=1).get_fdata() > 0.5
+    vox = float(grid.header.get_zooms()[axis]) / voxel_scale
+    labels = edge_labels(grid, axis)
+    rows = []
+    for r in maps.edge_shift_along_axis(epi, mask, axis, vox):
+        out = {"slice": r["slice"], "n_columns": r["n_columns"]}
+        for end in ("start", "end"):
+            for stat in ("median_mm", "p90_mm", "frac_gt_2vox", "frac_unresolved"):
+                out[f"{labels[end]}_{stat}"] = r[f"{end}_{stat}"]
+        rows.append(out)
+    return rows
+
+
+def summarise_edges(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Across slices: median of slice medians, worst slice p90, worst slices."""
+    out: Dict[str, Any] = {}
+    edges = sorted({k.rsplit("_median_mm", 1)[0] for k in (rows[0] if rows else {}) if k.endswith("_median_mm")})
+    for e in edges:
+        med = np.array([r[f"{e}_median_mm"] for r in rows], float)
+        p90 = np.array([r[f"{e}_p90_mm"] for r in rows], float)
+        frac = np.array([r[f"{e}_frac_gt_2vox"] for r in rows], float)
+        worst = np.argsort(-np.nan_to_num(p90, nan=-np.inf))[:3]
+        unres = np.array([r[f"{e}_frac_unresolved"] for r in rows], float)
+        out[e] = {"mean_frac_unresolved": float(np.nanmean(unres)),
+                  "median_of_slice_medians_mm": float(np.nanmedian(med)),
+                  "max_slice_p90_mm": float(np.nanmax(p90)),
+                  "mean_frac_gt_2vox": float(np.nanmean(frac)),
+                  "worst_slices": [int(rows[i]["slice"]) for i in worst]}
+    return out
 
 
 def _dorsal_bright_layer(t2: np.ndarray, brain: np.ndarray, vz: float,
@@ -214,6 +259,8 @@ def run_implant_artifact_qc(
     # 2. EPI pairs: topup field, displacement, fidelity ----------------------
     pairs = find_epi_pairs(session_dir)
     unwarped: Dict[str, np.ndarray] = {}
+    topups: Dict[str, Any] = {}
+    edge_rows: List[Dict[str, Any]] = []
     summary["epi"] = {}
     b0_t = None
     for acq, pair in pairs.items():
@@ -260,7 +307,16 @@ def run_implant_artifact_qc(
                            ("topup", nib.load(str(tu["unwarped_mean"])))):
             fidelity[label] = maps.masked_correlation(_resample(img, ref), t2, slab)
         entry["t2w_correlation"] = fidelity
+        axis = "ijk".index(meta["PhaseEncodingDirection"][0])
+        entry["edge_shift"] = {}
+        for label, img in (("fwd", _first_volume(epi)),
+                           ("rev", _first_volume(nib.load(str(pair["rev"])))),
+                           ("topup", nib.load(str(tu["unwarped_mean"])))):
+            rows = edge_shift_table(img.get_fdata(), epi, ref, brain, axis, voxel_scale)
+            edge_rows += [{"image": f"{acq}_{label}", **r} for r in rows]
+            entry["edge_shift"][label] = summarise_edges(rows)
         unwarped[acq] = _resample(nib.load(str(tu["unwarped_mean"])), ref)
+        topups[acq] = (epi, tu)
         summary["epi"][acq] = entry
 
     # 3. Dropout: GE / SE ratio on the shared slab --------------------------
@@ -298,7 +354,31 @@ def run_implant_artifact_qc(
         save_map(f"tsnr_{acq}", ts_ref)
         add_profile("tsnr", acq, ts_ref)
         slab = brain & np.isfinite(ts_ref)
+        # Local distortion of the run itself, raw and corrected with the
+        # reverse-PE pair acquired on the same grid (if any).
+        bmeta = sidecar(bold)
+        edge = {}
+        if "PhaseEncodingDirection" in bmeta:
+            axis = "ijk".index(bmeta["PhaseEncodingDirection"][0])
+            mean_img = nib.Nifti1Image(mc_img.get_fdata().mean(axis=3).astype(np.float32), mc_img.affine)
+            mean_path = work / "mcflirt" / bold.name.replace("_bold.nii.gz", "_desc-mean_bold.nii.gz")
+            nib.save(mean_img, str(mean_path))
+            images = [("raw", mean_img)]
+            match = next((a for a, (g, _) in topups.items() if _same_grid(g, mc_img.slicer[..., 0])), None)
+            if match is not None:
+                fmeta = sidecar(pairs[match]["fwd"])
+                index = 1 if fmeta["PhaseEncodingDirection"] == bmeta["PhaseEncodingDirection"] else 2
+                corrected = apply_topup(mean_path, topups[match][1], index,
+                                        work / "mcflirt" / mean_path.name.replace("desc-mean", "desc-meantopup"))
+                images.append(("topup", nib.load(str(corrected))))
+                save_map(f"bold_{acq}_mean_topup_t2grid", _resample(nib.load(str(corrected)), ref))
+            for label, img in images:
+                rows = edge_shift_table(img.get_fdata(), mean_img, ref, brain, axis, voxel_scale)
+                edge_rows += [{"image": f"bold-{acq}_{label}", **r} for r in rows]
+                edge[label] = summarise_edges(rows)
+            edge["topup_pair"] = match
         summary["bold"][acq] = {
+            "edge_shift": edge,
             "n_volumes": int(mc_img.shape[3]),
             "tsnr": maps.summarise(ts_ref, slab),
             "tsnr_by_surface": surfaces(ts_ref, slab),
@@ -344,12 +424,23 @@ def run_implant_artifact_qc(
         w.writeheader()
         for r in profiles:
             w.writerow({k: (f"{r[k]:.6g}" if isinstance(r[k], float) else r[k]) for k in cols})
+    if edge_rows:
+        cols = ["image", "slice", "n_columns"] + sorted(
+            {k for r in edge_rows for k in r} - {"image", "slice", "n_columns"})
+        with open(out_dir / "tables" / "edge_shift_per_slice.tsv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, delimiter="\t", restval="n/a")
+            w.writeheader()
+            for r in edge_rows:
+                w.writerow({k: (f"{v:.4g}" if isinstance(v, float) else v) for k, v in r.items()})
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     try:
         from neurofaune.preprocess.qc.artifacts.figures import plot_depth_profiles, plot_map_montage
         plot_depth_profiles(profiles, out_dir / "figures" / "depth_profiles.png")
         plot_map_montage(out_dir / "maps", ref, brain, out_dir / "figures" / "maps.png")
+        if edge_rows:
+            from neurofaune.preprocess.qc.artifacts.figures import plot_edge_shift
+            plot_edge_shift(edge_rows, out_dir / "figures" / "edge_shift_per_slice.png")
     except Exception as e:  # noqa: BLE001 - figures must never sink the QC numbers
         logger.warning("artifact QC figures failed: %s", e)
     return summary
