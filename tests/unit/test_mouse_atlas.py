@@ -149,3 +149,33 @@ def test_rabies_roles_and_component_description():
     assert rows[0]["top_parcels"].startswith("L (100%)")
     assert rows[1]["lr_symmetry_r"] == pytest.approx(1.0)     # mirrored bilateral network
     assert rows[0]["lr_symmetry_r"] < 0                        # one-sided network
+
+
+def test_cortical_projection_takes_the_dorsal_surface_and_a_labelled_parcel():
+    from neurofaune.atlas.electrodes import cortical_projection
+    shape = (21, 21, 12)
+    aff = np.diag([0.1, 0.1, 0.1, 1.0]); aff[:3, 3] = [-1.0, -1.0, 0.0]
+    ijk = np.indices(shape)
+    world = np.einsum("ab,bijk->aijk", aff[:3, :3], ijk) + aff[:3, 3:4, None, None]
+    brain = np.zeros(shape, bool); brain[2:19, 2:19, 1:9] = True
+    ml = np.where(brain, world[0], 0.0); ap = np.where(brain, world[1], 0.0)
+    lab = np.zeros(shape, np.uint16); lab[2:19, 2:19, 1:8] = 5          # top brain layer unlabelled
+    rows = cortical_projection([{"label": "E1", "ml": 0.3, "ap": -0.2}],
+                               nib.Nifti1Image(ml, aff), nib.Nifti1Image(ap, aff), brain,
+                               nib.Nifti1Image(lab, aff), {5: "Cortex"}, tolerance_mm=0.05)
+    r = rows[0]
+    assert r["found"] and r["z_mm"] == pytest.approx(0.8)               # most dorsal brain voxel
+    assert r["parcel"] == "Cortex" and r["parcel_depth_mm"] == pytest.approx(0.1)
+    off = cortical_projection([{"label": "E2", "ml": 5.0, "ap": 0.0}], nib.Nifti1Image(ml, aff),
+                              nib.Nifti1Image(ap, aff), brain, tolerance_mm=0.05)
+    assert off[0]["found"] is False
+
+
+def test_cement_footprint_finds_the_dark_cap():
+    from neurofaune.atlas.electrodes import cement_footprint
+    t2 = np.full((40, 40, 30), 100.0)
+    brain = np.zeros(t2.shape, bool); brain[5:35, 5:35, 2:15] = True
+    t2[10:30, 8:28, 18:24] = 1.0                                         # cement band 0.6-1.35 mm above the brain
+    cap = cement_footprint(t2, brain, np.diag([0.15, 0.15, 0.15, 1.0]), noise_threshold=10.0)
+    assert cap["found"] and cap["area_mm2"] == pytest.approx(20 * 20 * 0.0225, rel=0.2)
+    assert cap["centroid_mm"][0] == pytest.approx(19.5 * 0.15, abs=0.1)

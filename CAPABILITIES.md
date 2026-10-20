@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 191 across 11 stages.
+**Entry points:** 192 across 11 stages.
 
 
 ## analysis
@@ -45,6 +45,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `extract_modality_slices` | `neurofaune.atlas.slice_extraction` | Extract slices for a specific modality based on configuration. | — |
 | `extract_slices` | `neurofaune.atlas.slice_extraction` | Extract contiguous slices from a 3D image along specified axis. | — |
 | `fit_frame` | `neurofaune.atlas.stereotaxic` | Fit world(mm, RAS) -> stereotaxic (ML, AP, DV) as an affine map. | — |
+| `register_subject_to_hub` | `neurofaune.atlas.subject` | Register a subject T2w to the hub and bring the atlas layers and bregma into subject space. | — |
 | `build_atlas_extent_mask` | `neurofaune.atlas.tissue_priors` | Binary mask of the labelled brain, for use instead of the brain mask. | — |
 | `build_native_priors` | `neurofaune.atlas.tissue_priors` | Write ``prior_01..prior_0N`` next to each other and return the ANTs pattern. | — |
 | `compute_label_tissue_fractions` | `neurofaune.atlas.tissue_priors` | Each atlas region's mean tissue composition, normalised to sum to 1. | — |
