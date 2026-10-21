@@ -154,3 +154,46 @@ def test_unit_bvecs():
     u = unit_bvecs(v)
     assert np.allclose(u[0], 0)
     assert np.linalg.norm(u[1]) == pytest.approx(1.0) and np.allclose(u[2], [0, 0, 1])
+
+
+RIA = np.array([[1.5, 0, 0.25, -130.5], [-0.05, 0.26, 7.88, -53.8], [-0.01, -1.48, 1.38, 81.2], [0, 0, 0, 1]])
+
+
+@pytest.mark.parametrize("affine,flips", [
+    (np.diag([1.5, 1.5, 8.0, 1.0]), True),          # identity-mode (rat): det > 0
+    (RIA, True),                                     # FAC600 mouse axial DWI, det +18
+    (np.diag([-1.5, 1.5, 8.0, 1.0]), False),        # det < 0: FSL reads voxel frame as-is
+])
+def test_fsl_bvecs_negates_x_for_positive_determinant(affine, flips):
+    from neurofaune.utils.bids import fsl_bvecs
+    v = np.array([[0.0, 0.0, 0.0], [0.6, 0.0, 0.8], [0.3, -0.4, 0.866]])
+    out = fsl_bvecs(v, affine)
+    assert np.allclose(out[:, 0], -v[:, 0] if flips else v[:, 0])
+    assert np.allclose(out[:, 1:], v[:, 1:])
+    assert np.allclose(v[1], [0.6, 0.0, 0.8])        # input untouched
+
+
+def test_write_gradients(tmp_path):
+    import nibabel as nib
+    from neurofaune.utils.bids import write_gradients
+    nii = tmp_path / "sub-A_ses-1_run-13_dwi.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 3, 3), np.float32), RIA), str(nii))
+    bval_f, bvec_f = write_gradients(nii, np.array([0.0, 500.0, 1000.0]),
+                                     np.array([[0, 0, 0], [0.094, 0.041, 0.479], [0.0, 0.6, 0.8]]))
+    assert bvec_f.name == "sub-A_ses-1_run-13_dwi.bvec" and bval_f.name.endswith("_dwi.bval")
+    b = np.loadtxt(bvec_f)
+    assert b.shape == (3, 3)                          # rows x, y, z; one column per volume
+    assert np.linalg.norm(b[:, 1]) == pytest.approx(1.0, abs=1e-5)
+    assert b[0, 1] < 0 and b[1, 1] > 0               # unit, then x negated
+    assert np.allclose(np.loadtxt(bval_f), [0, 500, 1000])
+
+
+def test_legacy_session_writer_uses_fsl_convention(tmp_path, monkeypatch):
+    import nibabel as nib
+    from neurofaune.preprocess.workflows import bruker_session
+    nii = tmp_path / "dwi.nii.gz"
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 3, 2), np.float32), np.diag([1.5, 1.5, 8.0, 1.0])), str(nii))
+    monkeypatch.setattr(bruker_session, "extract_bvec_bval",
+                        lambda d: (np.array([0.0, 1000.0]), np.array([[0.0, 0.0, 0.0], [0.6, 0.0, 0.8]])))
+    _, bvec_f = bruker_session._convert_dwi_gradients(tmp_path, "13", nii, force=True)
+    assert np.allclose(np.loadtxt(bvec_f)[:, 1], [-0.6, 0.0, 0.8])

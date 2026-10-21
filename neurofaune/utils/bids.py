@@ -464,6 +464,36 @@ def unit_bvecs(bvec: np.ndarray) -> np.ndarray:
     return np.where(n > 1e-6, v / np.where(n > 1e-6, n, 1.0), 0.0)
 
 
+def fsl_bvecs(bvec: np.ndarray, affine: np.ndarray) -> np.ndarray:
+    """Voxel-frame gradient directions (N x 3) in FSL's bvec convention.
+
+    Bruker ``PVM_DwGradVec`` is in the read/phase/slice frame, which is the
+    2dseq voxel order the converter writes (no transposition). FSL reads bvecs
+    against the voxel axes with x negated when det(affine) > 0 (its radiological
+    voxel convention), the rule dcm2niix applies. Both converter modes need it:
+    the identity affine (rat) and the RIA scanner affine (FAC600 mouse) are
+    det > 0. Before this the bvecs went out unflipped, which leaves FA/MD/AD/RD
+    unchanged but mirrors V1 (FAC600 pilot: sticks ran across the oblique
+    CC/external-capsule arcs; with x negated they run along them).
+    """
+    v = np.atleast_2d(np.asarray(bvec, float)).copy()
+    if np.linalg.det(np.asarray(affine, float)[:3, :3]) > 0:
+        v[:, 0] *= -1
+    return v
+
+
+def write_gradients(nifti: Path, bval: np.ndarray, bvec: np.ndarray) -> Tuple[Path, Path]:
+    """Write BIDS ``.bval`` and unit, FSL-convention ``.bvec`` beside a DWI NIfTI."""
+    import nibabel as nib
+    nifti = Path(nifti)
+    stem = nifti.with_suffix("").with_suffix("")
+    bvec = fsl_bvecs(unit_bvecs(bvec), nib.load(str(nifti)).affine)
+    bvec_file, bval_file = stem.with_suffix(".bvec"), stem.with_suffix(".bval")
+    np.savetxt(bvec_file, bvec.T, fmt="%.6f")
+    np.savetxt(bval_file, np.asarray(bval, float).reshape(1, -1), fmt="%.1f")
+    return bval_file, bvec_file
+
+
 def _set_time_spacing(nifti: Path, tr_s: float) -> None:
     """Write the volume TR (s) into a 4-D NIfTI's pixdim[4] and xyzt units.
 
@@ -574,11 +604,7 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
                 if modality == "dwi" and files:
                     gi = extract_bvec_bval(sd)
                     if gi is not None:
-                        bval, bvec = gi
-                        bvec = unit_bvecs(bvec)
-                        bvec_t = bvec.T if bvec.ndim > 1 else bvec.reshape(-1, 1).T
-                        np.savetxt(files[0].with_suffix("").with_suffix(".bvec"), bvec_t, fmt="%.6f")
-                        np.savetxt(files[0].with_suffix("").with_suffix(".bval"), bval.reshape(1, -1), fmt="%.1f")
+                        write_gradients(files[0], *gi)
                 written_files += files
             else:
                 status = "planned"

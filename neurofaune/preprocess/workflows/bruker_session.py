@@ -37,6 +37,7 @@ from neurofaune.utils.bruker_convert import (
     select_best_msme_from_inventory,
     select_best_t2w_from_inventory,
 )
+from neurofaune.utils.bids import fsl_bvecs
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,9 @@ def _convert_dwi_gradients(
             f"unique b-values: {sorted(set(np.round(bvals, -1).astype(int)))}"
         )
 
+        if bvecs.ndim > 1 and bvecs.shape[1] == 3:
+            # FSL convention (x negated for det > 0); see utils.bids.fsl_bvecs
+            bvecs = fsl_bvecs(bvecs, nib.load(dwi_nii).affine)
         bvecs_t = bvecs.T if bvecs.ndim > 1 else bvecs.reshape(-1, 1).T
         np.savetxt(bvec_file, bvecs_t, fmt="%.6f", delimiter=" ")
         np.savetxt(bval_file, bvals.reshape(1, -1), fmt="%.1f", delimiter=" ")
