@@ -1133,7 +1133,7 @@ def anat_guided_func_mask(
 
     The T2w brain mask is registered into the BOLD reference (rigid, MI, as in
     :func:`refine_func_mask_with_anat`) and intersected with the EPI foreground
-    (``foreground_mask``: brighter than the Rayleigh noise floor + k sigma). The
+    (``foreground_mask``: brighter than the noise floor outside that mask + k sigma). The
     T2w mask decides where the brain is; the EPI decides where there is signal,
     so dropout and the partial-volume rim are removed and nothing outside the
     brain is added.
@@ -1142,15 +1142,14 @@ def anat_guided_func_mask(
     brain fills 2-11% of each axial and 0-18% of each coronal slice of the
     FAC600 pilot EPI, and at the rat target (15%) every slice hit the top of the
     frac range and kept jaw muscle (the T2w intersect then removed 39-54% of the
-    BET mask). The k=4 veto there removed 10-13% of the propagated mask, almost
+    BET mask). The k=4 veto there removes 6-11% of the propagated mask, almost
     all of it a one-voxel rim plus dorsal dropout patches.
 
     Returns ``(brain_ref, mask, info, anat_reg_info)``; ``anat_reg_info`` carries
     the BOLD->T2w registration for aCompCor and the ICA CSF feature.
     """
     from neurofaune.config import get_config_value
-    from neurofaune.preprocess.utils.foreground import foreground_mask
-    from neurofaune.preprocess.utils.registration_utils import propagate_anat_mask
+    from neurofaune.preprocess.utils.registration_utils import anat_guided_mask
 
     anat_dir = Path(derivatives_dir).parent / 'anat'
     anat_t2w = anat_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
@@ -1161,38 +1160,21 @@ def anat_guided_func_mask(
             f"({anat_t2w.name}, {anat_mask.name} in {anat_dir}); run anat_preprocess first")
 
     settings = get_config_value(config, 'functional.skull_strip_anat', default={}) or {}
-    k = float(settings.get('foreground_k', 4.0))
-    reg_dir = Path(work_dir) / 'anat_mask'
-    propagated = reg_dir / 'anat_mask_in_bold.nii.gz'
-    reg = propagate_anat_mask(
-        moving_ref=ref_norm, anat_t2w=anat_t2w, anat_mask=anat_mask, out_mask=propagated,
-        work_dir=reg_dir / 'reg', nonlinear=bool(settings.get('nonlinear', False)),
+    info = anat_guided_mask(
+        moving_ref=ref_norm, signal_ref=ref_raw, anat_t2w=anat_t2w, anat_mask=anat_mask,
+        out_mask=mask_out, work_dir=Path(work_dir) / 'anat_mask',
+        foreground_k=float(settings.get('foreground_k', 4.0)),
+        nonlinear=bool(settings.get('nonlinear', False)),
     )
-    anat_in_bold = nib.load(propagated).get_fdata() > 0
-    raw = nib.load(ref_raw).get_fdata()
-    signal = foreground_mask(raw, k=k) > 0
-    mask = anat_in_bold & signal
-
     ref_img = nib.load(ref_norm)
-    nib.save(nib.Nifti1Image(mask.astype(np.uint8), ref_img.affine, ref_img.header), mask_out)
+    mask = nib.load(mask_out).get_fdata() > 0
     nib.save(nib.Nifti1Image((ref_img.get_fdata() * mask).astype(np.float32),
                              ref_img.affine, ref_img.header), brain_ref_out)
-
-    n_anat, n_mask = int(anat_in_bold.sum()), int(mask.sum())
-    info = {
-        'method': 'anat',
-        'total_voxels': n_mask,
-        'extraction_ratio': n_mask / mask.size,
-        'anat_voxels': n_anat,
-        'low_signal_removed': n_anat - n_mask,
-        'low_signal_fraction': (n_anat - n_mask) / n_anat if n_anat else 0.0,
-        'foreground_k': k,
-        'slice_voxels': mask.sum(axis=(0, 1)).astype(int).tolist(),
-    }
-    print(f"  T2w brain mask in BOLD: {n_anat} voxels; EPI-signal veto (k={k:g}) removed "
-          f"{n_anat - n_mask} ({info['low_signal_fraction']*100:.1f}%) -> {n_mask}")
-    anat_reg_info = {'moving_to_anat_affine': reg['moving_to_anat_affine'],
-                     'inverse_warp': reg.get('inverse_warp')}
+    print(f"  T2w brain mask in BOLD: {info['anat_voxels']} voxels; EPI-signal veto "
+          f"(k={info['foreground_k']:g}) removed {info['low_signal_removed']} "
+          f"({info['low_signal_fraction']*100:.1f}%) -> {info['total_voxels']}")
+    anat_reg_info = {'moving_to_anat_affine': info.pop('moving_to_anat_affine'),
+                     'inverse_warp': info.pop('inverse_warp')}
     return brain_ref_out, mask_out, info, anat_reg_info
 
 

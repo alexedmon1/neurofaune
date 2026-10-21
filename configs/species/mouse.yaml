@@ -102,6 +102,21 @@ functional:
       # brain-edge rim, not white matter.
       tissue_source: atlas
 
+diffusion:
+  skull_strip:
+    # Same-session T2w brain mask in the (topup-corrected) b0, vetoed by b0 signal -- as
+    # functional.skull_strip_method anat. Needs anat_preprocess.
+    method: anat
+    foreground_k: 4
+  eddy:
+    # PhaseEncodingDirection / TotalReadoutTime from the BIDS sidecar (pilot: j-, 25.4 ms; the
+    # config default readout is 50 ms).
+    acqparams_source: sidecar
+  registration:
+    # b0 -> T2w rigid composed with T2w_to_template (= T2w -> Antwerp; anat_atlas), instead of a
+    # cross-contrast FA -> T2w-template affine from a 13-slice slab.
+    method: anat
+
 tractography:
   connectome:
     assignment_radius_mm: 0.2      # rat 0.4 (real mm)

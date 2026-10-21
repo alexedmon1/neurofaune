@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 195 across 11 stages.
+**Entry points:** 197 across 11 stages.
 
 
 ## analysis
@@ -144,10 +144,12 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `segment_brain_tissue` | `neurofaune.preprocess.workflows.anat_preprocess` | Extract tissue probability maps from Atropos skull stripping posteriors. | — |
 | `segment_brain_tissue_atropos` | `neurofaune.preprocess.workflows.anat_preprocess` | Standalone Atropos tissue segmentation, decoupled from skull stripping. | — |
 | `fit_dti` | `neurofaune.preprocess.workflows.dwi_preprocess` | Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit. | — |
+| `register_dwi_via_anat` | `neurofaune.preprocess.workflows.dwi_preprocess` | DWI -> template through the same-session T2w (``diffusion.registration.method: anat``). | — |
 | `register_fa_to_t2w` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA to T2w within the same subject. | — |
 | `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA (or another DWI-space volume) to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
-| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.registration.canonical`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
+| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `bids.voxel_scale`, `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.n_threads`, `diffusion.eddy.repol`, `diffusion.motion_qc.head_radius_mm`, `diffusion.registration.canonical`, `diffusion.registration.method`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.foreground_k`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.skull_strip.nonlinear`, `functional.motion_qc.head_radius_mm` |
+| `run_dwi_topup` | `neurofaune.preprocess.workflows.dwi_preprocess` | topup on a reverse-PE spin-echo pair, on the slice-padded grid eddy will see. | — |
 | `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
 | `extract_brain_from_bold` | `neurofaune.preprocess.workflows.func_preprocess` | Extract brain from BOLD image using BET. | — |
 | `extract_confounds` | `neurofaune.preprocess.workflows.func_preprocess` | Extract confound regressors from motion parameters. | — |

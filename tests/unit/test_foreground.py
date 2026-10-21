@@ -14,6 +14,7 @@ from neurofaune.preprocess.utils.foreground import (
     NoiseFloor,
     estimate_noise_floor,
     foreground_mask,
+    noise_floor_outside,
 )
 
 
@@ -156,3 +157,56 @@ class TestForegroundMask:
     def test_higher_k_shrinks_mask(self):
         data, _ = _head_phantom()
         assert foreground_mask(data, k=6.0).sum() <= foreground_mask(data, k=3.0).sum()
+
+
+def _sos_floor(shape, sigma, coils=8, seed=0):
+    """Multi-coil sum-of-squares magnitude noise: an offset floor, mean/std ~3.3 at 8 coils."""
+    rng = np.random.RandomState(seed)
+    z = rng.normal(0.0, sigma, size=(coils, 2) + tuple(shape))
+    return np.sqrt((z ** 2).sum(axis=(0, 1))).astype(np.float32)
+
+
+class TestNoiseFloorOutside:
+    """The anat-guided EPI veto: the brain is known, only "has signal?" is asked."""
+
+    def _phantom(self):
+        data = _sos_floor((64, 64, 8), sigma=100.0)
+        brain = np.zeros(data.shape, bool)
+        brain[16:48, 16:48, :] = True
+        floor_mean, floor_std = data[~brain].mean(), data[~brain].std()
+        # brain signal spread from floor + 6 std up to floor + 30 std
+        ramp = np.linspace(6, 30, brain.sum())
+        data[brain] = floor_mean + ramp * floor_std
+        return data, brain, floor_mean, floor_std
+
+    def test_sos_noise_is_not_rayleigh(self):
+        noise = _sos_floor((64, 64, 8), sigma=100.0)
+        assert noise.mean() / noise.std() > 3.0          # Rayleigh would be 1.91
+
+    def test_tracks_the_real_floor(self):
+        data, brain, floor_mean, floor_std = self._phantom()
+        floor = noise_floor_outside(data, brain)
+        assert floor.mean == pytest.approx(floor_mean, rel=0.05)
+        assert floor.sigma == pytest.approx(floor_std, rel=0.25)
+
+    def test_keeps_brain_the_rayleigh_estimate_vetoes(self):
+        data, brain, _, _ = self._phantom()
+        rayleigh = foreground_mask(data, k=4.0)[brain].mean()
+        empirical = foreground_mask(data, k=4.0, floor=noise_floor_outside(data, brain))[brain].mean()
+        assert empirical == 1.0
+        assert rayleigh < 0.9
+
+    def test_vetoes_true_dropout(self):
+        data, brain, floor_mean, _ = self._phantom()
+        data[16:20, 16:48, :] = floor_mean                 # a signal void inside the brain
+        fg = foreground_mask(data, k=4.0, floor=noise_floor_outside(data, brain)) > 0
+        assert not fg[16:20, 16:48, :].any()
+
+    def test_head_tissue_does_not_inflate_sigma(self):
+        data, brain, _, floor_std = self._phantom()
+        data[2:10, 2:62, :] += 50 * floor_std              # bright muscle/fat outside the brain
+        assert noise_floor_outside(data, brain).sigma == pytest.approx(floor_std, rel=0.25)
+
+    def test_needs_background(self):
+        with pytest.raises(ValueError, match="outside the brain"):
+            noise_floor_outside(np.ones((6, 6, 2)), np.ones((6, 6, 2), bool))

@@ -315,6 +315,7 @@ diffusion:
     readout_time: 0.05                 # Total readout time (seconds)
     data_is_shelled: true              # Skip shell auto-detection (Bruker multi-shell data)
     slice_padding: 2                   # Pad N slices on each side before eddy
+    n_threads: 1                       # CPU eddy only (--nthr); a machine setting, override per study
 
   # DTI fitting
   dti:

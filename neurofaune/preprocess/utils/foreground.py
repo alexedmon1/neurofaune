@@ -145,6 +145,36 @@ def estimate_noise_floor(
     )
 
 
+def noise_floor_outside(
+    img_data: np.ndarray,
+    brain: np.ndarray,
+    dilate: int = 3,
+    bins: int = 256,
+) -> NoiseFloor:
+    """Empirical noise floor from the voxels outside a known brain mask.
+
+    The Rayleigh estimate assumes single-channel magnitude noise (mean/std 1.91).
+    Multi-coil sum-of-squares recons sit on an offset floor (FAC600 mouse DWI:
+    mean/std 3.3), so ``mean / sqrt(pi/2)`` overstates sigma ~1.7x and
+    ``mu + 4 sigma`` lands near the brain median. Here the floor is the histogram
+    mode outside the (dilated) brain and sigma is the spread on the mode's dark
+    side, which head tissue (all brighter) cannot inflate. ``mean`` holds the
+    mode, so ``foreground_mask(img, k, floor=...)`` thresholds at mode + k*sigma.
+    """
+    from scipy.ndimage import binary_dilation
+
+    arr = np.asarray(img_data, dtype=float)
+    outside = arr[~binary_dilation(np.asarray(brain, bool), iterations=dilate)]
+    if outside.size < 100:
+        raise ValueError("Too few voxels outside the brain for a noise-floor estimate")
+    hist, edges = np.histogram(outside, bins=bins, range=(outside.min(), np.percentile(outside, 99)))
+    mode = float(0.5 * (edges[hist.argmax()] + edges[hist.argmax() + 1]))
+    dark = outside[outside <= mode]
+    sigma = float(np.sqrt(np.mean((dark - mode) ** 2))) if dark.size else 0.0
+    return NoiseFloor(mean=mode, sigma=sigma, sigma2=sigma ** 2,
+                      n_noise_voxels=int(outside.size), used_fallback=False)
+
+
 def foreground_mask(
     img_data: np.ndarray,
     k: float = 4.0,
