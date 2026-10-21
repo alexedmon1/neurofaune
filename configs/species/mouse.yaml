@@ -91,9 +91,6 @@ functional:
     nonlinear: false               # rigid, as functional.second_mask
   skull_strip_adaptive:
     mask_erode: 0                  # the EPI-signal veto already strips the partial-volume rim
-  # Erode within slices only (ICA edge band, aCompCor rim). 3D erosion of a 9-13 slice slab of 1 mm
-  # slices empties the end slices and kept 44-71% of the pilot brain.
-  erode_inplane: true
   motion_qc:
     # FD rotation-to-displacement radius, real mm. Rat 5 mm scaled by the cube root of the brain-volume
     # ratio (~0.5 / 2 cm3 -> 0.63).

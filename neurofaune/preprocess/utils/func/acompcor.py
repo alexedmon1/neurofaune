@@ -34,7 +34,7 @@ def extract_acompcor_components(
     output_file: Optional[Path] = None,
     min_voxels_per_component: int = 10,
     allow_reduced_components: bool = False,
-    erode_inplane: bool = False,
+    erode_inplane: bool = True,
 ) -> Dict[str, Any]:
     """
     Extract aCompCor components from CSF and white matter regions.
@@ -70,8 +70,8 @@ def extract_acompcor_components(
         ``erode_voxels > 0``, drives the erode-brain-then-intersect rim removal
         described above.
     erode_inplane : bool
-        Erode within slices only (``functional.erode_inplane``; see
-        ``masks.erosion_structure``). The 3D default empties the slab-end slices.
+        Erode within slices only (default; ``functional.erode_inplane``; see
+        ``masks.erosion_structure``). 3D erosion empties the slab-end slices.
     drop_first_component : bool
         Discard the leading PC of each tissue and keep the next
         ``n_components`` instead (default: False, i.e. keep PC1..PCn).

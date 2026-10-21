@@ -45,11 +45,22 @@ def test_erosion_shrinks_masks(tmp_path):
 
     assert eroded["n_voxels_csf"] < uneroded["n_voxels_csf"]
     assert eroded["n_voxels_wm"] < uneroded["n_voxels_wm"]
-    # one-voxel erosion of a solid cuboid removes exactly the outer shell
-    assert eroded["n_voxels_csf"] == 8 ** 3
-    assert eroded["n_voxels_wm"] == 10 ** 3
+    # one in-plane erosion of a solid cuboid removes the in-plane shell; every slice survives
+    assert eroded["n_voxels_csf"] == 8 * 8 * 10
+    assert eroded["n_voxels_wm"] == 10 * 10 * 12
     assert eroded["erode_voxels"] == 1
     assert uneroded["erode_voxels"] == 0
+
+
+def test_3d_erosion_is_still_available(tmp_path):
+    bold = _bold(tmp_path)
+    csf = _block_mask(tmp_path, "csf", 4, 14)
+    wm = _block_mask(tmp_path, "wm", 4, 16)
+    res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=1,
+                                      erode_inplane=False)
+    # 3D erosion removes the whole outer shell, end slices included
+    assert res["n_voxels_csf"] == 8 ** 3
+    assert res["n_voxels_wm"] == 10 ** 3
 
 
 def test_erode_zero_is_noop(tmp_path):
@@ -74,10 +85,10 @@ def test_erosion_falls_back_when_it_would_empty_a_small_mask(tmp_path):
     # 9-voxel CSF mask would otherwise (rightly) be rejected as too small.
     res = extract_acompcor_components(bold, csf, wm, n_components=5, erode_voxels=1,
                                       min_voxels_per_component=1)
-    # erosion of a single-slice patch -> 0 voxels < 5 components -> fall back
+    # in-plane erosion of a 3x3 patch -> 1 voxel < 5 components -> fall back
     assert res["n_voxels_csf"] == 9
     # WM is a fat cuboid, erosion still applies there
-    assert res["n_voxels_wm"] == 10 ** 3
+    assert res["n_voxels_wm"] == 10 * 10 * 12
 
 
 def test_default_erodes(tmp_path):
@@ -87,7 +98,7 @@ def test_default_erodes(tmp_path):
     wm = _block_mask(tmp_path, "wm", 4, 16)
     res = extract_acompcor_components(bold, csf, wm, n_components=5)
     assert res["erode_voxels"] == 1
-    assert res["n_voxels_csf"] == 8 ** 3
+    assert res["n_voxels_csf"] == 8 * 8 * 10
 
 
 def test_brain_intersect_preserves_interior_tissue(tmp_path):
@@ -105,11 +116,11 @@ def test_brain_intersect_preserves_interior_tissue(tmp_path):
     # eroded brain = [3:17]^3 still fully contains the [5:15]^3 tissue blocks
     assert res["n_voxels_wm"] == 10 ** 3
     assert res["n_voxels_csf"] == 10 ** 3
-    # ...whereas per-tissue erosion of the same block would shrink it to 8^3
+    # ...whereas per-tissue erosion of the same block would shrink it (in-plane: 8x8x10)
     per_tissue = extract_acompcor_components(
         bold, csf, wm, n_components=5, erode_voxels=1, brain_mask=None
     )
-    assert per_tissue["n_voxels_wm"] == 8 ** 3
+    assert per_tissue["n_voxels_wm"] == 8 * 8 * 10
     assert res["n_voxels_wm"] > per_tissue["n_voxels_wm"]
 
 

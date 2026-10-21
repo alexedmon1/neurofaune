@@ -99,7 +99,7 @@ def calculate_edge_fraction(
     component_map: np.ndarray,
     brain_mask: np.ndarray,
     threshold: float = 2.0,
-    inplane: bool = False,
+    inplane: bool = True,
 ) -> float:
     """
     Calculate fraction of component located at brain edges.
@@ -115,8 +115,8 @@ def calculate_edge_fraction(
     threshold : float
         Z-score threshold for considering voxel as "active"
     inplane : bool
-        Erode within slices only (see ``masks.erosion_structure``). The 3D default
-        makes every voxel of the first two and last two slices "edge".
+        Erode within slices only (default; see ``masks.erosion_structure``). 3D
+        erosion makes every voxel of the first two and last two slices "edge".
     
     Returns
     -------
@@ -281,7 +281,7 @@ def classify_ica_components(
     csf_threshold: float = 0.70,
     freq_threshold: float = 0.60,
     classification_mode: str = 'score',
-    edge_inplane: bool = False,
+    edge_inplane: bool = True,
 ) -> Dict[str, Any]:
     """
     Automatically classify ICA components as signal or noise.

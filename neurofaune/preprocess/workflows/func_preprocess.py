@@ -1221,6 +1221,7 @@ def run_multiecho_motion_correction(
     work_dir: Path,
     brain_mask_out: Path,
     skull_strip_config: Optional[Dict] = None,
+    erode_inplane: bool = True,
 ) -> Dict[str, Any]:
     """Motion-correct multi-echo data using middle echo as reference.
 
@@ -1394,13 +1395,11 @@ def run_multiecho_motion_correction(
     # (MCFLIRT interpolation at brain/non-brain boundary creates artifacts)
     mask_erode = ss_params.get('mask_erode', 1)
     if mask_erode > 0:
-        from scipy import ndimage
+        from neurofaune.preprocess.utils.func.masks import erode
         mask_img = nib.load(brain_mask_out)
         mask_data = mask_img.get_fdata() > 0
         n_before = int(mask_data.sum())
-        struct = ndimage.generate_binary_structure(3, 1)
-        mask_data = ndimage.binary_erosion(mask_data, structure=struct,
-                                           iterations=mask_erode).astype(np.float32)
+        mask_data = erode(mask_data, mask_erode, inplane=erode_inplane).astype(np.float32)
         n_after = int(mask_data.sum())
         nib.save(nib.Nifti1Image(mask_data, mask_img.affine, mask_img.header),
                  brain_mask_out)
@@ -1615,8 +1614,8 @@ def run_functional_preprocessing(
         }
 
     # Erode masks within slices only (mask erosion, ICA edge band, aCompCor);
-    # see utils.func.masks.erosion_structure. Default 3D, as before.
-    erode_inplane = bool(func_config.get('erode_inplane', False))
+    # see utils.func.masks.erosion_structure. 3D erosion empties slab-end slices.
+    erode_inplane = bool(func_config.get('erode_inplane', True))
     voxel_scale = float((config.get('bids') or {}).get('voxel_scale', 10.0))
     motion_method = func_config.get('motion_correction', {}).get('method', 'mcflirt')
     motion_ref = func_config.get('motion_correction', {}).get('reference', 'middle')
@@ -1746,6 +1745,7 @@ def run_functional_preprocessing(
             work_dir=me_work_dir,
             brain_mask_out=brain_mask,
             skull_strip_config=skull_strip_params,
+            erode_inplane=erode_inplane,
         )
 
         me_corrected_echoes = me_results['corrected_echoes']

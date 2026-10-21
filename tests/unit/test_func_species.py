@@ -33,12 +33,12 @@ def slab(shape=(12, 12, 3)):
 
 class TestErosion:
     def test_3d_erosion_empties_the_slab_end_slices(self):
-        out = erode(slab(), 1)
+        out = erode(slab(), 1, inplane=False)
         assert out[:, :, 0].sum() == 0 and out[:, :, 2].sum() == 0
         assert out[:, :, 1].sum() > 0
 
     def test_inplane_erosion_keeps_every_slice(self):
-        out = erode(slab(), 1, inplane=True)
+        out = erode(slab(), 1)                                   # in-plane is the default
         assert out.sum(axis=(0, 1)).tolist() == [36, 36, 36]     # 8x8 -> 6x6 per slice
 
     def test_structure_has_no_through_slice_neighbours_inplane(self):
@@ -53,8 +53,8 @@ class TestErosion:
         comp = np.zeros((12, 12, 3))
         comp[5:7, 5:7, 0] = 5.0        # interior of the first slice
         brain = slab()
-        assert calculate_edge_fraction(comp, brain) == pytest.approx(1.0)       # 3D: all "edge"
-        assert calculate_edge_fraction(comp, brain, inplane=True) == 0.0
+        assert calculate_edge_fraction(comp, brain, inplane=False) == pytest.approx(1.0)  # 3D: all "edge"
+        assert calculate_edge_fraction(comp, brain) == 0.0
 
 
 def affine_axial_like():
@@ -153,7 +153,6 @@ def write_study(tmp_path, **study):
 def test_mouse_profile_functional_settings(tmp_path):
     cfg = load_config(write_study(tmp_path, species="mouse"), validate=False)
     assert get_config_value(cfg, "functional.skull_strip_method") == "anat"
-    assert get_config_value(cfg, "functional.erode_inplane") is True
     assert get_config_value(cfg, "functional.skull_strip_adaptive.mask_erode") == 0
     assert get_config_value(cfg, "functional.motion_qc.head_radius_mm") == pytest.approx(3.2)
     assert get_config_value(cfg, "functional.denoising.acompcor.tissue_source") == "atlas"
@@ -162,10 +161,15 @@ def test_mouse_profile_functional_settings(tmp_path):
     assert get_config_value(cfg, "functional.skull_strip_adaptive.target_ratio") == 0.15
 
 
+def test_in_plane_erosion_is_the_default_for_every_species(tmp_path):
+    for species in ("rat", "mouse"):
+        cfg = load_config(write_study(tmp_path, species=species), validate=False)
+        assert get_config_value(cfg, "functional.erode_inplane") is True
+
+
 def test_rat_keeps_its_functional_behaviour(tmp_path):
     cfg = load_config(write_study(tmp_path, species="rat"), validate=False)
     assert get_config_value(cfg, "functional.skull_strip_method") == "adaptive"
-    assert get_config_value(cfg, "functional.erode_inplane", default=False) is False
     assert get_config_value(cfg, "functional.motion_qc.head_radius_mm", default=5.0) == 5.0
     assert get_config_value(cfg, "functional.denoising.acompcor.tissue_source",
                             default="segmentation") == "segmentation"

@@ -4,7 +4,7 @@ import numpy as np
 from scipy import ndimage
 
 
-def erosion_structure(inplane: bool = False) -> np.ndarray:
+def erosion_structure(inplane: bool = True) -> np.ndarray:
     """6-connected structuring element; ``inplane`` drops the through-slice neighbours.
 
     Slices are array axis 2 (the acquisition slices). A 3D erosion of a slab of
@@ -13,7 +13,8 @@ def erosion_structure(inplane: bool = False) -> np.ndarray:
     neighbour one slice (1 mm in rodent EPI) away is outside the brain. On the
     FAC600 mouse pilot one 3D iteration kept 71% (axial, 13 slices) and 44%
     (coronal, 9 slices) of the brain and emptied the end slices. In-plane erosion
-    strips the in-plane rim only.
+    strips the in-plane rim only, and is the default for rat and mouse alike
+    (``functional.erode_inplane``, default true); pass ``inplane=False`` for 3D.
     """
     s = ndimage.generate_binary_structure(3, 1)
     if inplane:
@@ -22,7 +23,7 @@ def erosion_structure(inplane: bool = False) -> np.ndarray:
     return s
 
 
-def erode(mask: np.ndarray, iterations: int, inplane: bool = False) -> np.ndarray:
+def erode(mask: np.ndarray, iterations: int, inplane: bool = True) -> np.ndarray:
     """Binary erosion with :func:`erosion_structure`; ``iterations <= 0`` returns the mask unchanged."""
     mask = np.asarray(mask, bool)
     if iterations <= 0:
