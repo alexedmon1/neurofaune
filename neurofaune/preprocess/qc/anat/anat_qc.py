@@ -14,7 +14,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import json
 
 from neurofaune.preprocess.qc.skull_strip_qc import plot_slicesdir_mosaic
@@ -26,10 +26,14 @@ def generate_skull_strip_qc(
     t2w_file: Path,
     brain_file: Path,
     mask_file: Path,
-    output_dir: Path
+    output_dir: Path,
+    brain_ratio_range: Tuple[float, float] = (0.15, 0.5),
 ) -> Dict[str, Any]:
     """
     Generate skull stripping QC report.
+
+    ``brain_ratio_range`` (brain / non-zero voxels) bounds below which over-stripping
+    and above which under-stripping is flagged; the default fits rat T2w FOVs.
 
     Parameters
     ----------
@@ -68,7 +72,7 @@ def generate_skull_strip_qc(
     mask_data = mask_img.get_fdata() > 0
 
     # Calculate metrics
-    metrics = _calculate_skull_strip_metrics(t2w_data, brain_data, mask_data)
+    metrics = _calculate_skull_strip_metrics(t2w_data, brain_data, mask_data, brain_ratio_range)
 
     # Generate visualizations
     figures = []
@@ -196,7 +200,8 @@ def generate_anatomical_qc_report(
     gm_file: Optional[Path] = None,
     wm_file: Optional[Path] = None,
     csf_file: Optional[Path] = None,
-    output_dir: Optional[Path] = None
+    output_dir: Optional[Path] = None,
+    brain_ratio_range: Tuple[float, float] = (0.15, 0.5),
 ) -> Path:
     """
     Generate comprehensive anatomical preprocessing QC report.
@@ -240,7 +245,8 @@ def generate_anatomical_qc_report(
 
     # Generate skull stripping QC
     skull_strip_results = generate_skull_strip_qc(
-        subject, session, t2w_file, brain_file, mask_file, output_dir
+        subject, session, t2w_file, brain_file, mask_file, output_dir,
+        brain_ratio_range=brain_ratio_range,
     )
     all_metrics['skull_stripping'] = skull_strip_results['metrics']
     all_figures.extend(skull_strip_results['figures'])
@@ -278,7 +284,8 @@ def generate_anatomical_qc_report(
 def _calculate_skull_strip_metrics(
     t2w: np.ndarray,
     brain: np.ndarray,
-    mask: np.ndarray
+    mask: np.ndarray,
+    brain_ratio_range: Tuple[float, float] = (0.15, 0.5),
 ) -> Dict[str, float]:
     """Calculate skull stripping quality metrics."""
     metrics = {}
@@ -300,9 +307,9 @@ def _calculate_skull_strip_metrics(
 
     # Check for potential issues
     # Very small brain (possible over-stripping)
-    metrics['potential_over_stripping'] = metrics['brain_to_total_ratio'] < 0.15
+    metrics['potential_over_stripping'] = metrics['brain_to_total_ratio'] < brain_ratio_range[0]
     # Very large brain (possible under-stripping)
-    metrics['potential_under_stripping'] = metrics['brain_to_total_ratio'] > 0.5
+    metrics['potential_under_stripping'] = metrics['brain_to_total_ratio'] > brain_ratio_range[1]
 
     return metrics
 

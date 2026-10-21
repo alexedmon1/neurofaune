@@ -840,6 +840,7 @@ def bias_field_correction(
     n_iterations: Optional[List[int]] = None,
     shrink_factor: int = 3,
     convergence_threshold: float = 1e-6,
+    bspline_fitting_distance: Optional[float] = None,
 ) -> Path:
     """
     Perform N4 bias field correction.
@@ -858,6 +859,9 @@ def bias_field_correction(
         Downsampling factor for speed (default: 3)
     convergence_threshold : float
         Convergence threshold (default: 1e-6)
+    bspline_fitting_distance : float, optional
+        B-spline mesh spacing in (scaled) mm. None leaves ANTs' default (200), which
+        is about the length of a rat brain at 10x; a smaller brain needs a finer mesh.
 
     Returns
     -------
@@ -876,6 +880,8 @@ def bias_field_correction(
     n4.inputs.n_iterations = n_iterations
     n4.inputs.shrink_factor = shrink_factor
     n4.inputs.convergence_threshold = convergence_threshold
+    if bspline_fitting_distance is not None:
+        n4.inputs.bspline_fitting_distance = float(bspline_fitting_distance)
     n4.run()
 
     return output_file
@@ -1209,41 +1215,21 @@ def run_anatomical_preprocessing(
     # Step 1: Check and scale voxel sizes if needed
     print("Checking voxel sizes...")
     t2w_scaled_file = work_dir / f'{subject}_{session}_T2w_scaled.nii.gz'
-    t2w_processed, was_scaled, scale_factor = check_and_scale_voxel_size(
-        t2w_file, t2w_scaled_file, min_voxel_size=1.0, scale_factor=10.0
-    )
+    if get_config_value(config, 'anatomical.input_already_scaled', default=False):
+        # The BIDS conversion already applied bids.voxel_scale. A second check would
+        # inflate again any protocol whose scaled voxels are still < 1 mm (e.g. mouse
+        # 0.078 mm in-plane -> 0.78 scaled -> 100x).
+        print("Input already scaled at BIDS conversion (anatomical.input_already_scaled); not rescaling.")
+        t2w_processed, was_scaled, scale_factor = t2w_file, False, 1.0
+    else:
+        t2w_processed, was_scaled, scale_factor = check_and_scale_voxel_size(
+            t2w_file, t2w_scaled_file, min_voxel_size=1.0, scale_factor=10.0
+        )
 
-    # Load atlas (only if atlas config is present — not needed for skull stripping)
-    has_atlas = 'atlas' in config and 'base_path' in config.get('atlas', {})
-    if has_atlas:
-        from neurofaune.atlas import AtlasManager
-        atlas_mgr = AtlasManager(config)
-
-        # Get atlas template and mask (kept for reference / future use)
-        atlas_template_img = atlas_mgr.get_template(modality=None, masked=False, coronal=True)
-
-        gm_mask_img = atlas_mgr.get_tissue_mask('gm', probability=False)
-        wm_mask_img = atlas_mgr.get_tissue_mask('wm', probability=False)
-
-        brain_mask_data = (gm_mask_img.get_fdata() > 0) | (wm_mask_img.get_fdata() > 0)
-        atlas_mask_img = nib.Nifti1Image(brain_mask_data.astype(np.uint8), gm_mask_img.affine, gm_mask_img.header)
-
-        atlas_template_file = work_dir / 'SIGMA_template_unmasked.nii.gz'
-        atlas_mask_file = work_dir / 'SIGMA_brain_mask.nii.gz'
-        nib.save(atlas_template_img, atlas_template_file)
-        nib.save(atlas_mask_img, atlas_mask_file)
-
-        if was_scaled:
-            atlas_template_scaled = work_dir / 'SIGMA_template_unmasked_scaled.nii.gz'
-            atlas_mask_scaled = work_dir / 'SIGMA_brain_mask_scaled.nii.gz'
-            atlas_template_file, _, _ = check_and_scale_voxel_size(
-                atlas_template_file, atlas_template_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-            )
-            atlas_mask_file, _, _ = check_and_scale_voxel_size(
-                atlas_mask_file, atlas_mask_scaled, min_voxel_size=1.0, scale_factor=scale_factor
-            )
-
-    # NOTE: Atlas registration removed - will be done separately in template registration module
+    # No atlas is loaded here: preprocessing is atlas-free. Registration to the study template and
+    # the species atlas happens in the template registration module. (A block that loaded the SIGMA
+    # template and tissue masks "for reference" was removed: nothing used them, and it made
+    # anatomical preprocessing fail for any species whose atlas is not SIGMA.)
 
     # Step 1: Extract slices from subject if needed
     if slice_range:
@@ -1261,11 +1247,13 @@ def run_anatomical_preprocessing(
     n4_iterations = get_config_value(config, 'anatomical.n4.iterations', default=[50, 50, 30, 20])
     n4_shrink = get_config_value(config, 'anatomical.n4.shrink_factor', default=3)
     n4_convergence = get_config_value(config, 'anatomical.n4.convergence_threshold', default=1e-6)
+    n4_bspline = get_config_value(config, 'anatomical.n4.bspline_fitting_distance', default=None)
     bias_field_correction(
         t2w_input, t2w_n4_file, mask_file=None,
         n_iterations=n4_iterations,
         shrink_factor=n4_shrink,
         convergence_threshold=n4_convergence,
+        bspline_fitting_distance=n4_bspline,
     )
 
     # Step 3: Skull stripping (after bias correction)
@@ -1361,8 +1349,14 @@ def run_anatomical_preprocessing(
     img_for_check = nib.load(brain_file)
     is_3d = _is_3d_acquisition(t2w_file, img_for_check.shape, img_for_check.header.get_zooms())
     resampled_to_2d = False
+    # Resampling 3D outputs onto the cohort's 2D template grid serves rat studies whose
+    # templates come from a 2D multi-slice protocol. Species/studies whose primary
+    # anatomy is 3D (mouse) keep the native 3D grid.
+    resample_3d = get_config_value(config, 'anatomical.resample_3d_to_2d', default=True)
+    if is_3d and not resample_3d:
+        print("3D acquisition kept on its native grid (anatomical.resample_3d_to_2d: false).")
 
-    if is_3d:
+    if is_3d and resample_3d:
         print("\n" + "="*60)
         print("STEP 4b: 3D Acquisition Detected - Resampling to 2D Geometry")
         print("="*60)
@@ -1506,7 +1500,9 @@ def run_anatomical_preprocessing(
         gm_file=final_gm,
         wm_file=final_wm,
         csf_file=final_csf,
-        output_dir=qc_dir
+        output_dir=qc_dir,
+        brain_ratio_range=tuple(get_config_value(
+            config, 'anatomical.qc.brain_to_total_range', default=[0.15, 0.5])),
     )
     print(f"  ✓ QC report: {qc_report}")
 

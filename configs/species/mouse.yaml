@@ -37,6 +37,9 @@ atlas:
     template: "${atlas.study_space.base_path}/template_T2w.nii.gz"
     template_masked: "${atlas.study_space.base_path}/brain.nii.gz"
     brain_mask: "${atlas.study_space.base_path}/brain_mask.nii.gz"
+    # Extent for mask refinement and its QC (labels > 0). The label sets cover only part of the
+    # brain (allen26/32 70%, CCFv3 82% of this mask), so use the mask itself.
+    brain_extent: "${atlas.study_space.base_path}/brain_mask.nii.gz"
     gm_prob: null
     wm_prob: null
     csf_prob: null
@@ -44,13 +47,26 @@ atlas:
     parcellation_fine: "${atlas.study_space.base_path}/ccfv3_annotation.nii.gz"
     parcellation_eeg: "${atlas.study_space.base_path}/allen26_labels.nii.gz"
 
-ants:
-  n4:
-    bspline_fitting_distance: 25   # rat 50 (scaled mm); half the brain length
-
 anatomical:
+  # BIDS conversion already applied bids.voxel_scale; do not rescale sub-mm scaled voxels again.
+  input_already_scaled: true
+  # Mouse anatomy is a 3D RARE; keep it on its native grid (the 2D-template resampling is a
+  # rat-cohort convention).
+  resample_3d_to_2d: false
+  n4:
+    # Rat uses ANTs' default B-spline spacing, 200 scaled mm (~a rat brain length). Half the
+    # linear size -> 100. (Replaces the earlier ants.n4.bspline_fitting_distance, which no code read.)
+    bspline_fitting_distance: 100
+  qc:
+    # brain / non-zero voxels; rat FOVs give 0.15-0.5. The FAC600 pilot 3D RARE (15x24x15 mm FOV)
+    # gives 0.10 for a correct mask, so the rat bounds would flag every mouse as over-stripped.
+    brain_to_total_range: [0.05, 0.30]
   skull_strip:
+    # The rat atropos_bet path (BET -f 0.3, no radius) leaked into extracranial tissue on the
+    # FAC600 pilot (892 mm3 vs ~550). bet4animal with a mouse radius is what worked there.
+    method: "bet4animal"
     refine:
+      tolerance_mm3: 6             # rat 25 (~1.2% of a rat brain)
       qc:
         volume_mm3: [400, 650]     # plausible mouse brain incl. surface CSF (true mm3); Antwerp mask 564
         non_brain_mm3: 100         # rat 400
@@ -58,6 +74,7 @@ anatomical:
     bet4animal:
       radii: [60]                  # rat 125 (scaled mm)
       cov_range: [3.0, 15.0]       # brain as % of FOV; mouse protocols have proportionally larger FOVs
+      long_axis: auto              # rostro-caudal voxel axis from the affine (sagittal 3D: axis 1; rat 2D: 2)
 
 functional:
   smoothing:

@@ -89,3 +89,27 @@ def test_apply_species_profile_without_defaults():
                                         "bids": {"raw_root": "/r", "bids_root": "/b"}})
     assert merged["bids"] == {"voxel_scale": 10.0, "affine": "scanner",
                               "raw_root": "/r", "bids_root": "/b"}
+
+
+def test_mouse_profile_anat_preprocessing_settings(tmp_path):
+    """Values the mouse anat path needs (validated on the FAC600 pilot 3D RARE)."""
+    cfg = load_config(write_study(tmp_path, species="mouse"), validate=False)
+    assert get_config_value(cfg, "anatomical.skull_strip.method") == "bet4animal"
+    assert get_config_value(cfg, "anatomical.skull_strip.bet4animal.long_axis") == "auto"
+    assert get_config_value(cfg, "anatomical.input_already_scaled") is True
+    assert get_config_value(cfg, "anatomical.resample_3d_to_2d") is False
+    assert get_config_value(cfg, "anatomical.n4.bspline_fitting_distance") == 100
+    assert get_config_value(cfg, "anatomical.qc.brain_to_total_range") == [0.05, 0.30]
+    assert get_config_value(cfg, "atlas.study_space.brain_extent").endswith("Antwerp/scaled10/brain_mask.nii.gz")
+    # the mouse profile no longer sets the dead ants.n4 key (nothing reads ants.*)
+    from neurofaune.species import load_species_profile
+    assert "ants" not in load_species_profile("mouse")
+
+
+def test_rat_keeps_its_anat_behaviour(tmp_path):
+    cfg = load_config(write_study(tmp_path, species="rat"), validate=False)
+    assert get_config_value(cfg, "anatomical.skull_strip.method") == "atropos_bet"
+    assert get_config_value(cfg, "anatomical.input_already_scaled", default=False) is False
+    assert get_config_value(cfg, "anatomical.resample_3d_to_2d", default=True) is True
+    assert get_config_value(cfg, "anatomical.n4.bspline_fitting_distance", default=None) is None
+    assert get_config_value(cfg, "atlas.study_space.brain_extent", default=None) is None
