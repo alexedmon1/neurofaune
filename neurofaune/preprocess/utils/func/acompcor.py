@@ -14,7 +14,7 @@ import numpy as np
 import nibabel as nib
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
-from scipy.ndimage import binary_erosion
+from neurofaune.preprocess.utils.func.masks import erode
 from sklearn.decomposition import PCA
 import matplotlib
 matplotlib.use('Agg')
@@ -33,7 +33,8 @@ def extract_acompcor_components(
     drop_first_component: bool = False,
     output_file: Optional[Path] = None,
     min_voxels_per_component: int = 10,
-    allow_reduced_components: bool = False
+    allow_reduced_components: bool = False,
+    erode_inplane: bool = False,
 ) -> Dict[str, Any]:
     """
     Extract aCompCor components from CSF and white matter regions.
@@ -68,6 +69,9 @@ def extract_acompcor_components(
         Binary brain mask in the same space as the tissue masks. When given and
         ``erode_voxels > 0``, drives the erode-brain-then-intersect rim removal
         described above.
+    erode_inplane : bool
+        Erode within slices only (``functional.erode_inplane``; see
+        ``masks.erosion_structure``). The 3D default empties the slab-end slices.
     drop_first_component : bool
         Discard the leading PC of each tissue and keep the next
         ``n_components`` instead (default: False, i.e. keep PC1..PCn).
@@ -165,7 +169,7 @@ def extract_acompcor_components(
         eroded_brain = None
         if brain_mask is not None:
             brain_data = nib.load(brain_mask).get_fdata() > 0
-            eroded_brain = binary_erosion(brain_data, iterations=erode_voxels)
+            eroded_brain = erode(brain_data, erode_voxels, inplane=erode_inplane)
             print(f"  Brain-mask erosion ({erode_voxels} iter): "
                   f"{int(np.sum(brain_data))} -> {int(np.sum(eroded_brain))} voxels")
 
@@ -174,7 +178,7 @@ def extract_acompcor_components(
             if eroded_brain is not None:
                 candidate = binary & eroded_brain
             else:
-                candidate = binary_erosion(binary, iterations=erode_voxels)
+                candidate = erode(binary, erode_voxels, inplane=erode_inplane)
             n_new = int(np.sum(candidate))
             if n_new < n_components:
                 print(f"  WARNING: {label} erosion ({erode_voxels} iter) left "

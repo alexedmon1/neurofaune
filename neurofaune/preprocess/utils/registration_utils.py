@@ -214,6 +214,32 @@ def propagate_anat_image(
     return Path(out_image)
 
 
+def voxel_world_axes(affine: np.ndarray) -> np.ndarray:
+    """World axis (0=x, 1=y, 2=z) each voxel axis mostly points along."""
+    return np.abs(np.asarray(affine)[:3, :3]).argmax(axis=0)
+
+
+def require_shared_voxel_frame(moving_img: nib.Nifti1Image, fixed_img: nib.Nifti1Image,
+                               what: str = 'NCC slice search') -> None:
+    """Raise unless both images index the same world axes in the same voxel order.
+
+    The NCC slice search compares moving slice ``k`` with fixed slice ``z`` array
+    to array, which is only meaningful when voxel axis 2 is the same anatomical
+    axis in both and the in-plane axes line up. That holds by construction for
+    the rat pipeline (images and cohort template share one voxel frame). It does
+    not hold for scanner-affine data with mixed slice orientations -- e.g. the
+    FAC600 mouse axial EPI (voxel axes -> world x, z, y) against the Antwerp
+    template (x, y, z) -- where the search returns a confident, meaningless
+    offset. Those cases need the registration through the same-session T2w.
+    """
+    m, f = voxel_world_axes(moving_img.affine), voxel_world_axes(fixed_img.affine)
+    if not np.array_equal(m, f):
+        raise ValueError(
+            f"{what}: moving voxel axes point along world axes {m.tolist()} but fixed along "
+            f"{f.tolist()}, so their slices are not comparable array-to-array. Register through "
+            f"the same-session T2w instead (needs its T2w_to_template transform).")
+
+
 def find_z_offset_ncc(
     moving_img: nib.Nifti1Image,
     fixed_img: nib.Nifti1Image,
@@ -254,6 +280,7 @@ def find_z_offset_ncc(
     """
     from scipy.ndimage import zoom as scipy_zoom
 
+    require_shared_voxel_frame(moving_img, fixed_img)
     moving_data = moving_img.get_fdata()
     fixed_data = fixed_img.get_fdata()
     moving_zooms = moving_img.header.get_zooms()

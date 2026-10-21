@@ -326,6 +326,38 @@ def build_antwerp_hub(source_dir: Path, perens_dir: Path, out_dir: Path, work_di
     return meta
 
 
+#: CCFv3 composites (acronyms) used as tissue masks for aCompCor and the ICA CSF feature.
+TISSUE_COMPOSITES: Dict[str, str] = {"wm": "fiber tracts", "csf": "VS"}
+
+
+def add_tissue_masks(out_dir: Path, perens_dir: Path, voxel_scale: float = 10.0) -> Dict[str, Any]:
+    """Write WM and CSF masks from the CCFv3 annotation, on the native and hub grids.
+
+    WM = every structure under CCFv3 "fiber tracts", CSF = under "ventricular
+    systems". A T2w tissue segmentation of an in vivo mouse brain cannot supply
+    these: on the FAC600 pilot the Atropos "WM" class was the dark partial-volume
+    rim at the brain edge, not white matter, so aCompCor would have regressed out
+    cortical-edge signal. Writes ``{wm,csf}_mask.nii.gz`` (uint8) next to each
+    ``ccfv3_annotation.nii.gz``, plus the ``scaled10`` copies. Returns volumes in mm3.
+    """
+    out_dir = Path(out_dir)
+    perens = BrainGlobeAtlas(Path(perens_dir))
+    ids = {k: perens.descendants(perens.by_acronym(v)) for k, v in TISSUE_COMPOSITES.items()}
+    info: Dict[str, Any] = {"composites": TISSUE_COMPOSITES}
+    for grid_dir in (out_dir, out_dir / "hub100um"):
+        ann = nib.load(str(grid_dir / "ccfv3_annotation.nii.gz"))
+        arr = np.asanyarray(ann.dataobj)
+        vox_mm3 = float(np.prod(ann.header.get_zooms()[:3]))
+        grid = "native" if grid_dir == out_dir else grid_dir.name
+        for key, members in ids.items():
+            img = nib.Nifti1Image(np.isin(arr, sorted(members)).astype(np.uint8), ann.affine)
+            rel = (grid_dir / f"{key}_mask.nii.gz").relative_to(out_dir)
+            _save(img, out_dir / rel)
+            _save(scale_header(img, voxel_scale), out_dir / "scaled10" / rel)
+            info[f"{grid}_{key}_mm3"] = float(np.asanyarray(img.dataobj).sum() * vox_mm3)
+    return info
+
+
 def add_stereotaxic_frame(out_dir: Path, perens_original_dir: Path, perens_bg_dir: Path,
                           work_dir: Path, n_threads: int = 4) -> Dict[str, Any]:
     """Carry the Perens skull-derived stereotaxic frame (bregma origin) into the hub.

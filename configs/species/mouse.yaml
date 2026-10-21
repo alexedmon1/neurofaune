@@ -40,9 +40,12 @@ atlas:
     # Extent for mask refinement and its QC (labels > 0). The label sets cover only part of the
     # brain (allen26/32 70%, CCFv3 82% of this mask), so use the mask itself.
     brain_extent: "${atlas.study_space.base_path}/brain_mask.nii.gz"
+    # Tissue masks from the CCFv3 annotation (fiber tracts / ventricular systems), written by
+    # neurofaune.atlas.antwerp.add_tissue_masks. Binary in atlas space; warped into T2w they become
+    # partial-volume fractions. No GM map: nothing in preprocessing needs one from the atlas.
     gm_prob: null
-    wm_prob: null
-    csf_prob: null
+    wm_prob: "${atlas.study_space.base_path}/wm_mask.nii.gz"
+    csf_prob: "${atlas.study_space.base_path}/csf_mask.nii.gz"
     parcellation: "${atlas.study_space.base_path}/allen32_labels.nii.gz"
     parcellation_fine: "${atlas.study_space.base_path}/ccfv3_annotation.nii.gz"
     parcellation_eeg: "${atlas.study_space.base_path}/allen26_labels.nii.gz"
@@ -79,6 +82,28 @@ anatomical:
 functional:
   smoothing:
     fwhm: 3                        # rat 6 (scaled mm)
+  # BOLD brain mask = same-session T2w brain mask registered into the EPI, minus voxels without EPI
+  # signal. Slice-wise BET has no per-slice target that fits a mouse (brain = 2-18% of a slice on the
+  # FAC600 pilot; the rat 15% kept jaw muscle). Needs anat_preprocess first.
+  skull_strip_method: anat
+  skull_strip_anat:
+    foreground_k: 4                # noise floor + k sigma; removed the 1-voxel rim + dropout on the pilot
+    nonlinear: false               # rigid, as functional.second_mask
+  skull_strip_adaptive:
+    mask_erode: 0                  # the EPI-signal veto already strips the partial-volume rim
+  # Erode within slices only (ICA edge band, aCompCor rim). 3D erosion of a 9-13 slice slab of 1 mm
+  # slices empties the end slices and kept 44-71% of the pilot brain.
+  erode_inplane: true
+  motion_qc:
+    # FD rotation-to-displacement radius, real mm. Rat 5 mm scaled by the cube root of the brain-volume
+    # ratio (~0.5 / 2 cm3 -> 0.63).
+    head_radius_mm: 3.2
+  denoising:
+    acompcor:
+      # CCFv3 fiber tracts / ventricles from the atlas (atlas.study_space.wm_prob/csf_prob), warped
+      # into T2w by anat_atlas.atlas_tissue_to_anat. The Atropos WM class on mouse T2w is the
+      # brain-edge rim, not white matter.
+      tissue_source: atlas
 
 tractography:
   connectome:

@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 194 across 11 stages.
+**Entry points:** 195 across 11 stages.
 
 
 ## analysis
@@ -134,6 +134,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `register_anat_to_atlas_template` | `neurofaune.preprocess.workflows.anat_atlas` | SyN-register the preproc (skull-stripped) T2w to the atlas template. | `atlas.study_space.brain_mask` |
 | `register_refinement_seed` | `neurofaune.preprocess.workflows.anat_mask_refinement` | First-pass stripped T2w -> SIGMA SyN, written as `T2w_to_SIGMA_seed_*`. | — |
 | `run_brain_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine one session's T2w brain mask per `anatomical.skull_strip.refine`. | `atlas.study_space.brain_mask`, `atlas.study_space.template_masked` |
 | `run_seeded_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine a first-pass mask before any template exists. | — |

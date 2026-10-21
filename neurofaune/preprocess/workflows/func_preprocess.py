@@ -1118,6 +1118,104 @@ def refine_func_mask_with_anat(
     return info
 
 
+def anat_guided_func_mask(
+    config,
+    subject: str,
+    session: str,
+    derivatives_dir: Path,
+    ref_norm: Path,
+    ref_raw: Path,
+    brain_ref_out: Path,
+    mask_out: Path,
+    work_dir: Path,
+):
+    """``functional.skull_strip_method: anat`` -- the same-session T2w brain mask, vetoed by EPI signal.
+
+    The T2w brain mask is registered into the BOLD reference (rigid, MI, as in
+    :func:`refine_func_mask_with_anat`) and intersected with the EPI foreground
+    (``foreground_mask``: brighter than the Rayleigh noise floor + k sigma). The
+    T2w mask decides where the brain is; the EPI decides where there is signal,
+    so dropout and the partial-volume rim are removed and nothing outside the
+    brain is added.
+
+    Written for mouse, where slice-wise BET has no target ratio that fits: the
+    brain fills 2-11% of each axial and 0-18% of each coronal slice of the
+    FAC600 pilot EPI, and at the rat target (15%) every slice hit the top of the
+    frac range and kept jaw muscle (the T2w intersect then removed 39-54% of the
+    BET mask). The k=4 veto there removed 10-13% of the propagated mask, almost
+    all of it a one-voxel rim plus dorsal dropout patches.
+
+    Returns ``(brain_ref, mask, info, anat_reg_info)``; ``anat_reg_info`` carries
+    the BOLD->T2w registration for aCompCor and the ICA CSF feature.
+    """
+    from neurofaune.config import get_config_value
+    from neurofaune.preprocess.utils.foreground import foreground_mask
+    from neurofaune.preprocess.utils.registration_utils import propagate_anat_mask
+
+    anat_dir = Path(derivatives_dir).parent / 'anat'
+    anat_t2w = anat_dir / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+    anat_mask = anat_dir / f'{subject}_{session}_desc-brain_mask.nii.gz'
+    if not (anat_t2w.exists() and anat_mask.exists()):
+        raise FileNotFoundError(
+            f"functional.skull_strip_method 'anat' needs the anat preproc T2w and brain mask "
+            f"({anat_t2w.name}, {anat_mask.name} in {anat_dir}); run anat_preprocess first")
+
+    settings = get_config_value(config, 'functional.skull_strip_anat', default={}) or {}
+    k = float(settings.get('foreground_k', 4.0))
+    reg_dir = Path(work_dir) / 'anat_mask'
+    propagated = reg_dir / 'anat_mask_in_bold.nii.gz'
+    reg = propagate_anat_mask(
+        moving_ref=ref_norm, anat_t2w=anat_t2w, anat_mask=anat_mask, out_mask=propagated,
+        work_dir=reg_dir / 'reg', nonlinear=bool(settings.get('nonlinear', False)),
+    )
+    anat_in_bold = nib.load(propagated).get_fdata() > 0
+    raw = nib.load(ref_raw).get_fdata()
+    signal = foreground_mask(raw, k=k) > 0
+    mask = anat_in_bold & signal
+
+    ref_img = nib.load(ref_norm)
+    nib.save(nib.Nifti1Image(mask.astype(np.uint8), ref_img.affine, ref_img.header), mask_out)
+    nib.save(nib.Nifti1Image((ref_img.get_fdata() * mask).astype(np.float32),
+                             ref_img.affine, ref_img.header), brain_ref_out)
+
+    n_anat, n_mask = int(anat_in_bold.sum()), int(mask.sum())
+    info = {
+        'method': 'anat',
+        'total_voxels': n_mask,
+        'extraction_ratio': n_mask / mask.size,
+        'anat_voxels': n_anat,
+        'low_signal_removed': n_anat - n_mask,
+        'low_signal_fraction': (n_anat - n_mask) / n_anat if n_anat else 0.0,
+        'foreground_k': k,
+        'slice_voxels': mask.sum(axis=(0, 1)).astype(int).tolist(),
+    }
+    print(f"  T2w brain mask in BOLD: {n_anat} voxels; EPI-signal veto (k={k:g}) removed "
+          f"{n_anat - n_mask} ({info['low_signal_fraction']*100:.1f}%) -> {n_mask}")
+    anat_reg_info = {'moving_to_anat_affine': reg['moving_to_anat_affine'],
+                     'inverse_warp': reg.get('inverse_warp')}
+    return brain_ref_out, mask_out, info, anat_reg_info
+
+
+def anat_tissue_maps(config, study_root: Path, subject: str, session: str) -> Dict[str, Path]:
+    """T2w-space CSF/WM maps for aCompCor and the ICA CSF feature.
+
+    ``functional.denoising.acompcor.tissue_source``: ``segmentation`` (default; the
+    anat workflow's ``label-{CSF,WM}_probseg``) or ``atlas`` (the atlas masks warped
+    into T2w by ``anat_atlas.atlas_tissue_to_anat``).
+    """
+    from neurofaune.config import get_config_value
+    source = get_config_value(config, 'functional.denoising.acompcor.tissue_source',
+                              default='segmentation')
+    anat_dir = Path(study_root) / 'derivatives' / subject / session / 'anat'
+    if source == 'atlas':
+        from neurofaune.preprocess.workflows.anat_atlas import atlas_tissue_path
+        return {lab: atlas_tissue_path(study_root, subject, session, lab) for lab in ('CSF', 'WM')}
+    if source != 'segmentation':
+        raise ValueError(f"functional.denoising.acompcor.tissue_source must be 'segmentation' or "
+                         f"'atlas', got {source!r}")
+    return {lab: anat_dir / f'{subject}_{session}_label-{lab}_probseg.nii.gz' for lab in ('CSF', 'WM')}
+
+
 def run_multiecho_motion_correction(
     echo_files: List[Path],
     work_dir: Path,
@@ -1516,6 +1614,10 @@ def run_functional_preprocessing(
             'width': bet_config.get('width', 2.5)
         }
 
+    # Erode masks within slices only (mask erosion, ICA edge band, aCompCor);
+    # see utils.func.masks.erosion_structure. Default 3D, as before.
+    erode_inplane = bool(func_config.get('erode_inplane', False))
+    voxel_scale = float((config.get('bids') or {}).get('voxel_scale', 10.0))
     motion_method = func_config.get('motion_correction', {}).get('method', 'mcflirt')
     motion_ref = func_config.get('motion_correction', {}).get('reference', 'middle')
     smoothing_fwhm = func_config.get('smoothing', {}).get('fwhm', 0.5)
@@ -1995,7 +2097,14 @@ def run_functional_preprocessing(
             ss_method = 'adaptive'
 
         print(f"  Running skull stripping (method={ss_method})...")
-        if ss_method == 'template':
+        if ss_method == 'anat':
+            brain_ref, brain_mask, skull_strip_info, anat_reg_info = anat_guided_func_mask(
+                config, subject, session, derivatives_dir,
+                ref_norm=ref_norm, ref_raw=ref_volume,
+                brain_ref_out=brain_ref, mask_out=brain_mask,
+                work_dir=skull_strip_work_dir,
+            )
+        elif ss_method == 'template':
             brain_ref, brain_mask, skull_strip_info = skull_strip(
                 input_file=ref_norm,
                 output_file=brain_ref,
@@ -2025,24 +2134,24 @@ def run_functional_preprocessing(
         print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
 
         # Refine against the same-session T2w before the mask is used anywhere
-        # downstream (masking the timeseries, smoothing, aCompCor).
-        anat_reg_info = refine_func_mask_with_anat(
-            config, subject, session, derivatives_dir,
-            brain_ref, brain_mask, work_dir,
-        )
+        # downstream (masking the timeseries, smoothing, aCompCor). The 'anat'
+        # method is already that mask, so it has nothing to refine.
+        if ss_method != 'anat':
+            anat_reg_info = refine_func_mask_with_anat(
+                config, subject, session, derivatives_dir,
+                brain_ref, brain_mask, work_dir,
+            )
         if 'mean_frac' in skull_strip_info:
             print(f"  Mean frac: {skull_strip_info['mean_frac']:.3f} ± {skull_strip_info.get('std_frac', 0):.3f}")
 
         # Erode mask to remove edge voxels noisy after motion correction
         mask_erode = skull_strip_params.get('mask_erode', 1)
         if mask_erode > 0:
-            from scipy import ndimage
+            from neurofaune.preprocess.utils.func.masks import erode
             mask_img = nib.load(brain_mask)
             mask_data = mask_img.get_fdata() > 0
             n_before = int(mask_data.sum())
-            struct = ndimage.generate_binary_structure(3, 1)
-            mask_data = ndimage.binary_erosion(mask_data, structure=struct,
-                                               iterations=mask_erode).astype(np.float32)
+            mask_data = erode(mask_data, mask_erode, inplane=erode_inplane).astype(np.float32)
             n_after = int(mask_data.sum())
             nib.save(nib.Nifti1Image(mask_data, mask_img.affine, mask_img.header),
                      brain_mask)
@@ -2050,7 +2159,8 @@ def run_functional_preprocessing(
             brain_data = ref_img.get_fdata() * mask_data
             nib.save(nib.Nifti1Image(brain_data.astype(np.float32),
                                      ref_img.affine, ref_img.header), brain_ref)
-            print(f"  Mask erosion ({mask_erode} iter): {n_before:,} -> {n_after:,} voxels "
+            print(f"  Mask erosion ({mask_erode} iter, {'in-plane' if erode_inplane else '3D'}): "
+                  f"{n_before:,} -> {n_after:,} voxels "
                   f"({n_before - n_after:,} edge voxels removed)")
 
         print("\nApplying mask to 4D timeseries...")
@@ -2093,8 +2203,20 @@ def run_functional_preprocessing(
             )
 
             csf_mask = None
-            csf_mask_path = output_dir / 'derivatives' / subject / session / 'anat' / f'{subject}_{session}_label-CSF_probseg.nii.gz'
-            if csf_mask_path.exists():
+            csf_mask_path = anat_tissue_maps(config, output_dir, subject, session)['CSF']
+            if csf_mask_path.exists() and anat_reg_info and anat_reg_info.get('moving_to_anat_affine'):
+                # Registered, as for aCompCor (STEP 8): resample_from_to below only
+                # maps world coordinates and is wrong whenever the FOVs differ.
+                from neurofaune.preprocess.utils.registration_utils import propagate_anat_image
+                csf_mask = propagate_anat_image(
+                    anat_image=csf_mask_path, moving_ref=brain_mask,
+                    moving_to_anat_affine=anat_reg_info['moving_to_anat_affine'],
+                    inverse_warp=anat_reg_info.get('inverse_warp'),
+                    out_image=work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz',
+                    interpolation='Linear',
+                )
+                print("  CSF map registered into BOLD space (func->anat registration)")
+            elif csf_mask_path.exists():
                 from nibabel.processing import resample_from_to
                 bold_ref_img = nib.load(brain_mask)
                 csf_img = nib.load(csf_mask_path)
@@ -2117,7 +2239,8 @@ def run_functional_preprocessing(
                 edge_threshold=ica_config.get('edge_threshold', 0.80),
                 csf_threshold=ica_config.get('csf_threshold', 0.70),
                 freq_threshold=ica_config.get('freq_threshold', 0.60),
-                classification_mode=ica_config.get('classification_mode', 'score')
+                classification_mode=ica_config.get('classification_mode', 'score'),
+                edge_inplane=erode_inplane,
             )
 
             bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
@@ -2202,9 +2325,8 @@ def run_functional_preprocessing(
         from neurofaune.preprocess.utils.registration_utils import (
             propagate_anat_image,
         )
-        anat_deriv_dir = output_dir / 'derivatives' / subject / session / 'anat'
-        csf_mask = anat_deriv_dir / f'{subject}_{session}_label-CSF_probseg.nii.gz'
-        wm_mask = anat_deriv_dir / f'{subject}_{session}_label-WM_probseg.nii.gz'
+        tissue = anat_tissue_maps(config, output_dir, subject, session)
+        csf_mask, wm_mask = tissue['CSF'], tissue['WM']
 
         if not csf_mask.exists() or not wm_mask.exists():
             print(f"  Warning: Tissue masks not found:")
@@ -2255,7 +2377,8 @@ def run_functional_preprocessing(
             drop_first_component=acompcor_config.get('drop_first_component', False),
             output_file=acompcor_file,
             min_voxels_per_component=acompcor_config.get('min_voxels_per_component', 10),
-            allow_reduced_components=acompcor_config.get('allow_reduced_components', False)
+            allow_reduced_components=acompcor_config.get('allow_reduced_components', False),
+            erode_inplane=erode_inplane,
         )
 
         # Generate aCompCor QC
@@ -2532,6 +2655,8 @@ def run_functional_preprocessing(
         brain_file=brain_ref,
         skull_strip_mask_file=brain_mask,
         skull_strip_info=skull_strip_info,
+        head_radius_mm=func_config.get('motion_qc', {}).get('head_radius_mm', 5.0),
+        voxel_scale=voxel_scale,
     )
 
     # Confounds QC
