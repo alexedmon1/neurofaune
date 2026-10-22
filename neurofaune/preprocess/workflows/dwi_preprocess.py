@@ -1102,8 +1102,11 @@ def run_dwi_preprocessing(
     )
     pad_mask_for_eddy(brain_mask_file, mask_padded_file, n_pad=n_pad_slices)
 
-    # Check for eddy_cuda availability
-    eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy'
+    # Check for eddy_cuda availability. On the CPU path call eddy_cpu directly:
+    # FSL >= 6.0.7 ships 'eddy' as a dispatcher that execs eddy_cuda whenever a
+    # CUDA driver is visible, ignoring use_gpu=False, and eddy_cuda rejects
+    # --nthr > 1 (FAC600 run failed this way once WSL exposed the GPU).
+    eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy_cpu'
 
     try:
         # eddy_cuda doesn't support --version, so just check the binary exists
