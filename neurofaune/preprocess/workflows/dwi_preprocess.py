@@ -70,6 +70,21 @@ def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=No
     return 'eddy_cpu' if which('eddy_cpu') is not None else 'eddy'
 
 
+def dti_shell_keep(bvals: np.ndarray, max_bval: float) -> np.ndarray:
+    """Volumes for the tensor fit: b0 + shells whose *nominal* b is <= max_bval.
+
+    Bruker writes effective b-values, which sit a few percent above nominal and
+    vary per direction (FAC600 mouse b=1000 shell: 1005-1031, mean 1017), so a
+    raw ``b <= 1000`` drops most of the b=1000 shell. Volumes are grouped into
+    shells (``round_bvals_to_shells``) and each shell mean is rounded to the
+    nearest 100 s/mm^2 before comparing.
+    """
+    from neurofaune.preprocess.utils.dwi_utils import round_bvals_to_shells
+    bvals = np.atleast_1d(np.asarray(bvals, float))
+    nominal = np.round(round_bvals_to_shells(bvals) / 100.0) * 100.0
+    return nominal <= float(max_bval)
+
+
 def _sigma_warp_variants(
     registration_results: Dict[str, Any],
     canonical: str = 'affine',
@@ -1640,9 +1655,10 @@ def fit_dti(
         assumes mono-exponential (Gaussian) decay, which only holds at low b;
         above ~1000-1500 the signal is non-Gaussian (kurtosis), so including
         high-b shells biases the tensor (deflates diffusivity, inflates FA). When
-        set, only b0 + volumes with b <= max_bval are used for the fit. None keeps
-        all volumes (legacy behaviour; correct only for single-shell b<=1000 data).
-        Higher shells remain available to DKI/NODDI, which model non-Gaussianity.
+        set, only b0 + shells with nominal b <= max_bval are used for the fit
+        (see ``dti_shell_keep``). None keeps all volumes (legacy behaviour;
+        correct only for single-shell b<=1000 data). Higher shells remain
+        available to DKI/NODDI, which model non-Gaussianity.
 
     Returns
     -------
@@ -1654,7 +1670,7 @@ def fit_dti(
     # Restrict the tensor fit to the Gaussian regime (b0 + b <= max_bval).
     if max_bval is not None:
         bvals = np.atleast_1d(np.loadtxt(bval_file))
-        keep = bvals <= float(max_bval)
+        keep = dti_shell_keep(bvals, max_bval)
         n_keep, n_tot = int(keep.sum()), keep.size
         if n_keep < n_tot:
             import tempfile
