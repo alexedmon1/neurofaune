@@ -99,6 +99,7 @@ def write_provenance(
     config: Optional[Any] = None,
     sources: Optional[List[Path]] = None,
     extra: Optional[Dict[str, Any]] = None,
+    entities: str = "",
 ) -> Path:
     """Write ``<sub>_<ses>_<mod>-provenance.json`` beside the derivatives.
 
@@ -108,7 +109,8 @@ def write_provenance(
     across arms and survives an arm adding or removing sidecars later.
 
     ``extra`` adds arm-specific run facts the config cannot tell you, such as
-    which eddy build ran (dwi ``"Eddy"``).
+    which eddy build ran (dwi ``"Eddy"``). ``entities`` (e.g. ``acq-ax_run-21``)
+    names a per-run file when a session has several runs of the modality.
     """
     derivatives_dir = Path(derivatives_dir)
     derivatives_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +124,10 @@ def write_provenance(
         record["Sources"] = [str(s) for s in sources]
     if extra:
         record.update(extra)
-    out =derivatives_dir / f"{subject}_{session}_{modality}-provenance.json"
+    if entities:
+        record["Entities"] = entities
+    run = f"_{entities}" if entities else ""
+    out = derivatives_dir / f"{subject}_{session}{run}_{modality}-provenance.json"
     out.write_text(json.dumps(record, indent=2))
     return out
 

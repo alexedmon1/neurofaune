@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 import subprocess
 import json
+import re
 import shutil
 
 from neurofaune.preprocess.utils.validation import validate_image, print_validation_results
@@ -93,6 +94,7 @@ def register_bold_to_template(
     work_dir: Path,
     n_cores: int = 4,
     template_brain_mask: Optional[Path] = None,
+    prefix: str = '',
 ) -> Dict[str, Any]:
     """
     Register mean BOLD directly to the cohort template.
@@ -140,7 +142,7 @@ def register_bold_to_template(
 
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
-    output_prefix = transforms_dir / 'BOLD_to_template_'
+    output_prefix = transforms_dir / f'{prefix}BOLD_to_template_'
 
     # Preferred path: register VIA the same-session anat (moving->anat rigid o
     # anat->template SyN). A within-subject BOLD->anat registration avoids the
@@ -292,7 +294,8 @@ def register_bold_to_t2w(
     subject: str,
     session: str,
     work_dir: Path,
-    n_cores: int = 4
+    n_cores: int = 4,
+    prefix: str = '',
 ) -> Dict[str, Any]:
     """
     Register mean BOLD to T2w within the same subject.
@@ -346,7 +349,7 @@ def register_bold_to_t2w(
 
     transforms_dir = output_dir / 'transforms' / subject / session
     transforms_dir.mkdir(parents=True, exist_ok=True)
-    output_prefix = transforms_dir / 'BOLD_to_T2w_'
+    output_prefix = transforms_dir / f'{prefix}BOLD_to_T2w_'
 
     # Step 1: Find optimal Z offset via NCC scan
     # (needed because partial-coverage BOLD + both origins at 0,0,0 gives
@@ -1451,6 +1454,26 @@ def _apply_transforms_fallback(
     return output_file
 
 
+#: BIDS entities kept in per-run functional output names (echo is dropped: ME outputs are combined).
+_FUNC_ENTITIES = ('task', 'acq', 'ce', 'rec', 'dir', 'run')
+
+
+def func_output_entities(bold_file: Union[Path, List[Path]], config: Dict[str, Any]) -> str:
+    """Entity string (e.g. ``task-rest_acq-ax_run-21``) for this run's output names, or ''.
+
+    With ``functional.output_entities`` false (default) func outputs are named
+    ``{sub}_{ses}_*``, so a session with several BOLD runs overwrites itself in
+    one study root. True keeps the input's task/acq/ce/rec/dir/run entities in
+    every derivative, work, QC and transform name.
+    """
+    if not (config.get('functional') or {}).get('output_entities', False):
+        return ''
+    name = Path(bold_file[0] if isinstance(bold_file, list) else bold_file).name
+    found = dict(re.findall(r'(?:^|_)([a-zA-Z]+)-([a-zA-Z0-9]+)(?=_)', name))
+    return '_'.join(f'{k}-{found[k]}' for k in _FUNC_ENTITIES if k in found)
+
+
+
 def run_functional_preprocessing(
     config: Dict[str, Any],
     subject: str,
@@ -1566,10 +1589,17 @@ def run_functional_preprocessing(
     derivatives_dir = output_dir / 'derivatives' / subject / session / 'func'
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-run names when functional.output_entities (see func_output_entities).
+    run_ents = func_output_entities(bold_file, config)
+    stem = f"{subject}_{session}_{run_ents}" if run_ents else f"{subject}_{session}"
     qc_dir = get_subject_qc_dir(output_dir, subject, session, 'func')
+    if run_ents:
+        qc_dir = qc_dir / run_ents
+        qc_dir.mkdir(parents=True, exist_ok=True)
 
     if work_dir is None:
-        work_dir = output_dir / 'work' / subject / session / 'func_preproc'
+        work_dir = output_dir / 'work' / subject / session / (
+            f'func_preproc_{run_ents}' if run_ents else 'func_preproc')
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # Get config parameters
@@ -1669,7 +1699,7 @@ def run_functional_preprocessing(
         if n_discard > 0:
             trimmed_echoes = []
             for i, ef in enumerate(echo_files):
-                trimmed = work_dir / f"{subject}_{session}_echo-{i+1}_bold_trimmed.nii.gz"
+                trimmed = work_dir / f"{stem}_echo-{i+1}_bold_trimmed.nii.gz"
                 trimmed_path, n_discarded = discard_initial_volumes(ef, trimmed, n_discard)
                 trimmed_echoes.append(trimmed_path)
             echo_files_for_processing = trimmed_echoes
@@ -1685,7 +1715,7 @@ def run_functional_preprocessing(
             results['n_volumes_discarded'] = 0
     else:
         if n_discard > 0:
-            trimmed_bold = work_dir / f"{subject}_{session}_bold_trimmed.nii.gz"
+            trimmed_bold = work_dir / f"{stem}_bold_trimmed.nii.gz"
             bold_for_processing, n_discarded = discard_initial_volumes(
                 bold_file, trimmed_bold, n_discard
             )
@@ -1745,7 +1775,7 @@ def run_functional_preprocessing(
     # STEPS 2.5-5: Pathway fork — Multi-Echo vs Single-Echo
     # =========================================================================
 
-    brain_mask = derivatives_dir / f"{subject}_{session}_desc-brain_mask.nii.gz"
+    brain_mask = derivatives_dir / f"{stem}_desc-brain_mask.nii.gz"
     skull_strip_info = {}
     ref_norm = None          # Used for QC in SE path
     tpl_brain_mask_file = None  # Template brain mask (SE + template method only)
@@ -1879,7 +1909,7 @@ def run_functional_preprocessing(
             )
 
             # Step D: Remove noise components via fsl_regfilt
-            bold_denoised = work_dir / f"{subject}_{session}_desc-meica_denoised_bold.nii.gz"
+            bold_denoised = work_dir / f"{stem}_desc-meica_denoised_bold.nii.gz"
             remove_noise_components(
                 input_file=bold_optcom,
                 output_file=bold_denoised,
@@ -1950,7 +1980,7 @@ def run_functional_preprocessing(
                     classification_mode=ica_config.get('classification_mode', 'score')
                 )
 
-                bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
+                bold_denoised = work_dir / f"{stem}_desc-ica_denoised_bold.nii.gz"
                 remove_noise_components(
                     input_file=bold_optcom,
                     output_file=bold_denoised,
@@ -2020,7 +2050,7 @@ def run_functional_preprocessing(
                     custom_order = detected_custom
                     print(f"  Detected custom slice order: {custom_order}")
 
-            bold_stc = work_dir / f"{subject}_{session}_bold_stc.nii.gz"
+            bold_stc = work_dir / f"{stem}_bold_stc.nii.gz"
             run_slice_timing_correction(
                 input_file=bold_for_processing,
                 output_file=bold_stc,
@@ -2051,14 +2081,14 @@ def run_functional_preprocessing(
         data = img.get_fdata()
         mid_vol = data.shape[3] // 2
         ref_data = data[..., mid_vol]
-        ref_volume = work_dir / f"{subject}_{session}_bold_ref.nii.gz"
+        ref_volume = work_dir / f"{stem}_bold_ref.nii.gz"
         nib.save(nib.Nifti1Image(ref_data, img.affine, img.header), ref_volume)
         print(f"  Extracted volume {mid_vol} of {data.shape[3]}")
 
         print("\nRunning optimized skull stripping...")
         print("  Strategy: N4 bias correction + intensity normalization + adaptive per-slice BET with -R flag")
 
-        brain_ref = work_dir / f"{subject}_{session}_bold_brain_ref.nii.gz"
+        brain_ref = work_dir / f"{stem}_bold_brain_ref.nii.gz"
 
         func_config = config.get('functional', {})
         skull_strip_params = func_config.get('skull_strip_adaptive', {})
@@ -2073,7 +2103,7 @@ def run_functional_preprocessing(
         skull_strip_work_dir.mkdir(exist_ok=True)
 
         print("  Running N4 bias correction...")
-        ref_n4 = skull_strip_work_dir / f"{subject}_{session}_bold_ref_n4.nii.gz"
+        ref_n4 = skull_strip_work_dir / f"{stem}_bold_ref_n4.nii.gz"
         subprocess.run([
             'N4BiasFieldCorrection',
             '-i', str(ref_volume),
@@ -2086,7 +2116,7 @@ def run_functional_preprocessing(
         p2, p98 = np.percentile(data_n4[data_n4 > 0], [2, 98])
         data_norm = np.clip(data_n4, p2, p98)
         data_norm = (data_norm - p2) / (p98 - p2) * 1000
-        ref_norm = skull_strip_work_dir / f"{subject}_{session}_bold_ref_norm.nii.gz"
+        ref_norm = skull_strip_work_dir / f"{stem}_bold_ref_norm.nii.gz"
         nib.save(nib.Nifti1Image(data_norm, img_n4.affine, img_n4.header), ref_norm)
 
         # Build template brain mask on first use (WM + GM + CSF > 0.5 in template space)
@@ -2188,7 +2218,7 @@ def run_functional_preprocessing(
                   f"({n_before - n_after:,} edge voxels removed)")
 
         print("\nApplying mask to 4D timeseries...")
-        bold_masked = work_dir / f"{subject}_{session}_bold_brain.nii.gz"
+        bold_masked = work_dir / f"{stem}_bold_brain.nii.gz"
         apply_mask_to_timeseries(bold_for_processing, brain_mask, bold_masked)
         print(f"  Masked timeseries: {bold_masked}")
 
@@ -2236,7 +2266,7 @@ def run_functional_preprocessing(
                     anat_image=csf_mask_path, moving_ref=brain_mask,
                     moving_to_anat_affine=anat_reg_info['moving_to_anat_affine'],
                     inverse_warp=anat_reg_info.get('inverse_warp'),
-                    out_image=work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz',
+                    out_image=work_dir / f'{stem}_space-bold_label-CSF_probseg.nii.gz',
                     interpolation='Linear',
                 )
                 print("  CSF map registered into BOLD space (func->anat registration)")
@@ -2247,7 +2277,7 @@ def run_functional_preprocessing(
                 if csf_img.shape[:3] != bold_ref_img.shape[:3]:
                     print(f"  Resampling CSF mask from {csf_img.shape[:3]} to BOLD space {bold_ref_img.shape[:3]}")
                     csf_resampled = resample_from_to(csf_img, bold_ref_img, order=1)
-                    csf_mask_bold = work_dir / f'{subject}_{session}_space-bold_label-CSF_probseg.nii.gz'
+                    csf_mask_bold = work_dir / f'{stem}_space-bold_label-CSF_probseg.nii.gz'
                     nib.save(csf_resampled, csf_mask_bold)
                     csf_mask = csf_mask_bold
                 else:
@@ -2267,7 +2297,7 @@ def run_functional_preprocessing(
                 edge_inplane=erode_inplane,
             )
 
-            bold_denoised = work_dir / f"{subject}_{session}_desc-ica_denoised_bold.nii.gz"
+            bold_denoised = work_dir / f"{stem}_desc-ica_denoised_bold.nii.gz"
             remove_noise_components(
                 input_file=bold_mcf,
                 output_file=bold_denoised,
@@ -2308,7 +2338,7 @@ def run_functional_preprocessing(
     print("STEP 6: Spatial Smoothing")
     print("="*60)
 
-    bold_smooth = work_dir / f"{subject}_{session}_bold_smooth.nii.gz"
+    bold_smooth = work_dir / f"{stem}_bold_smooth.nii.gz"
     smooth_image(bold_for_smoothing, bold_smooth, smoothing_fwhm)
 
     # =========================================================================
@@ -2318,7 +2348,7 @@ def run_functional_preprocessing(
     print("STEP 7: Extract Motion Confounds")
     print("="*60)
 
-    confounds_file = derivatives_dir / f"{subject}_{session}_desc-confounds_timeseries.tsv"
+    confounds_file = derivatives_dir / f"{stem}_desc-confounds_timeseries.tsv"
     extract_confounds(
         motion_params,
         confounds_file,
@@ -2371,7 +2401,7 @@ def run_functional_preprocessing(
         else:
             for label, mask_path in [('CSF', csf_mask), ('WM', wm_mask)]:
                 out_path = (work_dir /
-                            f'{subject}_{session}_space-bold_label-{label}_probseg.nii.gz')
+                            f'{stem}_space-bold_label-{label}_probseg.nii.gz')
                 print(f"  Propagating {label} probseg into BOLD space "
                       f"(func->anat registration, Linear)")
                 propagate_anat_image(
@@ -2388,7 +2418,7 @@ def run_functional_preprocessing(
                     wm_mask = out_path
 
     if acompcor_enabled:
-        acompcor_file = derivatives_dir / f"{subject}_{session}_desc-acompcor_timeseries.tsv"
+        acompcor_file = derivatives_dir / f"{stem}_desc-acompcor_timeseries.tsv"
 
         acompcor_results = extract_acompcor_components(
             bold_file=bold_smooth,
@@ -2469,13 +2499,13 @@ def run_functional_preprocessing(
     post_var = np.var(residuals.T, axis=1).mean()
     clean_data[voxels[0], voxels[1], voxels[2], :] = residuals.T
 
-    bold_regressed = work_dir / f"{subject}_{session}_bold_regressed.nii.gz"
+    bold_regressed = work_dir / f"{stem}_bold_regressed.nii.gz"
     nib.save(nib.Nifti1Image(clean_data.astype(np.float32), bold_img.affine, bold_img.header), bold_regressed)
     print(f"  Regressed {confounds_matrix.shape[1]} nuisance regressors from {n_timepoints} volumes")
     print(f"  Variance reduction: {100*(1 - post_var/pre_var):.1f}%")
 
     # Save regressed (unfiltered) data to derivatives for fALFF analysis
-    regressed_deriv = derivatives_dir / f"{subject}_{session}_desc-regressed_bold.nii.gz"
+    regressed_deriv = derivatives_dir / f"{stem}_desc-regressed_bold.nii.gz"
     shutil.copy(str(bold_regressed), str(regressed_deriv))
     print(f"  Saved unfiltered regressed data: {regressed_deriv.name}")
 
@@ -2486,7 +2516,7 @@ def run_functional_preprocessing(
     print("STEP 10: Temporal Filtering")
     print("="*60)
 
-    bold_filtered = work_dir / f"{subject}_{session}_bold_filtered.nii.gz"
+    bold_filtered = work_dir / f"{stem}_bold_filtered.nii.gz"
     temporal_filter(
         bold_regressed,
         bold_filtered,
@@ -2520,7 +2550,7 @@ def run_functional_preprocessing(
             var_after = residuals.var(axis=1).mean()
             pct_removed = 100 * (1 - var_after / var_before) if var_before > 0 else 0
             filt_data[mask_data] = residuals
-            bold_gsr = work_dir / f"{subject}_{session}_bold_filtered_gsr.nii.gz"
+            bold_gsr = work_dir / f"{stem}_bold_filtered_gsr.nii.gz"
             nib.save(nib.Nifti1Image(filt_data.astype(np.float32),
                                      filt_img.affine, filt_img.header), bold_gsr)
             print(f"  Global signal variance removed: {pct_removed:.1f}%")
@@ -2530,7 +2560,7 @@ def run_functional_preprocessing(
             print("  WARNING: Global signal has zero variance, skipping GSR")
 
     # Save final output
-    final_bold = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+    final_bold = derivatives_dir / f"{stem}_desc-preproc_bold.nii.gz"
     shutil.copy(str(bold_filtered), str(final_bold))
 
     # =========================================================================
@@ -2650,7 +2680,7 @@ def run_functional_preprocessing(
         }
     }
 
-    metadata_file = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.json"
+    metadata_file = derivatives_dir / f"{stem}_desc-preproc_bold.json"
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
 
@@ -2714,7 +2744,7 @@ def run_functional_preprocessing(
             # Compute temporal mean of motion-corrected BOLD + brain mask
             reg_work_dir = work_dir / 'bold_registration'
             reg_work_dir.mkdir(parents=True, exist_ok=True)
-            mean_mcf_brain = reg_work_dir / f'{subject}_{session}_mean_mcf_brain.nii.gz'
+            mean_mcf_brain = reg_work_dir / f'{stem}_mean_mcf_brain.nii.gz'
 
             _stale = cache_is_stale(mean_mcf_brain, [bold_mcf, brain_mask])
             if _stale and mean_mcf_brain.exists():
@@ -2758,9 +2788,10 @@ def run_functional_preprocessing(
                         work_dir=reg_work_dir,
                         n_cores=config.get('execution', {}).get('n_procs', 4),
                         template_brain_mask=tpl_brain_mask_file,
+                        prefix=f'{run_ents}_' if run_ents else '',
                     )
 
-                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_template_registration.json'
+                    reg_metadata_file = derivatives_dir / f'{stem}_BOLD_to_template_registration.json'
                     reg_metadata = {
                         'bold_ref_file': str(bold_ref_for_reg),
                         'mcf_source': str(bold_mcf),
@@ -2799,7 +2830,7 @@ def run_functional_preprocessing(
                             results['qc_reports']['registration'] = reg_qc_report
                             # Save flat metrics JSON so batch_summary can aggregate them
                             reg_metrics = calculate_registration_metrics(template_file, warped_bold_path)
-                            metrics_json = qc_dir / f'{subject}_{session}_func_registration_metrics.json'
+                            metrics_json = qc_dir / f'{stem}_func_registration_metrics.json'
                             with open(metrics_json, 'w') as f:
                                 json.dump({
                                     'registration_correlation': reg_metrics.get('correlation'),
@@ -2827,10 +2858,11 @@ def run_functional_preprocessing(
                         subject=subject,
                         session=session,
                         work_dir=reg_work_dir,
-                        n_cores=config.get('execution', {}).get('n_procs', 4)
+                        n_cores=config.get('execution', {}).get('n_procs', 4),
+                        prefix=f'{run_ents}_' if run_ents else '',
                     )
 
-                    reg_metadata_file = derivatives_dir / f'{subject}_{session}_BOLD_to_T2w_registration.json'
+                    reg_metadata_file = derivatives_dir / f'{stem}_BOLD_to_T2w_registration.json'
                     reg_metadata = {
                         'bold_ref_file': str(mean_mcf_brain),
                         'mcf_source': str(bold_mcf),
@@ -2924,11 +2956,11 @@ def run_functional_preprocessing(
             print("\n" + "=" * 80)
             print("Warp preprocessed BOLD to SIGMA Space")
             print("=" * 80)
-            bold_preproc = derivatives_dir / f"{subject}_{session}_desc-preproc_bold.nii.gz"
+            bold_preproc = derivatives_dir / f"{stem}_desc-preproc_bold.nii.gz"
             try:
                 warp_coverage_mask(
                     mask_file=(derivatives_dir /
-                               f"{subject}_{session}_desc-brain_mask.nii.gz"),
+                               f"{stem}_desc-brain_mask.nii.gz"),
                     moving_to_template=registration_results['affine_transform'],
                     sigma_template=targets["sigma_template"],
                     output_dir=derivatives_dir,
@@ -2956,7 +2988,7 @@ def run_functional_preprocessing(
     # Record which neurofaune and which settings produced these outputs. A
     # derivative that cannot name its code cannot be reproduced, and the
     # question always arrives later than the run does.
-    write_provenance(derivatives_dir, subject, session, 'func', config=config,
+    write_provenance(derivatives_dir, subject, session, 'func', config=config, entities=run_ents,
                      extra={"Topup": topup_record} if topup_record is not None else None)
     write_dataset_description(output_dir / 'derivatives', config=config)
 

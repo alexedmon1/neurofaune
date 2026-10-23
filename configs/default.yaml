@@ -407,6 +407,13 @@ functional:
   tr: 1.0  # Repetition time (seconds) - study-specific
   te: 30.0  # Echo time (ms) - study-specific, or list for multi-echo
 
+  # Keep the input's BIDS task/acq/ce/rec/dir/run entities in every func output name
+  # (derivatives, work, QC subdir, BOLD_to_* transforms, provenance). false: {sub}_{ses}_* names,
+  # so a session with several BOLD runs overwrites itself in one study root. Downstream
+  # consumers that build {sub}_{ses}_desc-preproc_bold names (roi_extraction, batch_fc_analysis,
+  # templates.builder, SIGMA warp) do not yet understand per-run names.
+  output_entities: false
+
   # Susceptibility distortion correction with topup (STEP 2.2, before masking, motion
   # correction and registration). Needs a reverse-PE EPI pair on the BOLD grid with the BOLD's
   # TotalReadoutTime; found in the session's BIDS fmap/ (utils.topup.find_topup_pair) unless
