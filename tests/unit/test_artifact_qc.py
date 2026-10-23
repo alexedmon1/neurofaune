@@ -170,3 +170,16 @@ class TestDipole:
         te = np.array([0.008, 0.0202, 0.0324])
         s = 1000 * np.exp(-40 * te)
         assert r2star_loglinear(s[None, :], te)[0] == pytest.approx(40)
+
+
+def test_crop_keeps_series_tr(tmp_path):
+    """applytopup output must keep the BOLD TR in pixdim[4] (MELODIC reads it)."""
+    import nibabel as nib
+    import numpy as np
+    from neurofaune.preprocess.utils.topup import _crop
+    hdr = nib.Nifti1Header(); hdr.set_data_shape((4, 4, 3, 5)); hdr.set_zooms((1, 1, 2, 2.0))
+    hdr.set_xyzt_units("mm", "sec")
+    p = tmp_path / "x.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((4, 4, 4, 5), np.float32), np.eye(4)), str(p))   # even-padded
+    out = _crop(p, (4, 4, 3), np.eye(4), header=hdr)
+    assert out.shape == (4, 4, 3, 5) and nib.load(str(p)).header.get_zooms()[3] == 2.0

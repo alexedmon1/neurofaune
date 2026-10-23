@@ -37,7 +37,7 @@ from nibabel.processing import resample_from_to
 from scipy import ndimage
 
 from neurofaune.preprocess.qc.artifacts import maps
-from neurofaune.preprocess.qc.artifacts.topup import apply_topup, run_topup_pair, sidecar
+from neurofaune.preprocess.utils.topup import apply_topup, run_topup_pair, sidecar
 from neurofaune.utils.bruker_epi import chemical_shift_hz
 
 logger = logging.getLogger(__name__)

@@ -297,6 +297,10 @@ diffusion:
 
   # TOPUP distortion correction (if reverse PE images available)
   topup:
+    # true: find the reverse-PE spin-echo pair on the DWI grid in the session's BIDS fmap/
+    # (utils.topup.find_topup_pair) when dwi_preprocess is not given topup_epis. Warns and
+    # continues uncorrected if there is none; dwi-provenance records "Topup".
+    enabled: false
     readout_time: 0.05  # Study-specific, check protocol
     pe_direction: "AP"  # or "PA", "LR", "RL"
     config: "b02b0.cnf"  # FSL config file
@@ -402,6 +406,17 @@ functional:
   # Acquisition parameters
   tr: 1.0  # Repetition time (seconds) - study-specific
   te: 30.0  # Echo time (ms) - study-specific, or list for multi-echo
+
+  # Susceptibility distortion correction with topup (STEP 2.2, before masking, motion
+  # correction and registration). Needs a reverse-PE EPI pair on the BOLD grid with the BOLD's
+  # TotalReadoutTime; found in the session's BIDS fmap/ (utils.topup.find_topup_pair) unless
+  # passed as topup_epis. Every echo of a multi-echo run is unwarped with the same field.
+  # Warns and continues uncorrected if no pair exists; func-provenance records "Topup".
+  # Does not recover T2* signal dropout, only geometric distortion.
+  topup:
+    enabled: false
+    config: b02b0.cnf
+    n_threads: 1
 
   # Slice timing correction (run BEFORE motion correction)
   # Corrects for temporal differences in slice acquisition within each TR

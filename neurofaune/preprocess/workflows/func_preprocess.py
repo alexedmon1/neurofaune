@@ -1464,6 +1464,7 @@ def run_functional_preprocessing(
     n_discard: int = 0,
     run_registration: bool = True,
     echo_times: Optional[List[float]] = None,
+    topup_epis: Optional[Tuple[Path, Path]] = None,
 ) -> Dict[str, Any]:
     """
     Run complete functional fMRI preprocessing workflow.
@@ -1514,6 +1515,9 @@ def run_functional_preprocessing(
         Whether to register BOLD to template (default: True, requires template_file)
     echo_times : list of float, optional
         Echo times in milliseconds. Required for multi-echo data.
+    topup_epis : (Path, Path), optional
+        Reverse-PE EPI pair for ``functional.topup.enabled``. None finds it in
+        the session's BIDS ``fmap/`` (``utils.topup.find_topup_pair``).
 
     Returns
     -------
@@ -1698,6 +1702,44 @@ def run_functional_preprocessing(
             print("No volumes to discard")
             bold_for_processing = bold_file
             results['n_volumes_discarded'] = 0
+
+    # =========================================================================
+    # STEP 2.2: Susceptibility distortion correction (topup, optional)
+    # =========================================================================
+    # Before masking, motion correction and registration, so every later step
+    # sees undistorted geometry. (FSL convention unwarps after mcflirt; for the
+    # anaesthetised rodents here head motion is ~0.02 mm FD, so the order is
+    # immaterial and correcting first keeps the mask in true anatomy.)
+    topup_record = None
+    if func_config.get('topup', {}).get('enabled', False):
+        from neurofaune.preprocess.utils.topup import find_topup_pair, topup_correct_series
+        print("\n" + "="*60)
+        print("STEP 2.2: Susceptibility Distortion Correction (topup)")
+        print("="*60)
+        pair = tuple(topup_epis) if topup_epis is not None else find_topup_pair(primary_bold)
+        if pair is None:
+            print("WARNING: functional.topup.enabled but no reverse-PE EPI pair on this BOLD's grid "
+                  "in fmap/; continuing WITHOUT distortion correction")
+            topup_record = {"Applied": False}
+        else:
+            print(f"  Pair: {Path(pair[0]).name} / {Path(pair[1]).name}")
+            to_correct = echo_files_for_processing if is_multiecho else [bold_for_processing]
+            # applytopup needs the sidecar's phase encoding; trimmed copies have none.
+            if not Path(str(to_correct[0]).replace('.nii.gz', '.json')).exists():
+                for src, dst in zip(echo_files if is_multiecho else [bold_file], to_correct):
+                    Path(str(dst).replace('.nii.gz', '.json')).write_text(
+                        Path(str(src).replace('.nii.gz', '.json')).read_text())
+            tc = topup_correct_series(
+                to_correct, pair, work_dir / 'topup',
+                n_threads=int(func_config.get('topup', {}).get('n_threads', 1)),
+                config=func_config.get('topup', {}).get('config', 'b02b0.cnf'))
+            if is_multiecho:
+                echo_files_for_processing = tc['series']
+            else:
+                bold_for_processing = tc['series'][0]
+            topup_record = {"Applied": True, **tc['record']}
+            print(f"  Field |Hz| p99: {tc['record']['FieldHzP99Abs']}")
+        results['topup'] = topup_record
 
     # =========================================================================
     # STEPS 2.5-5: Pathway fork — Multi-Echo vs Single-Echo
@@ -2914,7 +2956,8 @@ def run_functional_preprocessing(
     # Record which neurofaune and which settings produced these outputs. A
     # derivative that cannot name its code cannot be reproduced, and the
     # question always arrives later than the run does.
-    write_provenance(derivatives_dir, subject, session, 'func', config=config)
+    write_provenance(derivatives_dir, subject, session, 'func', config=config,
+                     extra={"Topup": topup_record} if topup_record is not None else None)
     write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results

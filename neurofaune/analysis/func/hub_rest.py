@@ -36,7 +36,7 @@ from nibabel.processing import resample_from_to
 def prepare_run(bold: Path, pair: Dict[str, Path], work: Path, n_threads: int = 2) -> Dict[str, Path]:
     """mcflirt, then topup (Jacobian) applied to every volume with the same-grid pair."""
     from neurofaune.preprocess.qc.artifacts.implant import motion_correct
-    from neurofaune.preprocess.qc.artifacts.topup import apply_topup, run_topup_pair, sidecar
+    from neurofaune.preprocess.utils.topup import apply_topup, run_topup_pair, sidecar
 
     work = Path(work)
     mc = motion_correct(Path(bold), work / "mcflirt")

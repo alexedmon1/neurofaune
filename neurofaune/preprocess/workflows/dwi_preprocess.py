@@ -655,7 +655,7 @@ def dwi_acqparams_row(config: Dict[str, Any], dwi_file: Path) -> str:
     """
     source = get_config_value(config, 'diffusion.eddy.acqparams_source', default='config')
     if source == 'sidecar':
-        from neurofaune.preprocess.qc.artifacts.topup import acqparams_row, sidecar
+        from neurofaune.preprocess.utils.topup import acqparams_row, sidecar
         return acqparams_row(sidecar(Path(dwi_file)))
     if source != 'config':
         raise ValueError(f"diffusion.eddy.acqparams_source must be 'config' or 'sidecar', got {source!r}")
@@ -695,7 +695,7 @@ def run_dwi_topup(
     distortion-corrected b0 on the original grid (for brain masking), and the
     acqparams row of the DWI.
     """
-    from neurofaune.preprocess.qc.artifacts.topup import (
+    from neurofaune.preprocess.utils.topup import (
         acqparams_row, apply_topup, run_topup_pair, sidecar,
     )
 
@@ -855,7 +855,9 @@ def run_dwi_preprocessing(
         Forward and reverse phase-encode spin-echo EPIs on the DWI grid, with
         BIDS sidecars. When given, topup estimates the susceptibility field,
         the brain mask is made on the distortion-corrected b0, and eddy
-        corrects with ``--field`` (see :func:`run_dwi_topup`).
+        corrects with ``--field`` (see :func:`run_dwi_topup`). None with
+        ``diffusion.topup.enabled`` finds the pair in the session's BIDS
+        ``fmap/`` (``utils.topup.find_topup_pair``).
 
     Returns
     -------
@@ -1046,6 +1048,14 @@ def run_dwi_preprocessing(
 
     n_pad_slices = config.get('diffusion', {}).get('eddy', {}).get('slice_padding', 2)
     topup_info = None
+    if topup_epis is None and get_config_value(config, 'diffusion.topup.enabled', default=False):
+        from neurofaune.preprocess.utils.topup import find_topup_pair
+        topup_epis = find_topup_pair(Path(dwi_file))
+        if topup_epis is None:
+            print("WARNING: diffusion.topup.enabled but no reverse-PE EPI pair on the DWI grid in "
+                  "fmap/; continuing WITHOUT distortion correction")
+        else:
+            print(f"  topup pair (fmap/): {Path(topup_epis[0]).name} / {Path(topup_epis[1]).name}")
     if topup_epis is not None:
         print("\n  Susceptibility field from the reverse-PE pair (topup)...")
         topup_info = run_dwi_topup(dwi_file, b0_file, tuple(topup_epis), work_dir / 'topup_dwi',
@@ -1621,7 +1631,10 @@ def run_dwi_preprocessing(
     # The eddy build is recorded because CPU and GPU eddy disagree measurably
     # (see select_eddy), so a study must not mix them.
     write_provenance(derivatives_dir, subject, session, 'dwi', config=config,
-                     extra={"Eddy": eddy_cmd})
+                     extra={"Eddy": eddy_cmd,
+                            "Topup": ({"Applied": True, "Pair": [Path(p).name for p in topup_epis],
+                                       "FieldHzP99Abs": round(topup_info['field_hz_p99_abs'], 1)}
+                                      if topup_info is not None else {"Applied": False})})
     write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results

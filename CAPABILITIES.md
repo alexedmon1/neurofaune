@@ -94,7 +94,6 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 |---|---|---|---|
 | `fit_point_dipole` | `neurofaune.preprocess.qc.artifacts.dipole` | Fit dipole + smooth background to field samples ``field_hz`` at ``world_mm`` (N x 3). | — |
 | `run_implant_artifact_qc` | `neurofaune.preprocess.qc.artifacts.implant` | Run the implant artifact QC for one BIDS session. | — |
-| `run_topup_pair` | `neurofaune.preprocess.qc.artifacts.topup` | topup on one fwd/rev pair. Returns paths of the field (Hz), unwarped pair and mean. | — |
 | `compute_slice_metrics` | `neurofaune.preprocess.qc.batch_summary` | Compute per-slice QC metrics for a DTI FA map. | — |
 | `select_absolute_gates` | `neurofaune.preprocess.qc.batch_summary` | Split configured gates into ones that discriminate and ones that don't. | — |
 | `select_zscore_metrics` | `neurofaune.preprocess.qc.batch_summary` | Decide which metrics may be z-scored, and in which direction. | — |
@@ -129,6 +128,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `propagate_anat_image` | `neurofaune.preprocess.utils.registration_utils` | Warp any anat-space image into moving space, reusing an existing registration. | — |
 | `propagate_anat_mask` | `neurofaune.preprocess.utils.registration_utils` | Derive a brain mask by warping the same-session anat mask into moving space. | — |
 | `register_via_anat_composition` | `neurofaune.preprocess.utils.registration_utils` | Register a partial-slab moving reference to template VIA the same-session anat. | — |
+| `run_topup_pair` | `neurofaune.preprocess.utils.topup` | topup on one fwd/rev pair. Returns paths of the field (Hz), unwarped pair and mean. | — |
 
 ## preprocess (workflows)
 
@@ -148,7 +148,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `register_fa_to_t2w` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA to T2w within the same subject. | — |
 | `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA (or another DWI-space volume) to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
-| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `bids.voxel_scale`, `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.n_threads`, `diffusion.eddy.repol`, `diffusion.motion_qc.head_radius_mm`, `diffusion.registration.canonical`, `diffusion.registration.method`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.foreground_k`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.skull_strip.nonlinear`, `functional.motion_qc.head_radius_mm` |
+| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `bids.voxel_scale`, `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.n_threads`, `diffusion.eddy.repol`, `diffusion.motion_qc.head_radius_mm`, `diffusion.registration.canonical`, `diffusion.registration.method`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.foreground_k`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.skull_strip.nonlinear`, `diffusion.topup.enabled`, `functional.motion_qc.head_radius_mm` |
 | `run_dwi_topup` | `neurofaune.preprocess.workflows.dwi_preprocess` | topup on a reverse-PE spin-echo pair, on the slice-padded grid eddy will see. | — |
 | `select_eddy` | `neurofaune.preprocess.workflows.dwi_preprocess` | Name of the eddy binary to run: ``'eddy_cuda'`` or ``'eddy_cpu'``. | `diffusion.eddy.use_cuda` |
 | `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
