@@ -43,6 +43,33 @@ from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.provenance import write_provenance, write_dataset_description
 
 
+def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=None) -> str:
+    """Name of the eddy binary to run: ``'eddy_cuda'`` or ``'eddy_cpu'``.
+
+    ``use_gpu`` None defers to ``diffusion.eddy.use_cuda`` (default True), so a
+    study pins the build in its config. CPU and GPU eddy are not interchangeable:
+    on identical FAC600 mouse inputs they differed by median |dFA| 4e-3 (p99 4e-2)
+    and up to 0.2 mm / 0.4 deg in the b=2000 motion estimates, so a study must not
+    mix them. A missing eddy_cuda therefore warns loudly before falling back, and
+    the chosen build is written to the dwi provenance.
+
+    The CPU path names ``eddy_cpu`` explicitly: FSL >= 6.0.7 ships ``eddy`` as a
+    dispatcher that execs eddy_cuda whenever a CUDA driver is visible, whatever
+    was asked for, and eddy_cuda rejects ``--nthr > 1``. Plain ``eddy`` is only
+    the last resort for installs without ``eddy_cpu``.
+    """
+    import shutil
+    which = which or shutil.which
+    if use_gpu is None:
+        use_gpu = bool(get_config_value(config, 'diffusion.eddy.use_cuda', default=True))
+    if use_gpu:
+        if which('eddy_cuda') is not None:
+            return 'eddy_cuda'
+        print("WARNING: GPU eddy requested but eddy_cuda is not on PATH; falling back to "
+              "CPU eddy. CPU and GPU eddy outputs differ -- do not mix them within a study.")
+    return 'eddy_cpu' if which('eddy_cpu') is not None else 'eddy'
+
+
 def _sigma_warp_variants(
     registration_results: Dict[str, Any],
     canonical: str = 'affine',
@@ -761,7 +788,7 @@ def run_dwi_preprocessing(
     output_dir: Path,
     transform_registry: TransformRegistry,
     work_dir: Optional[Path] = None,
-    use_gpu: bool = True,
+    use_gpu: Optional[bool] = None,
     template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
     run_registration: bool = True,
@@ -800,8 +827,9 @@ def run_dwi_preprocessing(
         Transform registry for saving spatial transforms
     work_dir : Path, optional
         Working directory (defaults to output_dir/work/{subject}/{session}/dwi_preproc)
-    use_gpu : bool
-        Use GPU-accelerated eddy_cuda (default: True)
+    use_gpu : bool, optional
+        Use GPU-accelerated eddy_cuda. None (default) reads
+        ``diffusion.eddy.use_cuda`` (default True); see ``select_eddy``.
     template_file : Path, optional
         Cohort template for direct FA→Template registration (preferred)
     t2w_file : Path, optional
@@ -1102,22 +1130,8 @@ def run_dwi_preprocessing(
     )
     pad_mask_for_eddy(brain_mask_file, mask_padded_file, n_pad=n_pad_slices)
 
-    # Check for eddy_cuda availability. On the CPU path call eddy_cpu directly:
-    # FSL >= 6.0.7 ships 'eddy' as a dispatcher that execs eddy_cuda whenever a
-    # CUDA driver is visible, ignoring use_gpu=False, and eddy_cuda rejects
-    # --nthr > 1 (FAC600 run failed this way once WSL exposed the GPU).
-    eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy_cpu'
-
-    try:
-        # eddy_cuda doesn't support --version, so just check the binary exists
-        import shutil
-        if shutil.which(eddy_cmd) is not None:
-            print(f"Using {eddy_cmd} for eddy correction")
-        else:
-            raise FileNotFoundError(f"{eddy_cmd} not found in PATH")
-    except (FileNotFoundError,):
-        print(f"Warning: {eddy_cmd} not available, falling back to eddy")
-        eddy_cmd = 'eddy'
+    eddy_cmd = select_eddy(config, use_gpu)
+    print(f"Using {eddy_cmd} for eddy correction")
 
     # Create index file (all volumes use same phase encoding)
     index_file = work_dir / 'index.txt'
@@ -1155,7 +1169,7 @@ def run_dwi_preprocessing(
     if topup_info is not None:
         eddy_cmd_full.append(f"--field={str(topup_info['field_padded']).replace('.nii.gz', '')}")
 
-    if use_gpu and eddy_cmd == 'eddy_cuda':
+    if eddy_cmd == 'eddy_cuda':
         eddy_cmd_full.append('--very_verbose')
     else:
         # CPU eddy is single-threaded unless told otherwise (~3 h for the 75-volume
@@ -1589,7 +1603,10 @@ def run_dwi_preprocessing(
     # Record which neurofaune and which settings produced these outputs. A
     # derivative that cannot name its code cannot be reproduced, and the
     # question always arrives later than the run does.
-    write_provenance(derivatives_dir, subject, session, 'dwi', config=config)
+    # The eddy build is recorded because CPU and GPU eddy disagree measurably
+    # (see select_eddy), so a study must not mix them.
+    write_provenance(derivatives_dir, subject, session, 'dwi', config=config,
+                     extra={"Eddy": eddy_cmd})
     write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results

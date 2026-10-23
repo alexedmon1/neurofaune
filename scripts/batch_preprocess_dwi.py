@@ -230,7 +230,7 @@ def preprocess_single_subject(
     session: str,
     dwi_path: Path,
     config_path: Path,
-    use_gpu: bool = True,
+    use_gpu: Optional[bool] = None,
     force: bool = False,
     skip_registration: bool = False
 ) -> dict:
@@ -409,7 +409,7 @@ def main():
     print(f"BIDS root: {args.bids_root}")
     print(f"Output root: {args.output_root}")
     print(f"Config: {args.config}")
-    print(f"GPU: {'disabled' if args.no_gpu else 'enabled'}")
+    print(f"GPU: {'disabled (--no-gpu)' if args.no_gpu else 'per config diffusion.eddy.use_cuda (default on)'}")
     print()
 
     dwi_files = find_dwi_files(args.bids_root, subjects)
@@ -506,7 +506,7 @@ def main():
             session=session,
             dwi_path=dwi_path,
             config_path=args.config,
-            use_gpu=not args.no_gpu,
+            use_gpu=False if args.no_gpu else None,  # None: diffusion.eddy.use_cuda
             force=args.force,
             skip_registration=args.skip_registration
         )

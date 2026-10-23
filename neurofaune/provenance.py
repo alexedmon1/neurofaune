@@ -98,6 +98,7 @@ def write_provenance(
     modality: str,
     config: Optional[Any] = None,
     sources: Optional[List[Path]] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Write ``<sub>_<ses>_<mod>-provenance.json`` beside the derivatives.
 
@@ -105,6 +106,9 @@ def write_provenance(
     do not agree on having one: the anat workflow writes no JSON at all, so
     there is nothing to stamp. One file per session per modality is uniform
     across arms and survives an arm adding or removing sidecars later.
+
+    ``extra`` adds arm-specific run facts the config cannot tell you, such as
+    which eddy build ran (dwi ``"Eddy"``).
     """
     derivatives_dir = Path(derivatives_dir)
     derivatives_dir.mkdir(parents=True, exist_ok=True)
@@ -116,7 +120,9 @@ def write_provenance(
     }
     if sources:
         record["Sources"] = [str(s) for s in sources]
-    out = derivatives_dir / f"{subject}_{session}_{modality}-provenance.json"
+    if extra:
+        record.update(extra)
+    out =derivatives_dir / f"{subject}_{session}_{modality}-provenance.json"
     out.write_text(json.dumps(record, indent=2))
     return out
 

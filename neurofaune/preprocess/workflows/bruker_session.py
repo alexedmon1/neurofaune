@@ -162,7 +162,7 @@ def process_bruker_session(
     subject: str,
     session: str,
     config_path: Optional[Path] = None,
-    use_gpu: bool = True,
+    use_gpu: Optional[bool] = None,
     skip_registration: bool = True,
     force: bool = False,
     inventory_only: bool = False,
@@ -190,8 +190,9 @@ def process_bruker_session(
         Session identifier (e.g. ``'ses-01'``).
     config_path : Path, optional
         YAML config file.  If *None*, a minimal config is generated.
-    use_gpu : bool
-        Use ``eddy_cuda`` if available (default ``True``).
+    use_gpu : bool, optional
+        Use ``eddy_cuda``. None (default) reads ``diffusion.eddy.use_cuda``
+        (default true); see ``dwi_preprocess.select_eddy``.
     skip_registration : bool
         Skip cross-modal registration to template (default ``True``).
     force : bool
