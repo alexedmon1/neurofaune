@@ -134,6 +134,38 @@ def check_paths(paths):
     click.echo("no hardcoded tpl->SIGMA paths")
 
 
+@main.command()
+@click.argument("bruker_root", type=click.Path(path_type=Path))
+@click.argument("mrs_root", type=click.Path(path_type=Path))
+@click.option("--config", type=click.Path(exists=True, path_type=Path), required=True,
+              help="config YAML")
+@click.option("--derivatives", type=click.Path(path_type=Path), default=None,
+              help="anatomical derivatives root to read T2w tissue maps from, e.g. "
+                   "{study}/preprocessing/derivatives (default: MRS_ROOT/../derivatives); "
+                   "without tissue maps, fractions are assumed rather than measured")
+@click.option("--basis", type=click.Path(path_type=Path), default=None,
+              help="FSL-MRS basis set (overrides spectroscopy.basis)")
+@click.option("--subject", "subjects", multiple=True,
+              help="limit to this subject, e.g. sub-1Y (repeatable)")
+@click.option("--n-jobs", type=int, default=1, show_default=True,
+              help="parallel sessions (each fit uses several cores)")
+@click.option("--dry-run", is_flag=True, help="list what would be processed and exit")
+def mrs(bruker_root, mrs_root, config, derivatives, basis, subjects, n_jobs, dry_run):
+    """Process single-voxel spectroscopy (Bruker PRESS -> FSL-MRS) for a cohort.
+
+    Reads the raw Bruker tree, not BIDS (spec2nii cannot read ParaVision 360.3 SVS).
+    Writes MRS_ROOT/{sub}/{ses}/, MRS_ROOT/qc/, MRS_ROOT/logs/ and
+    MRS_ROOT/mrs_metabolites_long.csv. Exit 1 if any session failed.
+    """
+    from neurofaune.preprocess.workflows.mrs_batch import run_batch
+
+    if not bruker_root.is_dir():
+        raise click.BadParameter(f"not a directory: {bruker_root}", param_hint="BRUKER_ROOT")
+    raise SystemExit(run_batch(bruker_root, mrs_root, config, derivatives=derivatives,
+                               basis=basis, subjects=list(subjects) or None,
+                               n_jobs=n_jobs, dry_run=dry_run))
+
+
 if __name__ == "__main__":
     main()
 

@@ -292,15 +292,18 @@ water-scaled quantification with measured tissue fractions, and QC.
 
 ```bash
 # see which PRESS scan is selected per session, and what anatomy is available
-uv run python scripts/batch_preprocess_mrs.py \
-    /path/to/bruker /path/to/study/mrs --config config.yaml --dry-run
+neurofaune mrs /path/to/bruker /path/to/study/mrs --config config.yaml --dry-run
 
-uv run python scripts/batch_preprocess_mrs.py \
-    /path/to/bruker /path/to/study/mrs \
+neurofaune mrs /path/to/bruker /path/to/study/mrs \
     --config config.yaml \
     --derivatives /path/to/study/preprocessing/derivatives \
     --basis /path/to/basis/gamma_press_te20_7t_v1 --n-jobs 4
 ```
+
+The batch is part of the installed package (`neurofaune.preprocess.workflows.mrs_batch`),
+so a study that pins neurofaune pins it too. `scripts/batch_preprocess_mrs.py` takes the
+same arguments (`--subjects a b` where the command takes `--subject a --subject b`) and is
+kept for existing callers; run from a checkout, it uses the checkout's code.
 
 Two things differ from the other modalities. It reads the **raw Bruker tree
 rather than BIDS**, because `spec2nii` cannot read ParaVision 360.3 SVS data —

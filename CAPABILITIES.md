@@ -2,9 +2,9 @@
 
 _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit by hand — run `make capabilities`.
 
-**CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
+**CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `mrs`, `results`
 
-**Entry points:** 198 across 11 stages.
+**Entry points:** 200 across 11 stages.
 
 
 ## analysis
@@ -161,6 +161,8 @@ _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit 
 | `run_multiecho_motion_correction` | `neurofaune.preprocess.workflows.func_preprocess` | Motion-correct multi-echo data using middle echo as reference. | — |
 | `run_optimal_combination` | `neurofaune.preprocess.workflows.func_preprocess` | Optimally combine multi-echo data (T2*-weighted) without ICA denoising. | — |
 | `run_tedana` | `neurofaune.preprocess.workflows.func_preprocess` | Run TEDANA multi-echo ICA denoising. | — |
+| `build_parser` | `neurofaune.preprocess.workflows.mrs_batch` | The argparse command line of the MRS batch (the script wrapper's and ``python -m``'s). | — |
+| `run_batch` | `neurofaune.preprocess.workflows.mrs_batch` | Inventory and (unless ``dry_run``) process every session; returns the exit code. | — |
 | `convert_svs` | `neurofaune.preprocess.workflows.mrs_preprocess` | Convert a session's PRESS acquisition to NIfTI-MRS. | — |
 | `run_fsl_mrs_fit` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs`` to fit and quantify the preprocessed spectrum. | `spectroscopy.baseline`, `spectroscopy.combine`, `spectroscopy.free_shift`, `spectroscopy.internal_ref`, `spectroscopy.metab_groups`, `spectroscopy.ppmlim` |
 | `run_fsl_mrs_preproc` | `neurofaune.preprocess.workflows.mrs_preprocess` | Run ``fsl_mrs_preproc``. | `spectroscopy.align_window`, `spectroscopy.remove_outliers`, `spectroscopy.remove_water` |
