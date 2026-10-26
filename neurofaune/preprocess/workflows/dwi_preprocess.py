@@ -43,15 +43,60 @@ from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.provenance import write_provenance, write_dataset_description
 
 
-def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=None) -> str:
-    """Name of the eddy binary to run: ``'eddy_cuda'`` or ``'eddy_cpu'``.
+def find_cuda_build(name: str = 'eddy_cuda', which=None) -> Optional[str]:
+    """The CUDA build of an FSL tool for this machine's driver, found as FSL finds it.
 
-    ``use_gpu`` None defers to ``diffusion.eddy.use_cuda`` (default True), so a
+    FSL >= 6.0.7 installs its GPU builds under versioned names (``eddy_cuda11.0``,
+    ``eddy_cuda10.2``) with no plain ``eddy_cuda``, and resolves them with
+    ``find_cuda_exe <name>``, which prints the build that suits the installed CUDA
+    driver, or nothing when there is none. Its own ``eddy`` dispatcher does exactly
+    this. Returns that path, or None when FSL has no ``find_cuda_exe`` or it finds
+    no build.
+    """
+    import os
+    import shutil
+    which = which or shutil.which
+    tools = []
+    if os.environ.get('FSLDIR'):
+        tools.append(Path(os.environ['FSLDIR']) / 'bin' / 'find_cuda_exe')
+    on_path = which('find_cuda_exe')
+    if on_path:
+        tools.append(Path(on_path))
+    for tool in tools:
+        if not tool.exists():
+            continue
+        try:
+            found = subprocess.run([str(tool), name], capture_output=True, text=True,
+                                   timeout=60).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        return found if found and Path(found).exists() else None
+    return None
+
+
+def is_cuda_eddy(eddy_cmd: str) -> bool:
+    """True for a GPU eddy build, plain (``eddy_cuda``) or versioned (``.../eddy_cuda11.0``)."""
+    return Path(eddy_cmd).name.startswith('eddy_cuda')
+
+
+def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=None,
+                find_cuda=None) -> str:
+    """The eddy binary to run: a GPU build (plain or versioned) or ``'eddy_cpu'``.
+
+    The GPU build is ``'eddy_cuda'`` or the versioned build FSL's ``find_cuda_exe``
+    resolves, e.g. ``'/usr/local/fsl/bin/eddy_cuda11.0'``. ``use_gpu`` None defers to ``diffusion.eddy.use_cuda`` (default True), so a
     study pins the build in its config. CPU and GPU eddy are not interchangeable:
     on identical FAC600 mouse inputs they differed by median |dFA| 4e-3 (p99 4e-2)
     and up to 0.2 mm / 0.4 deg in the b=2000 motion estimates, so a study must not
-    mix them. A missing eddy_cuda therefore warns loudly before falling back, and
+    mix them. A missing GPU build therefore warns loudly before falling back, and
     the chosen build is written to the dwi provenance.
+
+    The GPU build is ``eddy_cuda`` when that name is on PATH, else the versioned
+    build ``find_cuda`` returns (default :func:`find_cuda_build`). Looking only for
+    the plain name sent a GPU study to CPU eddy on an FSL whose builds are
+    versioned (cuprizone: all 92 sessions had run ``eddy_cuda11.0`` through FSL's
+    dispatcher under the previous code, which a rerun would have replaced with
+    ``eddy_cpu``).
 
     The CPU path names ``eddy_cpu`` explicitly: FSL >= 6.0.7 ships ``eddy`` as a
     dispatcher that execs eddy_cuda whenever a CUDA driver is visible, whatever
@@ -65,8 +110,12 @@ def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=No
     if use_gpu:
         if which('eddy_cuda') is not None:
             return 'eddy_cuda'
-        print("WARNING: GPU eddy requested but eddy_cuda is not on PATH; falling back to "
-              "CPU eddy. CPU and GPU eddy outputs differ -- do not mix them within a study.")
+        versioned = (find_cuda or (lambda name: find_cuda_build(name, which)))('eddy_cuda')
+        if versioned:
+            return versioned
+        print("WARNING: GPU eddy requested but no eddy_cuda build was found (none on PATH, and "
+              "FSL's find_cuda_exe found none); falling back to CPU eddy. CPU and GPU eddy "
+              "outputs differ -- do not mix them within a study.")
     return 'eddy_cpu' if which('eddy_cpu') is not None else 'eddy'
 
 
@@ -1194,7 +1243,7 @@ def run_dwi_preprocessing(
     if topup_info is not None:
         eddy_cmd_full.append(f"--field={str(topup_info['field_padded']).replace('.nii.gz', '')}")
 
-    if eddy_cmd == 'eddy_cuda':
+    if is_cuda_eddy(eddy_cmd):
         eddy_cmd_full.append('--very_verbose')
     else:
         # CPU eddy is single-threaded unless told otherwise (~3 h for the 75-volume
