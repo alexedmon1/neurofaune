@@ -6,10 +6,11 @@ neurofaune's imaging dependencies are not installed (neurovrai, a reader's lapto
 from __future__ import annotations
 
 SPEC = "neurofaune.results"
-SPEC_VERSION = "0.2.0"
+SPEC_VERSION = "0.3.0"
 #: The (major, minor) versions this package reads: every 0.x up to its own. A 0.1 folder
-#: is checked by 0.1's rules; the rules added in 0.2 apply to folders that declare 0.2.
-READS = ((0, 1), (0, 2))
+#: is checked by 0.1's rules; the rules added in 0.2 apply to folders that declare 0.2 or
+#: later, and those added in 0.3 to folders that declare 0.3.
+READS = ((0, 1), (0, 2), (0, 3))
 
 ANALYSIS_JSON = "analysis.json"
 PROVENANCE_JSON = "provenance.json"
@@ -56,14 +57,23 @@ STANDARD_TERMS: dict[str, tuple[str, ...]] = {
     "n_significant": (), "frac_significant": (), "n_voxels": (), "volume_mm3": (),
     "peak_xyz_mm": ("Space",), "peak_region": (), "regions": (), "crosses_midline": (),
     "subgroup_effect": ("EffectMeasure", "Subgroup"), "subgroup_n": ("Subgroup",),
+    # 0.3: what the design could have detected (RESULTS_SPEC.md §5.1)
+    "se": (), "mde": ("Power", "Alpha"), "mde_percent": (), "mde_note": (),
 }
+
+#: Standard terms added after 0.1, with the (major, minor) version that added them. A folder
+#: declaring an earlier version may not use them.
+TERMS_SINCE: dict[str, tuple[int, int]] = {"se": (0, 3), "mde": (0, 3), "mde_percent": (0, 3),
+                                           "mde_note": (0, 3)}
+#: Every reason an ``mde`` is not given starts with this (``mde_note``).
+NOT_COMPUTED = "not computed: "
 
 #: Standard terms a table may carry once per subgroup (each column names its Subgroup).
 PER_SUBGROUP = ("subgroup_effect", "subgroup_n")
 
 #: Qualifier keys a dictionary entry may carry, besides BIDS's Description / Units / Levels.
 QUALIFIERS = ("Standard", "EffectMeasure", "EffectScope", "CILevel", "StatName", "StatScope",
-              "PKind", "PScope", "Alpha", "Space", "Subgroup")
+              "PKind", "PScope", "Alpha", "Power", "Space", "Subgroup")
 
 
 # ── 0.2: identity and vocabulary ──────────────────────────────────────────────────

@@ -413,3 +413,44 @@ def test_a_battery_of_runs_adopts_a_folder_in_place(run, tmp_path):
     cols = json.loads((out / "readout_tests.json").read_text())
     assert cols["window"]["Standard"] == "facet"
     assert check(out)[0].ok
+
+
+# ------------------------------------------------ minimum detectable effect (DUET #151) ---
+def test_test_rows_carry_the_mde_and_cluster_rows_say_why_not(run):
+    from neurofaune.analysis.stats import power
+
+    tests, clusters = _read(run)
+    m = run["data"][run["mask"]].mean(axis=0)
+    a, b = m[run["group"] == 1], m[run["group"] == 0]
+    se = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2) * np.sqrt(2 / 6)
+    assert tests.whole_se.tolist() == pytest.approx([se, se])
+    assert tests.whole_mde.tolist() == pytest.approx([power.mde(se, 10)] * 2)
+    assert (tests.whole_mde_note == "").all()
+    assert (clusters.mde.isna()).all() and (clusters.mde_note == power.CLUSTER_NOTE).all()
+    assert (clusters.mde_percent.isna()).all()
+
+
+def test_the_written_folder_records_power_alpha_and_the_maps_note(run, tmp_path):
+    from neurofaune.analysis.stats import power
+    from neurofaune.analysis.stats.readout_results import write_readout_results
+
+    out = tmp_path / "an"
+    rd = out / "randomise_FA"
+    rd.mkdir(parents=True)
+    for f in run["dir"].glob("randomise_*"):
+        (rd / f.name).write_bytes(f.read_bytes())
+    tests, clusters = _read(run, labels={"metric": "FA"})
+    rep = write_readout_results(out, tests, clusters, analysis_id="dwi/tbss/x", title="x", description="x",
+                                analysis_type="tbss", modality="dwi", measure_column="metric", measures=["FA"],
+                                run_dirs={"FA": rd}, n_permutations=10, alpha=0.05, mask_name="mask",
+                                space="S", inference="2-D TFCE", caveats=["given"], strict=True)
+    assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
+    cols = json.loads((out / "tests.json").read_text())
+    assert cols["whole_mde"]["Standard"] == "mde"
+    assert (cols["whole_mde"]["Power"], cols["whole_mde"]["Alpha"]) == (0.8, 0.05)
+    assert {cols[c]["Standard"] for c in ("whole_se", "whole_mde_percent", "whole_mde_note")} == \
+        {"se", "mde_percent", "mde_note"}
+    ccols = json.loads((out / "clusters.json").read_text())
+    assert ccols["mde_note"]["Standard"] == "mde_note"
+    caveats = json.loads((out / "analysis.json").read_text())["caveats"]
+    assert caveats[0] == "given" and power.MAP_NOTE in caveats[1]

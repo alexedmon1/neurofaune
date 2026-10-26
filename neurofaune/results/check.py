@@ -3,7 +3,8 @@
 ``check(path)`` finds every analysis folder under ``path`` and returns one
 :class:`Report` per folder: the JSON files against the schemas, every listed file
 present and inside the folder, every table against its column dictionary, the
-standard terms and their qualifiers, and the reporting contract (§6).
+standard terms and their qualifiers, the reporting contract (§6), and from 0.3 the
+minimum detectable effect (§5.1).
 
 Standard library only.
 """
@@ -11,13 +12,15 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from ._schema import load_schema, validate
 from .spec import (ANALYSIS_JSON, CONTRACT_ROLES, MODALITIES, PER_SUBGROUP, PROVENANCE_JSON, READS,
-                   SPEC, SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, canonical_measure, id_problem,
-                   measure_vocabulary, run_id_problem, valid_axes, version_tuple)
+                   NOT_COMPUTED, SPEC, SPEC_VERSION, STANDARD_TERMS, TABLE_SUFFIXES, TERMS_SINCE,
+                   canonical_measure, id_problem, measure_vocabulary, run_id_problem, valid_axes,
+                   version_tuple)
 
 #: Analysis types whose tests are voxelwise, so a test row must state its extent.
 VOXELWISE = ("tbss", "vbm", "tbm", "voxelwise", "fixel")
@@ -169,8 +172,77 @@ def _in_unit(v: str) -> bool:
     return x is not None and 0 <= x <= 1
 
 
+def _mde_rules(std: dict, dictionary: dict, rows: list, role: str, version: tuple[int, int] | None,
+               where: str, dict_name: str, rep: Report) -> None:
+    """The minimum detectable effect (0.3, RESULTS_SPEC.md §5.1).
+
+    A folder declaring an earlier version may not use the 0.3 terms. Where ``mde`` or
+    ``mde_note`` is given: an ``mde`` is a positive number and its ``Power`` / ``Alpha``
+    lie in (0, 1); a row whose ``mde`` is blank says why in ``mde_note`` ("not computed:
+    ..."), and a row that gives one leaves the note empty; ``mde_percent`` is a positive
+    number, only beside an ``mde``; ``se`` is a number >= 0. A 0.3 tests table with no
+    ``mde`` at all is warned about, not refused: other producers adopt it at their pace.
+    """
+    early = sorted(t for t in TERMS_SINCE if t in std and version is not None and version < TERMS_SINCE[t])
+    if early:
+        rep.errors.append(f"{dict_name}: standard terms {early} are from 0.3; the folder declares "
+                          f"{version[0]}.{version[1]}")
+        return
+    mcol, ncol, pcol, scol = (std.get(t) for t in ("mde", "mde_note", "mde_percent", "se"))
+    if role == "tests" and not (mcol or ncol) and version is not None and version >= (0, 3):
+        rep.warnings.append(f"{where} (tests): no 'mde' -- the smallest effect the design detects "
+                            "(§5.1); give it, or an 'mde_note' saying why not")
+    if mcol:
+        for q in ("Power", "Alpha"):
+            x = (dictionary.get(mcol) or {}).get(q)
+            if isinstance(x, (int, float)) and not 0 < x < 1:
+                rep.errors.append(f"{dict_name}: {mcol!r} {q} {x} is not between 0 and 1")
+
+    def positive(v: str, allow_zero: bool = False) -> bool:
+        x = _num(v)
+        return x is not None and math.isfinite(x) and (x >= 0 if allow_zero else x > 0)
+
+    bad_mde, both, unexplained, bad_note, bad_pct, lone_pct, bad_se = [], 0, 0, [], [], 0, []
+    for r in rows:
+        m = r.get(mcol, "") if mcol else ""
+        note = (r.get(ncol) or "").strip() if ncol else ""
+        if note and not note.startswith(NOT_COMPUTED):
+            bad_note.append(note)
+        if m != "":
+            if not positive(m):
+                bad_mde.append(m)
+            elif note:
+                both += 1
+        elif (mcol or ncol) and not note:
+            unexplained += 1
+        if pcol and r.get(pcol, "") != "":
+            if not positive(r[pcol]):
+                bad_pct.append(r[pcol])
+            if m == "":
+                lone_pct += 1
+        if scol and r.get(scol, "") != "" and not positive(r[scol], allow_zero=True):
+            bad_se.append(r[scol])
+    if bad_mde:
+        rep.errors.append(f"{where}: {mcol!r} (mde) is not a positive number: {bad_mde[:3]}")
+    if unexplained:
+        rep.errors.append(f"{where}: {unexplained} row(s) give no mde and no mde_note saying why "
+                          f"(\"{NOT_COMPUTED}...\")")
+    if both:
+        rep.errors.append(f"{where}: {both} row(s) give an mde and an mde_note; the note is for an mde "
+                          "not computed")
+    if bad_note:
+        rep.errors.append(f"{where}: {ncol!r} (mde_note) does not start {NOT_COMPUTED!r}: {bad_note[:3]}")
+    if bad_pct:
+        rep.errors.append(f"{where}: {pcol!r} (mde_percent) is not a positive number: {bad_pct[:3]}")
+    if lone_pct:
+        rep.errors.append(f"{where}: {lone_pct} row(s) give an mde_percent without an mde")
+    if bad_se:
+        rep.errors.append(f"{where}: {scol!r} (se) is not a number >= 0: {bad_se[:3]}")
+
+
 # ------------------------------------------------------------------ tables ---
-def _check_table(folder: Path, entry: dict, analysis: dict, rep: Report) -> tuple[str, dict, list] | None:
+def _check_table(folder: Path, entry: dict, analysis: dict, rep: Report,
+                 version: tuple[int, int] | None = None) -> tuple[str, dict, list] | None:
     rel = entry.get("path", "")
     path = _inside(folder, rel, "table", rep)
     if path is None:
@@ -232,6 +304,7 @@ def _check_table(folder: Path, entry: dict, analysis: dict, rep: Report) -> tupl
             bad = [r[col] for r in rows if r[col] not in _TRUE | _FALSE | {""}]
             if bad:
                 rep.errors.append(f"{where}: {col!r} ({term}) is not true/false: {bad[:3]}")
+    _mde_rules(std, dictionary, rows, entry.get("role", ""), version, where, dict_path.name, rep)
     if entry.get("role") in CONTRACT_ROLES:
         _contract(entry["role"], std, rows, analysis, where, rep)
     return entry.get("role", ""), std, rows
@@ -326,7 +399,7 @@ def check_analysis(folder: Path) -> Report:
     tested: set[tuple[str, str]] = set()
     listed = set(analysis.get("measures") or [])
     for entry in tables:
-        got = _check_table(folder, entry, analysis, rep)
+        got = _check_table(folder, entry, analysis, rep, version)
         if v02 and got and got[0] in CONTRACT_ROLES and "measure" in got[1] and listed:
             # 0.2: a table names its measures as analysis.json lists them
             col = got[1]["measure"]

@@ -96,7 +96,27 @@ def test_schemas_and_vocabulary_agree():
 
 
 # ------------------------------------------------------------------ writing ---
+MDE_COLUMNS = {
+    "se": {"Description": "SE of the difference", "Standard": "se"},
+    "mde": {"Description": "minimum detectable difference", "Standard": "mde", "Power": 0.8, "Alpha": 0.05},
+    "mde_pct": {"Description": "mde, percent of B's mean", "Standard": "mde_percent", "Units": "%"},
+    "mde_note": {"Description": "why no mde", "Standard": "mde_note"},
+}
+
+
+def _with_mde(folder, **values):
+    """Give the fixture's tests table the 0.3 MDE columns (``values`` overrides them)."""
+    df = pd.read_csv(folder / "tests.tsv", sep="\t")
+    cols = {"se": [0.02, 0.03], "mde": [0.056, 0.084], "mde_pct": [12.0, 9.0], "mde_note": ["", ""], **values}
+    for k, v in cols.items():
+        df[k] = v
+    df.to_csv(folder / "tests.tsv", sep="\t", index=False)
+    write_columns(folder / "tests.tsv", {**COLUMNS, **MDE_COLUMNS})
+    return folder
+
+
 def test_a_complete_folder_conforms_and_reads_without_neurofaune(folder):
+    _with_mde(folder)
     rep = write_analysis(folder, _analysis(), _prov())
     assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
 
@@ -110,6 +130,7 @@ def test_a_complete_folder_conforms_and_reads_without_neurofaune(folder):
     assert df[role["effect_size"]].tolist() == [0.8, -0.1]
     assert cols[role["effect_size"]]["EffectMeasure"] == "d"
     assert cols[role["p_value"]]["PKind"] == "fdr"
+    assert (cols[role["mde"]]["Power"], cols[role["mde"]]["Alpha"]) == (0.8, 0.05)
     assert a["inference"]["correction"]["statement"].startswith("BH-FDR")
     prov = json.loads((folder / "provenance.json").read_text())
     assert prov["generated_by"][0]["Name"] == "demo" and prov["run"]["status"] == "completed"
@@ -209,7 +230,7 @@ def test_a_standard_term_is_claimed_once(folder):
 
 
 @pytest.mark.parametrize("version, ok", [(SPEC_VERSION, True), ("0.1.7", True), ("0.2.0", True),
-                                         ("0.3.0", False), ("1.0.0", False)])
+                                         ("0.3.0", True), ("0.4.0", False), ("1.0.0", False)])
 def test_spec_version(folder, version, ok):
     write_analysis(folder, {**_analysis(), "spec_version": version}, _prov(), strict=False)
     assert ("not readable" not in _errors(folder)) is ok
@@ -501,3 +522,65 @@ def test_a_0_2_folder_without_a_run_is_reported(folder):
     a.pop("run")
     (folder / "analysis.json").write_text(json.dumps(a))
     assert "run is required" in _errors(folder)
+
+
+# ------------------------------------------------------- 0.3: minimum detectable effect ---
+def test_0_3_a_tests_table_without_an_mde_is_warned_about_not_refused(folder):
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    (rep,) = check(folder)
+    assert rep.ok and any("no 'mde'" in w for w in rep.warnings)
+
+
+def test_0_3_an_mde_note_alone_answers_the_warning(folder):
+    df = pd.read_csv(folder / "tests.tsv", sep="\t")
+    df["mde_note"] = ["not computed: permutation test with no standard error"] * 2
+    df.to_csv(folder / "tests.tsv", sep="\t", index=False)
+    write_columns(folder / "tests.tsv", {**COLUMNS, "mde_note": MDE_COLUMNS["mde_note"]})
+    rep = write_analysis(folder, _analysis(), _prov())
+    assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
+
+
+def test_0_3_an_mde_not_computed_says_why(folder):
+    _with_mde(folder, mde=[0.056, None], mde_pct=[12.0, None],
+              mde_note=["", "not computed: zero residual variance"])
+    rep = write_analysis(folder, _analysis(), _prov())
+    assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)
+
+
+@pytest.mark.parametrize("values, says", [
+    ({"mde": [0.056, -0.1]}, "is not a positive number"),
+    ({"mde": [0.056, 0]}, "is not a positive number"),
+    ({"mde": [0.056, None], "mde_pct": [12.0, None]}, "give no mde and no mde_note"),
+    ({"mde": [0.056, None], "mde_pct": [12.0, None], "mde_note": ["", "too few animals"]},
+     "does not start 'not computed: '"),
+    ({"mde_note": ["", "not computed: but given anyway"]}, "give an mde and an mde_note"),
+    ({"mde": [0.056, None], "mde_note": ["", "not computed: x"]}, "mde_percent without an mde"),
+    ({"mde_pct": [12.0, -3]}, "(mde_percent) is not a positive number"),
+    ({"se": [0.02, -1]}, "(se) is not a number >= 0"),
+])
+def test_0_3_mde_values_are_checked(folder, values, says):
+    _with_mde(folder, **values)
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    assert says in _errors(folder)
+
+
+@pytest.mark.parametrize("entry, says", [
+    ({"Power": None}, "must state Power"),
+    ({"Alpha": None}, "must state Alpha"),
+    ({"Power": 80}, "Power 80 is not between 0 and 1"),
+])
+def test_0_3_an_mde_states_its_power_and_alpha(folder, entry, says):
+    _with_mde(folder)
+    mde = {k: v for k, v in {**MDE_COLUMNS["mde"], **entry}.items() if v is not None}
+    write_columns(folder / "tests.tsv", {**COLUMNS, **MDE_COLUMNS}, {"mde": mde})
+    write_analysis(folder, _analysis(), _prov(), strict=False)
+    assert says in _errors(folder)
+
+
+def test_0_3_terms_are_not_for_older_folders(folder):
+    write_analysis(folder, {**_analysis(), "spec_version": "0.2.0"}, _prov(), strict=False)
+    (rep,) = check(folder)
+    assert rep.ok and not rep.warnings, (rep.errors, rep.warnings)    # 0.2 asks for no mde
+    _with_mde(folder)
+    write_analysis(folder, {**_analysis(), "spec_version": "0.2.0"}, _prov(), strict=False)
+    assert "are from 0.3; the folder declares 0.2" in _errors(folder)

@@ -11,6 +11,12 @@ included, is held to the same checker.
 2. **Describe every column** in a dictionary beside the table, mapping each
    column to a standard term where one applies (with its qualifiers: `PKind` on a
    p value, `EffectMeasure` on an effect size, `Space` on a coordinate).
+   From 0.3 a tests row also says what its design could detect (RESULTS_SPEC.md §5.1):
+   `se` from the fitted model, `mde` at power 0.80 and two-sided alpha 0.05, uncorrected
+   (`{"Standard": "mde", "Power": 0.8, "Alpha": 0.05}` on the column), `mde_percent`
+   against the reference group's mean, and `mde_note` ("not computed: ...") wherever
+   there is no `mde`. Compute it where the model is fitted, which holds the standard
+   error and the degrees of freedom; it reproduces the spec's reference values.
 3. **Write `analysis.json` and `provenance.json`** and check the folder:
 
 ```python
@@ -68,10 +74,10 @@ needs numpy, scipy, pandas and nibabel, and is not standard-library.
 
 | analysis | writes the spec | how |
 |---|---|---|
-| TBSS (`analysis.tbss.run_tbss_stats`) | yes, `dwi/tbss/<name>` | `readout_results.write_readout_results` |
+| TBSS (`analysis.tbss.run_tbss_stats`) | yes, `dwi/tbss/<name>`, with the MDE (0.3) | `readout_results.write_readout_results` |
 | VBM, voxelwise fMRI (`analysis.randomise_analysis`) | yes, `anat/vbm/<name>`, `func/voxelwise/<name>` | the same |
 | ROI extraction / ROI statistics | not yet | an `elements` / `tests` writer |
-| covariance networks, NBS, connectomes, fixel, MCCA, classification | not yet | per §6 below, analysis by analysis |
+| covariance networks, NBS, connectomes, fixel, MCCA, classification | not yet | per §6 below, analysis by analysis; none writes an MDE yet (Fisher-z edge tests, NBS, graph AUC, MCCA, PERMANOVA) |
 | MRS group statistics | not yet | `mrs/spectroscopy/<name>`, one `tests` row per metabolite and test |
 
 **Every runner writes its own folder at the end of its run** — the goal for every row
@@ -81,6 +87,16 @@ analysis_type, name)`, so they follow §3.1 of the specification by construction
 
 A non-conforming folder at the end of a long run is logged, not raised. Tests
 assert conformance for every writer.
+
+**The randomise read-out's MDE** (DUET #151; `analysis.stats.power`): each tests row
+gives `whole_se` and `whole_mde` for the GLM on each subject's whole-mask mean (the same
+fit as `whole_d`, covariates included), at power 0.80 and two-sided alpha 0.05, nominal
+by the user's decision. `whole_mde_percent` is against the mean of the group weighted -1
+in a two-group contrast ("cuprizone > control": the control), scaled by its weight; it is
+empty for one-sample, regression and general contrasts and where that mean is within one
+residual SD of zero (change scores, centred measures). Cluster rows say "not computed:
+cluster selected by the test"; the voxelwise maps get no number, since randomise corrects
+them by permutation, and `analysis.json` carries a caveat saying so.
 
 **Background and space come from the study's atlas config, never from code:** the
 background is `atlas.study_space.template_masked` (else `atlas.study_space.template`)
