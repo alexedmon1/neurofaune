@@ -160,6 +160,57 @@ def propagate_anat_mask(
     }
 
 
+def anat_guided_mask(
+    moving_ref: Path,
+    signal_ref: Path,
+    anat_t2w: Path,
+    anat_mask: Path,
+    out_mask: Path,
+    work_dir: Path,
+    foreground_k: float = 4.0,
+    nonlinear: bool = False,
+) -> Dict[str, Any]:
+    """Brain mask for an EPI = same-session T2w brain mask in moving space AND EPI signal.
+
+    The T2w mask is registered in with :func:`propagate_anat_mask` (decides where
+    the brain is); ``foreground_mask`` on ``signal_ref`` (empirical noise floor
+    outside that mask + ``foreground_k`` sigma, see :func:`noise_floor_outside`)
+    decides where the EPI has signal, so dropout and the partial-volume rim are
+    vetoed and nothing outside the brain is added. ``signal_ref`` must be
+    un-normalised (a real noise floor). Returns the registration
+    (``moving_to_anat_affine``, ``inverse_warp``) plus voxel counts.
+    """
+    from neurofaune.preprocess.utils.foreground import foreground_mask, noise_floor_outside
+
+    work_dir = Path(work_dir)
+    propagated = work_dir / 'anat_mask_in_moving.nii.gz'
+    reg = propagate_anat_mask(moving_ref=moving_ref, anat_t2w=anat_t2w, anat_mask=anat_mask,
+                              out_mask=propagated, work_dir=work_dir / 'reg', nonlinear=nonlinear)
+    in_moving = nib.load(str(propagated)).get_fdata() > 0
+    signal_img = nib.load(str(signal_ref)).get_fdata()
+    floor = noise_floor_outside(signal_img, in_moving)
+    signal = foreground_mask(signal_img, k=foreground_k, floor=floor) > 0
+    mask = in_moving & signal
+    ref = nib.load(str(moving_ref))
+    Path(out_mask).parent.mkdir(parents=True, exist_ok=True)
+    nib.save(nib.Nifti1Image(mask.astype(np.uint8), ref.affine, ref.header), str(out_mask))
+    n_anat, n_mask = int(in_moving.sum()), int(mask.sum())
+    return {
+        'method': 'anat',
+        'total_voxels': n_mask,
+        'extraction_ratio': n_mask / mask.size,
+        'anat_voxels': n_anat,
+        'low_signal_removed': n_anat - n_mask,
+        'low_signal_fraction': (n_anat - n_mask) / n_anat if n_anat else 0.0,
+        'foreground_k': foreground_k,
+        'noise_floor': floor.mean,
+        'noise_sigma': floor.sigma,
+        'slice_voxels': mask.sum(axis=(0, 1)).astype(int).tolist(),
+        'moving_to_anat_affine': reg['moving_to_anat_affine'],
+        'inverse_warp': reg.get('inverse_warp'),
+    }
+
+
 def propagate_anat_image(
     anat_image: Path,
     moving_ref: Path,
@@ -214,6 +265,32 @@ def propagate_anat_image(
     return Path(out_image)
 
 
+def voxel_world_axes(affine: np.ndarray) -> np.ndarray:
+    """World axis (0=x, 1=y, 2=z) each voxel axis mostly points along."""
+    return np.abs(np.asarray(affine)[:3, :3]).argmax(axis=0)
+
+
+def require_shared_voxel_frame(moving_img: nib.Nifti1Image, fixed_img: nib.Nifti1Image,
+                               what: str = 'NCC slice search') -> None:
+    """Raise unless both images index the same world axes in the same voxel order.
+
+    The NCC slice search compares moving slice ``k`` with fixed slice ``z`` array
+    to array, which is only meaningful when voxel axis 2 is the same anatomical
+    axis in both and the in-plane axes line up. That holds by construction for
+    the rat pipeline (images and cohort template share one voxel frame). It does
+    not hold for scanner-affine data with mixed slice orientations -- e.g. the
+    FAC600 mouse axial EPI (voxel axes -> world x, z, y) against the Antwerp
+    template (x, y, z) -- where the search returns a confident, meaningless
+    offset. Those cases need the registration through the same-session T2w.
+    """
+    m, f = voxel_world_axes(moving_img.affine), voxel_world_axes(fixed_img.affine)
+    if not np.array_equal(m, f):
+        raise ValueError(
+            f"{what}: moving voxel axes point along world axes {m.tolist()} but fixed along "
+            f"{f.tolist()}, so their slices are not comparable array-to-array. Register through "
+            f"the same-session T2w instead (needs its T2w_to_template transform).")
+
+
 def find_z_offset_ncc(
     moving_img: nib.Nifti1Image,
     fixed_img: nib.Nifti1Image,
@@ -254,6 +331,7 @@ def find_z_offset_ncc(
     """
     from scipy.ndimage import zoom as scipy_zoom
 
+    require_shared_voxel_frame(moving_img, fixed_img)
     moving_data = moving_img.get_fdata()
     fixed_data = fixed_img.get_fdata()
     moving_zooms = moving_img.header.get_zooms()

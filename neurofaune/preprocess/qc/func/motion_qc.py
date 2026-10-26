@@ -249,6 +249,8 @@ def generate_motion_qc_report(
     brain_file: Optional[Path] = None,
     skull_strip_mask_file: Optional[Path] = None,
     skull_strip_info: Optional[Dict] = None,
+    head_radius_mm: float = 5.0,
+    voxel_scale: float = 10.0,
 ) -> Path:
     """
     Generate comprehensive motion QC report for fMRI.
@@ -282,6 +284,13 @@ def generate_motion_qc_report(
         Binary brain mask used for skull stripping QC. If None, falls back to mask_file.
     skull_strip_info : dict, optional
         Info dict from skull_strip dispatcher
+    head_radius_mm : float
+        Radius in REAL mm that turns rotations into displacement for FD
+        (``functional.motion_qc.head_radius_mm``; default 5, the rodent value
+        this function always used).
+    voxel_scale : float
+        Header scaling of the BOLD (``bids.voxel_scale``); MCFLIRT estimates in
+        scaled units.
 
     Returns
     -------
@@ -302,8 +311,8 @@ def generate_motion_qc_report(
     # threshold it is tested against -- they were previously derived with
     # different scalings, making the cut 10x too lenient (see
     # fd_threshold_from_voxel_size).
-    voxel_scale = 10.0
-    fd = calculate_framewise_displacement(motion_params, voxel_scale=voxel_scale)
+    fd = calculate_framewise_displacement(motion_params, radius=head_radius_mm * voxel_scale,
+                                          voxel_scale=voxel_scale)
     dvars = calculate_dvars(bold_file, mask_file)
     # Cross-session comparison needs the standardized form; the raw one is kept
     # because the per-session plots and any existing consumer are in its units.

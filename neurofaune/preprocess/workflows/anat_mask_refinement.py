@@ -58,8 +58,25 @@ from neurofaune.templates.sigma_warp import (
 logger = logging.getLogger(__name__)
 
 # Derivatives carry voxel sizes scaled 10x for FSL/ANTs (check_and_scale_voxel_size),
-# so one derivative voxel's volume in real mm3 is its header volume / 10**3.
+# so one derivative voxel's volume in real mm3 is its header volume / 10**3. The
+# scale comes from `bids.voxel_scale` (species profile); this is the fallback.
 VOXEL_SCALE = 10.0
+
+
+def voxel_scale(config: dict[str, Any]) -> float:
+    return float(get_config_value(config, 'bids.voxel_scale', default=VOXEL_SCALE) or VOXEL_SCALE)
+
+
+def brain_extent_labels(config: dict[str, Any]) -> Path:
+    """Atlas image whose non-zero voxels define the brain's extent for refinement and its QC.
+
+    `atlas.study_space.brain_extent` when set, else the parcellation. Refinement uses
+    only `labels > 0`, so the extent must cover the whole brain: SIGMA's parcellation
+    does, but the mouse label sets do not (allen26/32 cover 70% of the Antwerp brain
+    mask, CCFv3 82%), so the mouse profile points this at the atlas brain mask.
+    """
+    extent = get_config_value(config, 'atlas.study_space.brain_extent', default=None)
+    return Path(extent or get_config_value(config, 'atlas.study_space.parcellation'))
 
 # Parcellation names in use: `atlas-SIGMA_dseg` is what morphometry, tissue priors,
 # MRS and 5TT read; batch_preprocess_anat.py writes `space-T2w_atlas-SIGMA`.
@@ -292,7 +309,7 @@ def run_brain_mask_refinement(
 
     atlas_mask_p = Path(get_config_value(config, 'atlas.study_space.brain_mask'))
     atlas_template_p = Path(get_config_value(config, 'atlas.study_space.template_masked'))
-    atlas_labels_p = Path(get_config_value(config, 'atlas.study_space.parcellation'))
+    atlas_labels_p = brain_extent_labels(config)
     if not atlas_mask_p.exists():
         return skipped(f'study-space atlas brain mask not found: {atlas_mask_p}')
 
@@ -313,7 +330,7 @@ def run_brain_mask_refinement(
     # The original first-pass mask, even when an earlier applied run replaced it.
     initial_src = initial_p if initial_p.exists() else mask_p
     initial = np.asarray(nib.load(str(initial_src)).dataobj) > 0
-    voxel_mm3 = float(np.prod(dseg_img.header.get_zooms()[:3])) / VOXEL_SCALE ** 3
+    voxel_mm3 = float(np.prod(dseg_img.header.get_zooms()[:3])) / voxel_scale(config) ** 3
 
     tmp = None
     if work_dir is None:
@@ -494,7 +511,7 @@ def run_seeded_mask_refinement(
                                    subject, session, seed=True)
     if chain is None:
         return {**base, 'status': 'skipped', 'reason': 'seed registration incomplete'}
-    labels = Path(get_config_value(config, 'atlas.study_space.parcellation'))
+    labels = brain_extent_labels(config)
     parcellation = apply_chain(labels, preproc, chain,
                                xf / f'{subject}_{session}_{SEED_NAME}_dseg.nii.gz',
                                'GenericLabel')

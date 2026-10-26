@@ -121,3 +121,34 @@ class TestCogFromForeground:
         assert abs(cog[0] - 18) < 3
         assert abs(cog[1] - 22) < 3
         assert abs(cog[2] - 20) < 3
+
+
+class TestLongAxis:
+    """The ellipsoid's elongation must follow the brain's rostro-caudal axis, which is
+    array axis 2 for the rat 2D coronal protocol but axis 1 for a sagittal mouse 3D."""
+
+    def test_default_axis_2_is_the_rat_command(self):
+        from neurofaune.preprocess.utils.bet4animal import elongation_arg
+        assert elongation_arg(1.3) == "1,1,1.3"           # unchanged rat behaviour
+        assert elongation_arg(1.3, long_axis=1) == "1,1.3,1"
+        assert elongation_arg(1.3, long_axis=0) == "1.3,1,1"
+
+    def test_long_axis_from_affine_follows_world_ap(self):
+        from neurofaune.preprocess.utils.bet4animal import long_axis_from_affine
+        assert long_axis_from_affine(np.eye(4)) == 1
+        # voxel axis 2 runs anterior-posterior (rat coronal slices along AP)
+        a = np.array([[1, 0, 0, 0], [0, 0, -8, 0], [0, 1, 0, 0], [0, 0, 0, 1]], float)
+        assert long_axis_from_affine(a) == 2
+        # oblique scanner affine: the largest AP component wins
+        b = np.array([[1.5, 0, 0.04, 0], [-0.04, 0.2, 1.49, 0], [0, -1.49, 0.2, 0], [0, 0, 0, 1]])
+        assert long_axis_from_affine(b) == 2
+
+    def test_score_mask_extent_is_measured_along_long_axis(self):
+        m = np.zeros((20, 40, 20), bool)
+        m[5:15, 4:36, 5:15] = True                          # long along axis 1
+        d = np.ones(m.shape)
+        g = np.ones_like(d)
+        s1 = score_mask(m, d, g, fg_thr=0.5, long_axis=1)
+        s2 = score_mask(m, d, g, fg_thr=0.5)                # default axis 2
+        assert (s1["zlo"], s1["zhi"], s1["nsl"]) == (4, 35, 32)
+        assert (s2["zlo"], s2["zhi"], s2["nsl"]) == (5, 14, 10)

@@ -401,10 +401,10 @@ def _parse_bruker_session(session_dir: Path) -> Optional[BrukerSessionInfo]:
     # IRC1200_Cohort7_Rat102_1__Rat_102__p60_1_1_20250407
     # p60_July2023/20230712_...
 
-    # Extract subject (RatXXX pattern)
-    rat_match = re.search(r'Rat(\d+)', dir_name)
-    if rat_match:
-        session_info.subject = f"sub-Rat{rat_match.group(1)}"
+    # Extract subject (RatXXX / MouseXXX pattern)
+    subject_match = re.search(r'(Rat|Mouse)(\d+)', dir_name)
+    if subject_match:
+        session_info.subject = f"sub-{subject_match.group(1)}{subject_match.group(2)}"
 
     # Extract session/cohort (p30, p60, p90 pattern)
     cohort_match = re.search(r'[_/](p\d+)[_/]', dir_name) or re.search(r'^(p\d+)', dir_name)

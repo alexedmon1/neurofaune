@@ -53,6 +53,15 @@ DEFAULT_SEQUENCE_MAP: Dict[str, Tuple[str, str]] = {
 # Modalities discovered but not written as NIfTI (handled elsewhere).
 DEFAULT_SKIP_MODALITIES = {"spec"}
 
+# How the NIfTI affine is written (``bids.affine``):
+#   identity -- scaled identity (voxel sizes only). Every scan lives in its own
+#               voxel frame; the study-space atlas is rotated to match it. Right
+#               for single-orientation protocols (the axial rat studies).
+#   scanner  -- the scan's real geometry from visu_pars, rotated into animal
+#               RAS and scaled by voxel_scale (neurofaune.utils.bruker_geometry).
+#               Needed when a session mixes slice orientations.
+AFFINE_MODES = ("identity", "scanner")
+
 # How a frame-group axis is treated when assembling a modality volume.
 _CYCLE_NAMES = {"cycle", "movie", "repetition", "rep"}
 
@@ -73,6 +82,10 @@ def frame_group_names(visu_fg_order_desc: Optional[List]) -> List[str]:
     """
     if not visu_fg_order_desc:
         return []
+    # A single frame group comes back from brukerapi as one flat row
+    # ``[13, '<FG_SLICE>', '<>', 0, 2]`` rather than a list of rows.
+    if not isinstance(visu_fg_order_desc[0], (list, tuple)):
+        visu_fg_order_desc = [visu_fg_order_desc]
     out = []
     for row in visu_fg_order_desc:
         try:
@@ -114,6 +127,9 @@ def assemble_modality(
     """
     if data.ndim == spatial_dim:  # no frame groups (already a plain image)
         return {"": data}
+    if not fg_names and all(n == 1 for n in data.shape[spatial_dim:]):
+        # e.g. a 3D acquisition read as (x, y, z, 1): nothing to assemble.
+        return {"": data.reshape(data.shape[:spatial_dim])}
     if len(fg_names) != data.ndim - spatial_dim:
         # Fall back: trust array as-is rather than guess.
         logger.warning("FG names (%s) do not match array ndim %s; passing through",
@@ -185,6 +201,58 @@ def assemble_modality(
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
+class ScanRule:
+    """One ``bids.scan_rules`` entry: classify or skip scans the method map can't.
+
+    The method alone often cannot say what a scan is for. In the mouse pilot
+    every EPI is ``Bruker:EPI`` -- the BOLD runs, their reverse-phase-encode
+    partners, spin-echo distortion pairs and the blips-off reference scans the
+    console acquires before each one. Rules match on the protocol name
+    (``ACQ_scan_name``, regex ``search``) and/or exact method/acqp parameter
+    values (``where``). The first matching rule wins over the method map.
+
+    A rule either skips (``skip: <reason>``) or names ``modality``/``suffix``
+    and optional BIDS ``entities`` (e.g. ``task-rest_acq-ax``), which go
+    between ``ses-`` and ``run-`` in the filename.
+    """
+
+    def __init__(self, name: Optional[str] = None, where: Optional[Dict[str, Any]] = None,
+                 modality: Optional[str] = None, suffix: Optional[str] = None,
+                 entities: str = "", skip: Optional[str] = None):
+        if name is None and not where:
+            raise ValueError("a scan rule needs 'name' and/or 'where'")
+        if skip is None and (modality is None or suffix is None):
+            raise ValueError("a scan rule needs 'skip' or both 'modality' and 'suffix'")
+        self.name = re.compile(name) if name is not None else None
+        self.where = {k: _rule_value(v) for k, v in (where or {}).items()}
+        self.modality, self.suffix, self.skip = modality, suffix, skip
+        self.entities = entities.strip("_")
+
+    def matches(self, scan_name: str, params: Dict[str, Any]) -> bool:
+        if self.name is not None and not self.name.search(scan_name or ""):
+            return False
+        return all(_rule_value(params.get(k)) == v for k, v in self.where.items())
+
+
+def _rule_value(v: Any) -> str:
+    """Comparable form of a parameter: one-element arrays unwrap, 13.0 == 13."""
+    if isinstance(v, (list, tuple, np.ndarray)):
+        arr = np.asarray(v).ravel()
+        if arr.size == 1:
+            v = arr[0].item()
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v).strip()
+
+
+def first_matching_rule(rules: List["ScanRule"], scan_name: str,
+                        params: Dict[str, Any]) -> Optional["ScanRule"]:
+    for rule in rules:
+        if rule.matches(scan_name, params):
+            return rule
+    return None
+
+
 class BidsConfig:
     """Resolved ``bids`` settings (from a study config dict or kwargs)."""
 
@@ -194,7 +262,9 @@ class BidsConfig:
                  session_relabel: Optional[Dict[str, str]] = None,
                  sequence_map: Optional[Dict[str, Tuple[str, str]]] = None,
                  skip_modalities: Optional[set] = None,
-                 voxel_scale: float = 10.0):
+                 voxel_scale: float = 10.0,
+                 affine: str = "identity",
+                 scan_rules: Optional[List[ScanRule]] = None):
         self.raw_root = Path(raw_root)
         self.bids_root = Path(bids_root)
         self.layout = layout
@@ -203,6 +273,10 @@ class BidsConfig:
         self.sequence_map = {**DEFAULT_SEQUENCE_MAP, **(sequence_map or {})}
         self.skip_modalities = set(skip_modalities) if skip_modalities is not None else set(DEFAULT_SKIP_MODALITIES)
         self.voxel_scale = voxel_scale
+        if affine not in AFFINE_MODES:
+            raise ValueError(f"bids.affine must be one of {AFFINE_MODES}, got {affine!r}")
+        self.affine = affine
+        self.scan_rules = list(scan_rules or [])
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "BidsConfig":
@@ -219,6 +293,8 @@ class BidsConfig:
             sequence_map=seqmap or None,
             skip_modalities=set(b["skip_modalities"]) if "skip_modalities" in b else None,
             voxel_scale=float(b.get("voxel_scale", 10.0)),
+            affine=b.get("affine", "identity"),
+            scan_rules=[ScanRule(**r) for r in (b.get("scan_rules") or [])],
         )
 
 
@@ -278,7 +354,8 @@ def _numbered_scans(session_dir: Path) -> List[Path]:
 
 
 def convert_scan(scan_dir: Path, modality: str, suffix: str, base_stem: str,
-                 out_dir: Path, voxel_scale: float = 10.0) -> List[Path]:
+                 out_dir: Path, voxel_scale: float = 10.0,
+                 affine: str = "identity") -> List[Path]:
     """Convert one Bruker scan into one-or-more analysis-ready BIDS NIfTIs.
 
     Returns the list of written .nii.gz paths.
@@ -310,10 +387,29 @@ def convert_scan(scan_dir: Path, modality: str, suffix: str, base_stem: str,
     except Exception:  # noqa: BLE001
         pass
 
+    scanner_affine = None
+    if affine == "scanner":
+        from neurofaune.utils.bruker_geometry import anatomical_affine
+        try:
+            scanner_affine = anatomical_affine(scan_dir, voxel_scale)
+        except ValueError as e:
+            # e.g. a tri-plane localizer: several slice packages in different
+            # orientations, which no single affine describes.
+            logger.warning("no single affine for %s, not written: %s", scan_dir.name, e)
+            return []
+
     import nibabel as nib
     for entity, vol in volumes.items():
         vol = np.squeeze(vol)
         out_file = out_dir / (bids_filename(base_stem, entity, suffix) + ".nii.gz")
+        if scanner_affine is not None:
+            # Voxel sizes come from the affine itself; no header patching.
+            img = nib.Nifti1Image(np.asarray(vol), scanner_affine)
+            img.set_qform(scanner_affine, code=1)
+            img.set_sform(scanner_affine, code=1)
+            nib.save(img, str(out_file))
+            written.append(out_file)
+            continue
         nib.save(nib.Nifti1Image(np.asarray(vol), np.eye(4)), str(out_file))
         if voxel is not None:
             try:
@@ -355,6 +451,77 @@ def space_entity(source) -> str:
     return f"{m.group(1)}_" if m else ""
 
 
+def unit_bvecs(bvec: np.ndarray) -> np.ndarray:
+    """Normalise gradient directions to unit length (zero vectors stay zero).
+
+    Bruker ``PVM_DwGradVec`` is amplitude-scaled (|g| = 0.49 for the b=500
+    shell of a b=2000 protocol), but BIDS ``.bvec`` must hold unit directions;
+    the magnitude lives in the per-volume effective b-value (``PVM_DwEffBval``,
+    the ``.bval``). FSL eddy and other consumers assume unit vectors.
+    """
+    v = np.atleast_2d(np.asarray(bvec, float))
+    n = np.linalg.norm(v, axis=1, keepdims=True)
+    return np.where(n > 1e-6, v / np.where(n > 1e-6, n, 1.0), 0.0)
+
+
+def fsl_bvecs(bvec: np.ndarray, affine: np.ndarray) -> np.ndarray:
+    """Voxel-frame gradient directions (N x 3) in FSL's bvec convention.
+
+    Bruker ``PVM_DwGradVec`` is in the read/phase/slice frame, which is the
+    2dseq voxel order the converter writes (no transposition). FSL reads bvecs
+    against the voxel axes with x negated when det(affine) > 0 (its radiological
+    voxel convention), the rule dcm2niix applies. Both converter modes need it:
+    the identity affine (rat) and the RIA scanner affine (FAC600 mouse) are
+    det > 0. Before this the bvecs went out unflipped, which leaves FA/MD/AD/RD
+    unchanged but mirrors V1 (FAC600 pilot: sticks ran across the oblique
+    CC/external-capsule arcs; with x negated they run along them).
+    """
+    v = np.atleast_2d(np.asarray(bvec, float)).copy()
+    if np.linalg.det(np.asarray(affine, float)[:3, :3]) > 0:
+        v[:, 0] *= -1
+    return v
+
+
+def write_gradients(nifti: Path, bval: np.ndarray, bvec: np.ndarray) -> Tuple[Path, Path]:
+    """Write BIDS ``.bval`` and unit, FSL-convention ``.bvec`` beside a DWI NIfTI."""
+    import nibabel as nib
+    nifti = Path(nifti)
+    stem = nifti.with_suffix("").with_suffix("")
+    bvec = fsl_bvecs(unit_bvecs(bvec), nib.load(str(nifti)).affine)
+    bvec_file, bval_file = stem.with_suffix(".bvec"), stem.with_suffix(".bval")
+    np.savetxt(bvec_file, bvec.T, fmt="%.6f")
+    np.savetxt(bval_file, np.asarray(bval, float).reshape(1, -1), fmt="%.1f")
+    return bval_file, bvec_file
+
+
+def _set_time_spacing(nifti: Path, tr_s: float) -> None:
+    """Write the volume TR (s) into a 4-D NIfTI's pixdim[4] and xyzt units.
+
+    Only the scanner-affine path does this, so identity-mode (rat) outputs are
+    byte-identical to before; there pixdim[4] stays 1.0 and TR lives in the
+    JSON sidecar only.
+    """
+    import nibabel as nib
+    img = nib.load(str(nifti))
+    if img.ndim != 4:
+        return
+    data = np.asanyarray(img.dataobj)
+    header = img.header.copy()
+    header.set_zooms(header.get_zooms()[:3] + (tr_s,))
+    header.set_xyzt_units("mm", "sec")
+    nib.save(nib.Nifti1Image(data, img.affine, header), str(nifti))
+
+
+def _scan_name_and_params(scan_dir: Path) -> Tuple[str, Dict[str, Any]]:
+    """Protocol name and merged method/acqp parameters, for scan rules."""
+    from neurofaune.preprocess.utils.mrs.bruker_params import read_scan_params
+    try:
+        params = read_scan_params(scan_dir)
+    except Exception:  # noqa: BLE001
+        return "", {}
+    return str(params.get("ACQ_scan_name", "")).strip(), params
+
+
 def _get(d: Dict, key: str):
     v = d.get(key)
     return v.get("value") if isinstance(v, dict) else v
@@ -366,7 +533,7 @@ def _get(d: Dict, key: str):
 SCANS_TSV_COLS = ["filename", "scan_number", "method", "modality", "suffix", "status",
                   "n_slices", "matrix", "n_volumes", "n_repetitions", "n_echoes",
                   "echo_times", "max_bvalue", "fov_mm", "voxel_size_mm", "shape", "zooms_mm",
-                  "source_session_dir"]
+                  "source_session_dir", "scan_name"]
 
 
 def _fmt(v) -> str:
@@ -400,19 +567,29 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
             params = parse_bruker_method(sd / "method")
         except Exception:  # noqa: BLE001
             params = {}
-        mapped = cfg.sequence_map.get(method)
-        modality, suffix = mapped if mapped else (None, None)
+        scan_name, raw_params = _scan_name_and_params(sd)
+        rule = first_matching_rule(cfg.scan_rules, scan_name, raw_params)
+        entities = ""
+        if rule is not None:
+            modality, suffix, entities = rule.modality, rule.suffix, rule.entities
+        else:
+            mapped = cfg.sequence_map.get(method)
+            modality, suffix = mapped if mapped else (None, None)
 
         status, files = "", []
-        if modality is None:
+        if rule is not None and rule.skip is not None:
+            status = f"skipped:rule({rule.skip})"
+        elif modality is None:
             status = f"skipped:unrecognized({method})"
         elif modality in cfg.skip_modalities:
             status = f"skipped:{modality}"
         else:
-            base_stem = f"sub-{sub}_ses-{ses}_run-{num}"
+            base_stem = "_".join([f"sub-{sub}", f"ses-{ses}"]
+                                 + ([entities] if entities else []) + [f"run-{num}"])
             out_dir = ses_dir / modality
             if convert:
-                files = convert_scan(sd, modality, suffix, base_stem, out_dir, cfg.voxel_scale)
+                files = convert_scan(sd, modality, suffix, base_stem, out_dir,
+                                     cfg.voxel_scale, cfg.affine)
                 status = "written" if files else "failed"
                 for f in files:
                     # Per-echo sidecar: pass the echo index so multi-echo files
@@ -422,13 +599,12 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
                     md = extract_bids_metadata(sd, modality, echo_index=ei)
                     if md:
                         f.with_suffix("").with_suffix(".json").write_text(json.dumps(md, indent=2))
+                    if cfg.affine == "scanner" and modality == "func" and md and md.get("RepetitionTime"):
+                        _set_time_spacing(f, float(md["RepetitionTime"]))
                 if modality == "dwi" and files:
                     gi = extract_bvec_bval(sd)
                     if gi is not None:
-                        bval, bvec = gi
-                        bvec_t = bvec.T if bvec.ndim > 1 else bvec.reshape(-1, 1).T
-                        np.savetxt(files[0].with_suffix("").with_suffix(".bvec"), bvec_t, fmt="%.6f")
-                        np.savetxt(files[0].with_suffix("").with_suffix(".bval"), bval.reshape(1, -1), fmt="%.1f")
+                        write_gradients(files[0], *gi)
                 written_files += files
             else:
                 status = "planned"
@@ -445,6 +621,7 @@ def convert_session(session_dir: Path, meta: Dict[str, str], cfg: BidsConfig,
 
         rows.append({
             "filename": ("/".join(files[0].parts[-2:]) if files else "n/a"),
+            "scan_name": scan_name or None,
             "scan_number": num, "method": method, "modality": modality or "n/a",
             "suffix": suffix or "n/a", "status": status,
             "n_slices": params.get("n_slices"), "matrix": params.get("matrix"),

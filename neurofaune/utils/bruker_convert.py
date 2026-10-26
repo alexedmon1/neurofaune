@@ -225,7 +225,11 @@ def _resolve_echo_time(method: Dict[str, any],
     ``EffectiveEchoTime`` array; there ``PVM_EchoTime`` is the echo SPACING
     (~0.29 ms) and must NOT be used as a TE. Prefer the per-echo array and index
     it by ``echo_index`` (0-based) when known; otherwise use the first echo.
-    Falls back to scalar ``PVM_EchoTime`` for single-echo. Returns {} if no TE.
+    Single-echo: ``EffectiveTE`` (RARE -- the effective TE at the k-space
+    centre; ``PVM_EchoTime`` there is the echo spacing) or the method's own
+    ``EchoTime`` (EPI/DtiEpi -- ``PVM_EchoTime`` there is also an echo
+    spacing: 0.36 ms against a real 8.6 ms on the mouse pilot's GE-EPI) win
+    over scalar ``PVM_EchoTime``, which is the last resort. Returns {} if no TE.
     """
     def _val(key):
         entry = method.get(key)
@@ -254,10 +258,13 @@ def _resolve_echo_time(method: Dict[str, any],
         else:
             out['EchoTime'] = te_array[0] / 1000.0
     else:
-        scalar = _val('PVM_EchoTime')
-        if scalar is not None:
+        for key in ('EffectiveTE', 'EchoTime', 'PVM_EchoTime'):
+            scalar = _val(key)
+            if scalar is None:
+                continue
             te = scalar[0] if isinstance(scalar, (list, tuple)) else scalar
             out['EchoTime'] = float(te) / 1000.0
+            break
     return out
 
 
@@ -351,6 +358,18 @@ def extract_bids_metadata(scan_dir: Path, modality: str,
                 # In-plane resolution in mm [x, y]
                 metadata['PixelSpacing'] = [float(spat_resol[0]), float(spat_resol[1])]
 
+        # EPI readout geometry for distortion correction (topup / fieldmaps):
+        # PhaseEncodingDirection, EffectiveEchoSpacing, TotalReadoutTime.
+        if modality in ('func', 'dwi', 'fmap'):
+            from neurofaune.utils.bruker_epi import epi_readout
+            try:
+                readout = epi_readout(scan_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"EPI readout fields unavailable for {scan_dir.name}: {e}")
+                readout = None
+            if readout:
+                metadata.update(readout)
+
         # Modality-specific fields
         if modality == 'dwi':
             # Diffusion parameters (a single-volume scan stores scalars; see _dwi_fields)
@@ -428,7 +447,8 @@ def extract_bvec_bval(scan_dir: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]
         return None
 
 
-def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
+def convert_bruker_to_nifti(scan_dir: Path, output_file: Path,
+                            voxel_scale: float = 10.0) -> bool:
     """
     Convert Bruker scan to NIfTI using brukerapi.
 
@@ -440,6 +460,9 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
         Bruker scan directory (containing pdata/1/2dseq)
     output_file : Path
         Output NIfTI file path
+    voxel_scale : float
+        Voxel-size inflation for FSL/ANTs (the species profile's
+        ``bids.voxel_scale``; 10 for rat and mouse)
 
     Returns
     -------
@@ -480,8 +503,8 @@ def convert_bruker_to_nifti(scan_dir: Path, output_file: Path) -> bool:
             try:
                 params = parse_bruker_method(method_file)
                 if 'voxel_size' in params:
-                    logger.debug(f"Fixing voxel sizes: {params['voxel_size']} → scaled 10x")
-                    update_nifti_header(output_file, params['voxel_size'], scale_factor=10.0)
+                    logger.debug(f"Fixing voxel sizes: {params['voxel_size']} → scaled {voxel_scale:g}x")
+                    update_nifti_header(output_file, params['voxel_size'], scale_factor=voxel_scale)
                 else:
                     logger.warning(f"Could not extract voxel size from {method_file}")
             except Exception as e:

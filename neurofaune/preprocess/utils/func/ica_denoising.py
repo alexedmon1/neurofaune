@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import subprocess
 import json
 from scipy import stats, signal
-from scipy.ndimage import binary_erosion
+from neurofaune.preprocess.utils.func.masks import erode
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -98,7 +98,8 @@ def run_melodic_ica(
 def calculate_edge_fraction(
     component_map: np.ndarray,
     brain_mask: np.ndarray,
-    threshold: float = 2.0
+    threshold: float = 2.0,
+    inplane: bool = True,
 ) -> float:
     """
     Calculate fraction of component located at brain edges.
@@ -113,6 +114,9 @@ def calculate_edge_fraction(
         Binary brain mask
     threshold : float
         Z-score threshold for considering voxel as "active"
+    inplane : bool
+        Erode within slices only (default; see ``masks.erosion_structure``). 3D
+        erosion makes every voxel of the first two and last two slices "edge".
     
     Returns
     -------
@@ -123,7 +127,7 @@ def calculate_edge_fraction(
     comp_binary = np.abs(component_map) > threshold
     
     # Erode brain mask to get interior
-    brain_eroded = binary_erosion(brain_mask, iterations=2)
+    brain_eroded = erode(brain_mask, 2, inplane=inplane)
     
     # Edge is brain - eroded brain
     edge_mask = brain_mask & ~brain_eroded
@@ -276,7 +280,8 @@ def classify_ica_components(
     edge_threshold: float = 0.80,
     csf_threshold: float = 0.70,
     freq_threshold: float = 0.60,
-    classification_mode: str = 'score'
+    classification_mode: str = 'score',
+    edge_inplane: bool = True,
 ) -> Dict[str, Any]:
     """
     Automatically classify ICA components as signal or noise.
@@ -317,6 +322,8 @@ def classify_ica_components(
         Threshold for high-frequency power (default: 0.60)
     classification_mode : str
         Classification mode: 'threshold' or 'score' (default: 'score')
+    edge_inplane : bool
+        Compute the edge band by in-plane erosion (``functional.erode_inplane``).
     
     Returns
     -------
@@ -364,7 +371,7 @@ def classify_ica_components(
         
         # Calculate features
         motion_corr = calculate_motion_correlation(timecourse, motion)
-        edge_frac = calculate_edge_fraction(spatial_map, brain_mask)
+        edge_frac = calculate_edge_fraction(spatial_map, brain_mask, inplane=edge_inplane)
         freq_frac = calculate_frequency_content(timecourse, tr)
         
         csf_frac = 0.0

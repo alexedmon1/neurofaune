@@ -1,10 +1,10 @@
 # neurofaune capabilities
 
-_Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit by hand — run `make capabilities`.
+_Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit by hand — run `make capabilities`.
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `results`
 
-**Entry points:** 185 across 11 stages.
+**Entry points:** 198 across 11 stages.
 
 
 ## analysis
@@ -13,6 +13,7 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 |---|---|---|---|
 | `compute_falff_map` | `neurofaune.analysis.func.falff` | Compute ALFF and fALFF maps for whole brain using vectorized FFT. | — |
 | `compute_falff_zscore` | `neurofaune.analysis.func.falff` | Standardize ALFF and fALFF maps to z-scores within the brain mask. | — |
+| `register_bold_to_t2w` | `neurofaune.analysis.func.hub_rest` | Rigid (MI) BOLD-mean -> T2w; the EPI partial coverage makes anything looser fragile. | — |
 | `run_dual_regression` | `neurofaune.analysis.func.melodic` | Run FSL dual regression to obtain subject-specific IC spatial maps. | — |
 | `run_group_melodic` | `neurofaune.analysis.func.melodic` | Run FSL MELODIC group ICA on SIGMA-space BOLD timeseries. | — |
 | `build_rsn_mosaic` | `neurofaune.analysis.func.melodic_clean` | Generate a mosaic figure of RSN spatial maps. | — |
@@ -39,8 +40,13 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `build_antwerp_hub` | `neurofaune.atlas.antwerp` | Build the Antwerp hub atlas package. See the module docstring for outputs. | — |
+| `register_templates` | `neurofaune.atlas.label_transfer` | Rigid -> affine -> (SyN) registration of ``moving`` onto ``fixed``. | — |
+| `warp_labels` | `neurofaune.atlas.label_transfer` | Warp an integer label volume with ``GenericLabel`` (no label mixing at boundaries). | — |
 | `extract_modality_slices` | `neurofaune.atlas.slice_extraction` | Extract slices for a specific modality based on configuration. | — |
 | `extract_slices` | `neurofaune.atlas.slice_extraction` | Extract contiguous slices from a 3D image along specified axis. | — |
+| `fit_frame` | `neurofaune.atlas.stereotaxic` | Fit world(mm, RAS) -> stereotaxic (ML, AP, DV) as an affine map. | — |
+| `register_subject_to_hub` | `neurofaune.atlas.subject` | Register a subject T2w to the hub and bring the atlas layers and bregma into subject space. | — |
 | `build_atlas_extent_mask` | `neurofaune.atlas.tissue_priors` | Binary mask of the labelled brain, for use instead of the brain mask. | — |
 | `build_native_priors` | `neurofaune.atlas.tissue_priors` | Write ``prior_01..prior_0N`` next to each other and return the ANTs pattern. | — |
 | `compute_label_tissue_fractions` | `neurofaune.atlas.tissue_priors` | Each atlas region's mean tissue composition, normalised to sum to 1. | — |
@@ -86,6 +92,8 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `fit_point_dipole` | `neurofaune.preprocess.qc.artifacts.dipole` | Fit dipole + smooth background to field samples ``field_hz`` at ``world_mm`` (N x 3). | — |
+| `run_implant_artifact_qc` | `neurofaune.preprocess.qc.artifacts.implant` | Run the implant artifact QC for one BIDS session. | — |
 | `compute_slice_metrics` | `neurofaune.preprocess.qc.batch_summary` | Compute per-slice QC metrics for a DTI FA map. | — |
 | `select_absolute_gates` | `neurofaune.preprocess.qc.batch_summary` | Split configured gates into ones that discriminate and ones that don't. | — |
 | `select_zscore_metrics` | `neurofaune.preprocess.qc.batch_summary` | Decide which metrics may be z-scored, and in which direction. | — |
@@ -120,24 +128,29 @@ _Generated from the code by `neurofaune capabilities` (v0.11.0a0)._ Do not edit 
 | `propagate_anat_image` | `neurofaune.preprocess.utils.registration_utils` | Warp any anat-space image into moving space, reusing an existing registration. | — |
 | `propagate_anat_mask` | `neurofaune.preprocess.utils.registration_utils` | Derive a brain mask by warping the same-session anat mask into moving space. | — |
 | `register_via_anat_composition` | `neurofaune.preprocess.utils.registration_utils` | Register a partial-slab moving reference to template VIA the same-session anat. | — |
+| `run_topup_pair` | `neurofaune.preprocess.utils.topup` | topup on one fwd/rev pair. Returns paths of the field (Hz), unwarped pair and mean. | — |
 
 ## preprocess (workflows)
 
 | function | module | summary | config keys |
 |---|---|---|---|
+| `register_anat_to_atlas_template` | `neurofaune.preprocess.workflows.anat_atlas` | SyN-register the preproc (skull-stripped) T2w to the atlas template. | `atlas.study_space.brain_mask` |
 | `register_refinement_seed` | `neurofaune.preprocess.workflows.anat_mask_refinement` | First-pass stripped T2w -> SIGMA SyN, written as `T2w_to_SIGMA_seed_*`. | — |
-| `run_brain_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine one session's T2w brain mask per `anatomical.skull_strip.refine`. | `atlas.study_space.brain_mask`, `atlas.study_space.parcellation`, `atlas.study_space.template_masked` |
-| `run_seeded_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine a first-pass mask before any template exists. | `atlas.study_space.parcellation` |
+| `run_brain_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine one session's T2w brain mask per `anatomical.skull_strip.refine`. | `atlas.study_space.brain_mask`, `atlas.study_space.template_masked` |
+| `run_seeded_mask_refinement` | `neurofaune.preprocess.workflows.anat_mask_refinement` | Refine a first-pass mask before any template exists. | — |
 | `extract_slices_from_volume` | `neurofaune.preprocess.workflows.anat_preprocess` | Extract specific slices from a 3D volume and merge them. | — |
 | `register_to_atlas_ants` | `neurofaune.preprocess.workflows.anat_preprocess` | Register subject to atlas using ANTs. | `anatomical.registration.convergence_threshold`, `anatomical.registration.convergence_window_size`, `anatomical.registration.iterations`, `anatomical.registration.metric_bins`, `anatomical.registration.shrink_factors`, `anatomical.registration.smoothing_sigmas`, `anatomical.registration.syn_params` |
-| `run_anatomical_preprocessing` | `neurofaune.preprocess.workflows.anat_preprocess` | Run anatomical T2w preprocessing workflow. | `anatomical.intensity_normalization.factor`, `anatomical.n4.convergence_threshold`, `anatomical.n4.iterations`, `anatomical.n4.shrink_factor`, `anatomical.skull_strip.atropos_convergence`, `anatomical.skull_strip.atropos_iterations`, `anatomical.skull_strip.method`, `anatomical.skull_strip.mrf_radius`, `anatomical.skull_strip.mrf_smoothing_factor`, `anatomical.skull_strip.n_classes`, `anatomical.skull_strip.tissue_confidence_threshold`, `anatomical.tissue_segmentation.convergence`, `anatomical.tissue_segmentation.enabled`, `anatomical.tissue_segmentation.iterations`, `anatomical.tissue_segmentation.mrf_radius`, `anatomical.tissue_segmentation.mrf_smoothing_factor`, `anatomical.tissue_segmentation.n_classes` |
+| `run_anatomical_preprocessing` | `neurofaune.preprocess.workflows.anat_preprocess` | Run anatomical T2w preprocessing workflow. | `anatomical.input_already_scaled`, `anatomical.intensity_normalization.factor`, `anatomical.n4.bspline_fitting_distance`, `anatomical.n4.convergence_threshold`, `anatomical.n4.iterations`, `anatomical.n4.shrink_factor`, `anatomical.qc.brain_to_total_range`, `anatomical.resample_3d_to_2d`, `anatomical.skull_strip.atropos_convergence`, `anatomical.skull_strip.atropos_iterations`, `anatomical.skull_strip.bet4animal`, `anatomical.skull_strip.method`, `anatomical.skull_strip.mrf_radius`, `anatomical.skull_strip.mrf_smoothing_factor`, `anatomical.skull_strip.n_classes`, `anatomical.skull_strip.tissue_confidence_threshold`, `anatomical.tissue_segmentation.convergence`, `anatomical.tissue_segmentation.enabled`, `anatomical.tissue_segmentation.iterations`, `anatomical.tissue_segmentation.mrf_radius`, `anatomical.tissue_segmentation.mrf_smoothing_factor`, `anatomical.tissue_segmentation.n_classes` |
 | `segment_brain_tissue` | `neurofaune.preprocess.workflows.anat_preprocess` | Extract tissue probability maps from Atropos skull stripping posteriors. | — |
 | `segment_brain_tissue_atropos` | `neurofaune.preprocess.workflows.anat_preprocess` | Standalone Atropos tissue segmentation, decoupled from skull stripping. | — |
 | `fit_dti` | `neurofaune.preprocess.workflows.dwi_preprocess` | Fit DTI model and compute FA, MD, AD, RD maps using FSL's dtifit. | — |
+| `register_dwi_via_anat` | `neurofaune.preprocess.workflows.dwi_preprocess` | DWI -> template through the same-session T2w (``diffusion.registration.method: anat``). | — |
 | `register_fa_to_t2w` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA to T2w within the same subject. | — |
 | `register_fa_to_template` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register FA (or another DWI-space volume) to the cohort template. | — |
 | `register_to_atlas_slices` | `neurofaune.preprocess.workflows.dwi_preprocess` | Register moving image to fixed atlas slices using ANTs SyN. | — |
-| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.phase_encoding_direction`, `diffusion.eddy.readout_time`, `diffusion.eddy.repol`, `diffusion.registration.canonical`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.topup.readout_time` |
+| `run_dwi_preprocessing` | `neurofaune.preprocess.workflows.dwi_preprocess` | Run complete DTI/DWI preprocessing workflow. | `bids.voxel_scale`, `diffusion.dti.max_bval`, `diffusion.eddy.data_is_shelled`, `diffusion.eddy.n_threads`, `diffusion.eddy.repol`, `diffusion.motion_qc.head_radius_mm`, `diffusion.registration.canonical`, `diffusion.registration.method`, `diffusion.registration.metric`, `diffusion.registration.transform_type`, `diffusion.second_mask.method`, `diffusion.skull_strip.foreground_k`, `diffusion.skull_strip.method`, `diffusion.skull_strip.n_classes`, `diffusion.skull_strip.nonlinear`, `diffusion.topup.enabled`, `functional.motion_qc.head_radius_mm` |
+| `run_dwi_topup` | `neurofaune.preprocess.workflows.dwi_preprocess` | topup on a reverse-PE spin-echo pair, on the slice-padded grid eddy will see. | — |
+| `select_eddy` | `neurofaune.preprocess.workflows.dwi_preprocess` | Name of the eddy binary to run: ``'eddy_cuda'`` or ``'eddy_cpu'``. | `diffusion.eddy.use_cuda` |
 | `warp_dti_to_sigma` | `neurofaune.preprocess.workflows.dwi_preprocess` | Warp DTI metric maps to SIGMA atlas space. | — |
 | `extract_brain_from_bold` | `neurofaune.preprocess.workflows.func_preprocess` | Extract brain from BOLD image using BET. | — |
 | `extract_confounds` | `neurofaune.preprocess.workflows.func_preprocess` | Extract confound regressors from motion parameters. | — |

@@ -37,6 +37,7 @@ from neurofaune.utils.bruker_convert import (
     select_best_msme_from_inventory,
     select_best_t2w_from_inventory,
 )
+from neurofaune.utils.bids import fsl_bvecs
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,9 @@ def _convert_dwi_gradients(
             f"unique b-values: {sorted(set(np.round(bvals, -1).astype(int)))}"
         )
 
+        if bvecs.ndim > 1 and bvecs.shape[1] == 3:
+            # FSL convention (x negated for det > 0); see utils.bids.fsl_bvecs
+            bvecs = fsl_bvecs(bvecs, nib.load(dwi_nii).affine)
         bvecs_t = bvecs.T if bvecs.ndim > 1 else bvecs.reshape(-1, 1).T
         np.savetxt(bvec_file, bvecs_t, fmt="%.6f", delimiter=" ")
         np.savetxt(bval_file, bvals.reshape(1, -1), fmt="%.1f", delimiter=" ")
@@ -158,7 +162,7 @@ def process_bruker_session(
     subject: str,
     session: str,
     config_path: Optional[Path] = None,
-    use_gpu: bool = True,
+    use_gpu: Optional[bool] = None,
     skip_registration: bool = True,
     force: bool = False,
     inventory_only: bool = False,
@@ -186,8 +190,9 @@ def process_bruker_session(
         Session identifier (e.g. ``'ses-01'``).
     config_path : Path, optional
         YAML config file.  If *None*, a minimal config is generated.
-    use_gpu : bool
-        Use ``eddy_cuda`` if available (default ``True``).
+    use_gpu : bool, optional
+        Use ``eddy_cuda``. None (default) reads ``diffusion.eddy.use_cuda``
+        (default true); see ``dwi_preprocess.select_eddy``.
     skip_registration : bool
         Skip cross-modal registration to template (default ``True``).
     force : bool

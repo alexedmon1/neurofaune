@@ -48,9 +48,14 @@ def bids(config, raw, bids, session_regex, relabel, maps, layout, subjects, scan
     import yaml
     from neurofaune.utils.bids import BidsConfig, convert_study, discover_sessions
 
+    from neurofaune.species import apply_species_profile
+
     cfg_dict = {}
     if config:
         cfg_dict = yaml.safe_load(config.read_text()) or {}
+    # The species profile supplies bids defaults (voxel_scale, affine) that the
+    # study's own bids block can still override.
+    cfg_dict = apply_species_profile({}, cfg_dict)
     b = dict(cfg_dict.get("bids", {}))
     if raw:
         b["raw_root"] = str(raw)

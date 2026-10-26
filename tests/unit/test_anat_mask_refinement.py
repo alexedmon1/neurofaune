@@ -276,3 +276,15 @@ def test_seeded_refinement_disabled(tmp_path, fake_seed_registration):
     row = amr.run_seeded_mask_refinement(_config(tmp_path, method='none'), sub, ses,
                                          tmp_path, raw)
     assert row['status'] == 'disabled' and not fake_seed_registration
+
+
+def test_brain_extent_defaults_to_parcellation_and_can_be_overridden():
+    cfg = {"atlas": {"study_space": {"parcellation": "/a/labels.nii.gz"}}}
+    assert amr.brain_extent_labels(cfg) == Path("/a/labels.nii.gz")
+    cfg["atlas"]["study_space"]["brain_extent"] = "/a/brain_mask.nii.gz"
+    assert amr.brain_extent_labels(cfg) == Path("/a/brain_mask.nii.gz")
+
+
+def test_voxel_scale_comes_from_the_species_profile():
+    assert amr.voxel_scale({}) == 10.0
+    assert amr.voxel_scale({"bids": {"voxel_scale": 20.0}}) == 20.0

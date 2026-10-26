@@ -6,10 +6,14 @@ suited to rodent T2w — but its sizing parameters must match each brain's
 geometry, and the rat brain's rostro-caudal extent vs in-plane size is
 subject-dependent (positioning, FOV). Two parameters do the work:
 
-- ``-x 1,1,<zscale>`` — z-elongation of the ellipsoid. Counter-intuitively a
-  *lower* zscale gives a *longer* z-extent. Too high clips the cerebellum
+- ``-x`` — elongation of the ellipsoid along the brain's rostro-caudal (long)
+  axis, e.g. ``-x 1,1,<zscale>`` when that is array axis 2. Counter-intuitively
+  a *lower* zscale gives a *longer* extent. Too high clips the cerebellum
   (caudal) and olfactory bulb (rostral) poles; too low overshoots into
   non-brain. The optimum is subject-specific (≈1.4–1.6 for this protocol).
+  The long axis is array axis 2 for the rat 2D coronal protocol; for other
+  geometries (e.g. a sagittal mouse 3D RARE, long axis = array axis 1) pass
+  ``long_axis`` or ``'auto'`` (the voxel axis closest to world anterior-posterior).
 - ``-c`` — the brain centre of gravity, derived data-drivenly from the shared
   foreground module so it adapts to each subject's positioning.
 - ``-f`` — bet's fractional intensity threshold. A *lower* ``-f`` grows the brain
@@ -43,7 +47,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional, Sequence, Tuple
+from typing import Dict, Any, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import nibabel as nib
@@ -76,8 +80,21 @@ def cog_from_foreground(img_data: np.ndarray, k: float = DEFAULT_FOREGROUND_K) -
     return coords.mean(0)
 
 
+def long_axis_from_affine(affine: np.ndarray) -> int:
+    """Voxel axis that points most along world anterior-posterior (RAS y)."""
+    return int(np.argmax(np.abs(np.asarray(affine)[1, :3])))
+
+
+def elongation_arg(zscale: float, long_axis: int = 2) -> str:
+    """``-x`` value elongating the ellipsoid along ``long_axis`` (``1,1,z`` for axis 2)."""
+    parts = ["1", "1", "1"]
+    parts[long_axis] = f"{zscale}"
+    return ",".join(parts)
+
+
 def _run_bet4animal(input_file: Path, out_root: Path, cog: np.ndarray,
-                    zscale: float, radius: int, f: float, w: float) -> Optional[Path]:
+                    zscale: float, radius: int, f: float, w: float,
+                    long_axis: int = 2) -> Optional[Path]:
     """Run bet4animal once; return the mask path (or None on failure)."""
     env = dict(os.environ)
     env.setdefault("FSLOUTPUTTYPE", "NIFTI_GZ")
@@ -86,7 +103,7 @@ def _run_bet4animal(input_file: Path, out_root: Path, cog: np.ndarray,
         "-f", str(f),
         "-c", str(int(cog[0])), str(int(cog[1])), str(int(cog[2])),
         "-r", str(radius),
-        "-x", f"1,1,{zscale}",
+        "-x", elongation_arg(zscale, long_axis),
         "-w", str(w),
         "-m",
     ]
@@ -96,12 +113,13 @@ def _run_bet4animal(input_file: Path, out_root: Path, cog: np.ndarray,
 
 
 def score_mask(mask: np.ndarray, img_data: np.ndarray,
-               gmag_norm: np.ndarray, fg_thr: float) -> Optional[Dict[str, Any]]:
+               gmag_norm: np.ndarray, fg_thr: float, long_axis: int = 2) -> Optional[Dict[str, Any]]:
     """Reference-free quality metrics for a candidate mask.
 
     Returns None for an empty mask. ``air`` = fraction of mask voxels below the
     noise floor (ballooning penalty); ``bgrad`` = mean normalized gradient on the
-    mask surface (edge-fit reward).
+    mask surface (edge-fit reward). The extent (``zlo``/``zhi``/``nsl``) is taken
+    along ``long_axis``.
     """
     mask = mask.astype(bool)
     if not mask.any():
@@ -112,7 +130,7 @@ def score_mask(mask: np.ndarray, img_data: np.ndarray,
     air = float((img_data[mask] < fg_thr).mean())
     surf = mask & ~ndimage.binary_erosion(mask)
     bgrad = float(gmag_norm[surf].mean())
-    zs = np.where(mask.any(axis=(0, 1)))[0]
+    zs = np.where(mask.any(axis=tuple(a for a in range(3) if a != long_axis)))[0]
     return dict(cov=100.0 * mask.mean(), zlo=int(zs.min()), zhi=int(zs.max()),
                 nsl=int(len(zs)), ncomp=int(n), frac_largest=frac_largest,
                 air=air, bgrad=bgrad)
@@ -157,10 +175,12 @@ def skull_strip_bet4animal(
     air_warn: float = DEFAULT_AIR_WARN,
     cov_range: Tuple[float, float] = DEFAULT_COV_RANGE,
     foreground_k: float = DEFAULT_FOREGROUND_K,
+    long_axis: Union[int, str] = 2,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """Skull-strip a rodent T2w with bet4animal + an automatic parameter sweep.
 
-    Sweeps ``zscales`` x ``radii`` (data-driven COG unless ``cog`` given), scores
+    Sweeps ``zscales`` x ``radii`` x ``fs`` (data-driven COG unless ``cog`` given;
+    elongation along ``long_axis``, 2 by default, ``'auto'`` from the affine), scores
     each mask reference-free, and selects the best. Writes the brain-extracted
     image to ``output_file`` and the mask to ``mask_file``.
 
@@ -185,16 +205,17 @@ def skull_strip_bet4animal(
 
     cog_arr = np.asarray(cog, dtype=float) if cog is not None else cog_from_foreground(d, foreground_k)
 
+    axis = long_axis_from_affine(img.affine) if long_axis == "auto" else int(long_axis)
     candidates = []
     for zs in zscales:
         for r in radii:
             for fval in fs:
                 mp = _run_bet4animal(input_file, work_dir / f"b4a_z{zs}_r{r}_f{fval}",
-                                     cog_arr, zs, r, fval, w)
+                                     cog_arr, zs, r, fval, w, long_axis=axis)
                 if mp is None:
                     continue
                 m = nib.load(mp).get_fdata() > 0
-                sc = score_mask(m, d, gmag_norm, fg_thr)
+                sc = score_mask(m, d, gmag_norm, fg_thr, long_axis=axis)
                 if sc is None:
                     continue
                 sc.update(zscale=float(zs), radius=int(r), f=float(fval), mask=str(mp))
@@ -227,6 +248,7 @@ def skull_strip_bet4animal(
         "radius": best["radius"],
         "bet_f": best["f"],
         "bet_w": w,
+        "long_axis": axis,
         "z_extent": [best["zlo"], best["zhi"], best["nsl"]],
         "air_leakage": best["air"],
         "boundary_fit": best["bgrad"],

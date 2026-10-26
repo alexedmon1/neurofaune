@@ -1,0 +1,122 @@
+# Species profile: mouse
+#
+# Overrides the rat-tuned values in configs/default.yaml that depend on brain
+# size or on the reference atlas. Merge order:
+#   configs/default.yaml < configs/species/mouse.yaml < study config
+#
+# Scale: 10x, the same as rat and as the Antwerp template's inflated headers
+# (decided 2026-10; fall back to 20x only if FSL/ANTs misbehave at mouse size).
+# A mouse brain is ~0.45-0.55 cm3 against ~2 cm3 for rat, about half the
+# linear size, so length-like parameters below are roughly halved and
+# volume-like ones divided by ~4. They are STARTING values, set from that
+# scaling and not yet validated on a mouse cohort -- check them against the QC
+# output before trusting them.
+
+study:
+  species: "mouse"
+  strain: "C57BL/6"
+
+bids:
+  voxel_scale: 10.0
+  # Mouse protocols mix slice orientations within a session (sagittal 3D RARE,
+  # axial and coronal EPI), so write the real scanner geometry in animal RAS.
+  affine: "scanner"
+
+# Reference space: the Antwerp C57BL/6 in vivo T2w template, shared with the
+# EEG source-localization atlas, so MRI and EEG use the same parcels (allen26 /
+# allen32 / allen64). CCFv3 labels come through the Perens et al. 2023 T2w
+# template (CCFv3 labels on MRI contrast), built by neurofaune.atlas.antwerp
+# into /mnt/arborea/atlases/Antwerp (README.md there). Mouse sessions use
+# scanner affines, so the atlas needs no per-study reorientation: the
+# "study space" files point straight at the 10x-inflated package.
+atlas:
+  name: "Antwerp"
+  base_path: "/mnt/arborea/atlases/Antwerp"
+  study_space:
+    base_path: "${atlas.base_path}/scaled10"
+    template: "${atlas.study_space.base_path}/template_T2w.nii.gz"
+    template_masked: "${atlas.study_space.base_path}/brain.nii.gz"
+    brain_mask: "${atlas.study_space.base_path}/brain_mask.nii.gz"
+    # Extent for mask refinement and its QC (labels > 0). The label sets cover only part of the
+    # brain (allen26/32 70%, CCFv3 82% of this mask), so use the mask itself.
+    brain_extent: "${atlas.study_space.base_path}/brain_mask.nii.gz"
+    # Tissue masks from the CCFv3 annotation (fiber tracts / ventricular systems), written by
+    # neurofaune.atlas.antwerp.add_tissue_masks. Binary in atlas space; warped into T2w they become
+    # partial-volume fractions. No GM map: nothing in preprocessing needs one from the atlas.
+    gm_prob: null
+    wm_prob: "${atlas.study_space.base_path}/wm_mask.nii.gz"
+    csf_prob: "${atlas.study_space.base_path}/csf_mask.nii.gz"
+    parcellation: "${atlas.study_space.base_path}/allen32_labels.nii.gz"
+    parcellation_fine: "${atlas.study_space.base_path}/ccfv3_annotation.nii.gz"
+    parcellation_eeg: "${atlas.study_space.base_path}/allen26_labels.nii.gz"
+
+anatomical:
+  # BIDS conversion already applied bids.voxel_scale; do not rescale sub-mm scaled voxels again.
+  input_already_scaled: true
+  # Mouse anatomy is a 3D RARE; keep it on its native grid (the 2D-template resampling is a
+  # rat-cohort convention).
+  resample_3d_to_2d: false
+  n4:
+    # Rat uses ANTs' default B-spline spacing, 200 scaled mm (~a rat brain length). Half the
+    # linear size -> 100. (Replaces the earlier ants.n4.bspline_fitting_distance, which no code read.)
+    bspline_fitting_distance: 100
+  qc:
+    # brain / non-zero voxels; rat FOVs give 0.15-0.5. The FAC600 pilot 3D RARE (15x24x15 mm FOV)
+    # gives 0.10 for a correct mask, so the rat bounds would flag every mouse as over-stripped.
+    brain_to_total_range: [0.05, 0.30]
+  skull_strip:
+    # The rat atropos_bet path (BET -f 0.3, no radius) leaked into extracranial tissue on the
+    # FAC600 pilot (892 mm3 vs ~550). bet4animal with a mouse radius is what worked there.
+    method: "bet4animal"
+    refine:
+      tolerance_mm3: 6             # rat 25 (~1.2% of a rat brain)
+      qc:
+        volume_mm3: [400, 650]     # plausible mouse brain incl. surface CSF (true mm3); Antwerp mask 564
+        non_brain_mm3: 100         # rat 400
+    # bet4animal sweep (used when skull_strip.method = 'bet4animal').
+    bet4animal:
+      radii: [60]                  # rat 125 (scaled mm)
+      cov_range: [3.0, 15.0]       # brain as % of FOV; mouse protocols have proportionally larger FOVs
+      long_axis: auto              # rostro-caudal voxel axis from the affine (sagittal 3D: axis 1; rat 2D: 2)
+
+functional:
+  smoothing:
+    fwhm: 3                        # rat 6 (scaled mm)
+  # BOLD brain mask = same-session T2w brain mask registered into the EPI, minus voxels without EPI
+  # signal. Slice-wise BET has no per-slice target that fits a mouse (brain = 2-18% of a slice on the
+  # FAC600 pilot; the rat 15% kept jaw muscle). Needs anat_preprocess first.
+  skull_strip_method: anat
+  skull_strip_anat:
+    foreground_k: 4                # noise floor + k sigma; removed the 1-voxel rim + dropout on the pilot
+    nonlinear: false               # rigid, as functional.second_mask
+  skull_strip_adaptive:
+    mask_erode: 0                  # the EPI-signal veto already strips the partial-volume rim
+  motion_qc:
+    # FD rotation-to-displacement radius, real mm. Rat 5 mm scaled by the cube root of the brain-volume
+    # ratio (~0.5 / 2 cm3 -> 0.63).
+    head_radius_mm: 3.2
+  denoising:
+    acompcor:
+      # CCFv3 fiber tracts / ventricles from the atlas (atlas.study_space.wm_prob/csf_prob), warped
+      # into T2w by anat_atlas.atlas_tissue_to_anat. The Atropos WM class on mouse T2w is the
+      # brain-edge rim, not white matter.
+      tissue_source: atlas
+
+diffusion:
+  skull_strip:
+    # Same-session T2w brain mask in the (topup-corrected) b0, vetoed by b0 signal -- as
+    # functional.skull_strip_method anat. Needs anat_preprocess.
+    method: anat
+    foreground_k: 4
+  eddy:
+    # PhaseEncodingDirection / TotalReadoutTime from the BIDS sidecar (pilot: j-, 25.4 ms; the
+    # config default readout is 50 ms).
+    acqparams_source: sidecar
+  registration:
+    # b0 -> T2w rigid composed with T2w_to_template (= T2w -> Antwerp; anat_atlas), instead of a
+    # cross-contrast FA -> T2w-template affine from a 13-slice slab.
+    method: anat
+
+tractography:
+  connectome:
+    assignment_radius_mm: 0.2      # rat 0.4 (real mm)

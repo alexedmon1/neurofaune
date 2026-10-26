@@ -82,10 +82,13 @@ def read_visu_geometry(scan_dir: Path, proc: int = 1) -> dict:
 
 
 def affine_from_visu(scan_dir: Path, proc: int = 1) -> np.ndarray:
-    """Index-to-world affine (mm) for a 2D multi-slice Bruker acquisition.
+    """Index-to-world affine (mm) for a 2D multi-slice or 3D Bruker acquisition.
 
-    The array is assumed to be ``(in-plane 0, in-plane 1, frame)``, which is
-    what brukerapi produces from ``2dseq``.
+    The array is assumed to be ``(in-plane 0, in-plane 1, frame)`` for 2D, or
+    ``(axis 0, axis 1, axis 2)`` for a 3D acquisition (``VisuCoreDim = 3``),
+    which is what brukerapi produces from ``2dseq``. A 3D acquisition has one
+    "frame" whose third axis spacing is ``VisuCoreExtent[2] / VisuCoreSize[2]``
+    -- ``VisuCoreFrameThickness`` there is the whole slab, not a voxel.
 
     ``VisuCorePosition`` gives the *corner* of the first voxel, so half a voxel
     is added to put the affine on voxel centres, as NIfTI expects. On a
@@ -113,6 +116,14 @@ def affine_from_visu(scan_dir: Path, proc: int = 1) -> np.ndarray:
             f'affine cannot describe this acquisition'
         )
     rotation = orientation[0]          # rows are the image axes in world coords
+
+    if len(geometry['size']) >= 3:
+        spacing = geometry['extent'][:3] / geometry['size'][:3]
+        affine = np.eye(4)
+        for axis in range(3):
+            affine[:3, axis] = rotation[axis] * spacing[axis]
+        affine[:3, 3] = position[0] + 0.5 * affine[:3, :3].sum(axis=1)
+        return affine
 
     spacing = geometry['extent'][:2] / geometry['size'][:2]
 

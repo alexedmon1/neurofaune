@@ -43,6 +43,48 @@ from neurofaune.preprocess.qc import get_subject_qc_dir
 from neurofaune.provenance import write_provenance, write_dataset_description
 
 
+def select_eddy(config: Dict[str, Any], use_gpu: Optional[bool] = None, which=None) -> str:
+    """Name of the eddy binary to run: ``'eddy_cuda'`` or ``'eddy_cpu'``.
+
+    ``use_gpu`` None defers to ``diffusion.eddy.use_cuda`` (default True), so a
+    study pins the build in its config. CPU and GPU eddy are not interchangeable:
+    on identical FAC600 mouse inputs they differed by median |dFA| 4e-3 (p99 4e-2)
+    and up to 0.2 mm / 0.4 deg in the b=2000 motion estimates, so a study must not
+    mix them. A missing eddy_cuda therefore warns loudly before falling back, and
+    the chosen build is written to the dwi provenance.
+
+    The CPU path names ``eddy_cpu`` explicitly: FSL >= 6.0.7 ships ``eddy`` as a
+    dispatcher that execs eddy_cuda whenever a CUDA driver is visible, whatever
+    was asked for, and eddy_cuda rejects ``--nthr > 1``. Plain ``eddy`` is only
+    the last resort for installs without ``eddy_cpu``.
+    """
+    import shutil
+    which = which or shutil.which
+    if use_gpu is None:
+        use_gpu = bool(get_config_value(config, 'diffusion.eddy.use_cuda', default=True))
+    if use_gpu:
+        if which('eddy_cuda') is not None:
+            return 'eddy_cuda'
+        print("WARNING: GPU eddy requested but eddy_cuda is not on PATH; falling back to "
+              "CPU eddy. CPU and GPU eddy outputs differ -- do not mix them within a study.")
+    return 'eddy_cpu' if which('eddy_cpu') is not None else 'eddy'
+
+
+def dti_shell_keep(bvals: np.ndarray, max_bval: float) -> np.ndarray:
+    """Volumes for the tensor fit: b0 + shells whose *nominal* b is <= max_bval.
+
+    Bruker writes effective b-values, which sit a few percent above nominal and
+    vary per direction (FAC600 mouse b=1000 shell: 1005-1031, mean 1017), so a
+    raw ``b <= 1000`` drops most of the b=1000 shell. Volumes are grouped into
+    shells (``round_bvals_to_shells``) and each shell mean is rounded to the
+    nearest 100 s/mm^2 before comparing.
+    """
+    from neurofaune.preprocess.utils.dwi_utils import round_bvals_to_shells
+    bvals = np.atleast_1d(np.asarray(bvals, float))
+    nominal = np.round(round_bvals_to_shells(bvals) / 100.0) * 100.0
+    return nominal <= float(max_bval)
+
+
 def _sigma_warp_variants(
     registration_results: Dict[str, Any],
     canonical: str = 'affine',
@@ -602,6 +644,155 @@ def register_fa_to_t2w(
     }
 
 
+def dwi_acqparams_row(config: Dict[str, Any], dwi_file: Path) -> str:
+    """The eddy ``--acqp`` line for the DWI series.
+
+    ``diffusion.eddy.acqparams_source``: ``config`` (default; the
+    ``phase_encoding_direction`` / ``readout_time`` keys, as always) or
+    ``sidecar`` (``PhaseEncodingDirection`` / ``TotalReadoutTime`` from the BIDS
+    JSON neurofaune writes for Bruker EPI). The FAC600 mouse DWI is j- with a
+    25.4 ms readout; the config default readout is 50 ms.
+    """
+    source = get_config_value(config, 'diffusion.eddy.acqparams_source', default='config')
+    if source == 'sidecar':
+        from neurofaune.preprocess.utils.topup import acqparams_row, sidecar
+        return acqparams_row(sidecar(Path(dwi_file)))
+    if source != 'config':
+        raise ValueError(f"diffusion.eddy.acqparams_source must be 'config' or 'sidecar', got {source!r}")
+    pe = get_config_value(config, 'diffusion.eddy.phase_encoding_direction', default='0 -1 0')
+    readout = get_config_value(config, 'diffusion.eddy.readout_time',
+                               default=get_config_value(config, 'diffusion.topup.readout_time', default=0.05))
+    return f'{pe} {readout}'
+
+
+def _pad_volume(data: np.ndarray, n_pad: int) -> np.ndarray:
+    """Pad a 3-D volume along slices exactly as :func:`pad_slices_for_eddy` pads the DWI."""
+    return np.pad(data, ((0, 0), (0, 0), (n_pad, n_pad)), mode='reflect')
+
+
+def _padded_affine(affine: np.ndarray, n_pad: int) -> np.ndarray:
+    out = np.array(affine, dtype=float)
+    out[:3, 3] = out[:3, 3] - out[:3, 2] * n_pad
+    return out
+
+
+def run_dwi_topup(
+    dwi_file: Path,
+    b0_file: Path,
+    topup_epis: Tuple[Path, Path],
+    work_dir: Path,
+    n_pad: int,
+    n_threads: int = 4,
+) -> Dict[str, Any]:
+    """topup on a reverse-PE spin-echo pair, on the slice-padded grid eddy will see.
+
+    ``topup_epis`` = (forward, reverse) EPIs with BIDS sidecars
+    (``PhaseEncodingDirection``, ``TotalReadoutTime``) and the DWI's geometry.
+    Both are padded by ``n_pad`` slices exactly as the DWI is padded for eddy, so
+    the field (Hz) sits on eddy's ``--imain`` grid and is handed over with
+    ``--field`` (topup's spline coefficients would encode topup's own even-padded
+    grid, which differs for an odd slice count). Returns the padded field, the
+    distortion-corrected b0 on the original grid (for brain masking), and the
+    acqparams row of the DWI.
+    """
+    from neurofaune.preprocess.utils.topup import (
+        acqparams_row, apply_topup, run_topup_pair, sidecar,
+    )
+
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    dwi_img = nib.load(str(dwi_file))
+    dwi_row = acqparams_row(sidecar(Path(dwi_file)))
+    padded = []
+    rows = []
+    for tag, epi in zip(('fwd', 'rev'), topup_epis):
+        img = nib.load(str(epi))
+        if img.shape[:3] != dwi_img.shape[:3] or not np.allclose(img.affine, dwi_img.affine, atol=1e-2):
+            raise ValueError(f"topup EPI {Path(epi).name} does not share the DWI grid "
+                             f"({img.shape[:3]} vs {dwi_img.shape[:3]}); it cannot correct this series")
+        data = np.asanyarray(img.dataobj, dtype=np.float32)
+        data = data[..., 0] if data.ndim == 4 else data
+        out = work_dir / f'{tag}_padded.nii.gz'
+        nib.save(nib.Nifti1Image(_pad_volume(data, n_pad), _padded_affine(img.affine, n_pad)), str(out))
+        Path(str(out).replace('.nii.gz', '.json')).write_text(json.dumps(sidecar(Path(epi))))
+        padded.append(out)
+        rows.append(acqparams_row(sidecar(Path(epi))))
+    if dwi_row not in rows:
+        raise ValueError(f"DWI acquisition ({dwi_row}) matches neither topup EPI ({rows})")
+    outputs = run_topup_pair(padded[0], padded[1], work_dir / 'topup', n_threads=n_threads, force=True)
+
+    # Distortion-corrected b0 for the brain mask: the DWI b0, padded, applytopup'd, cropped.
+    b0 = nib.load(str(b0_file))
+    b0_pad = work_dir / 'b0_padded.nii.gz'
+    nib.save(nib.Nifti1Image(_pad_volume(np.asanyarray(b0.dataobj, dtype=np.float32), n_pad),
+                             _padded_affine(b0.affine, n_pad)), str(b0_pad))
+    b0_corr_pad = apply_topup(b0_pad, outputs, rows.index(dwi_row) + 1, work_dir / 'b0_topup_padded.nii.gz')
+    corr = nib.load(str(b0_corr_pad)).get_fdata()[:, :, n_pad:n_pad + b0.shape[2]]
+    b0_corr = work_dir / 'b0_topup.nii.gz'
+    nib.save(nib.Nifti1Image(np.clip(corr, 0, None).astype(np.float32), b0.affine, b0.header), str(b0_corr))
+    field = nib.load(str(outputs['field'])).get_fdata()
+    return {
+        'field_padded': outputs['field'],
+        'b0_corrected': b0_corr,
+        'dwi_acqparams_row': dwi_row,
+        'topup_dir': work_dir / 'topup',
+        'field_hz_p99_abs': float(np.percentile(np.abs(field), 99)),
+    }
+
+
+def register_dwi_via_anat(
+    moving_ref: Path,
+    fa_file: Path,
+    template_file: Path,
+    output_dir: Path,
+    subject: str,
+    session: str,
+    work_dir: Path,
+    n_cores: int = 4,
+) -> Dict[str, Any]:
+    """DWI -> template through the same-session T2w (``diffusion.registration.method: anat``).
+
+    b0 -> T2w rigid (within subject, MI) composed with the T2w_to_template
+    transform, as the functional workflow does. For species registered straight
+    to the atlas (mouse; see ``anat_atlas``) this avoids the cross-contrast FA ->
+    T2w-template affine from a 13-slice slab. Returns the same keys as
+    :func:`register_fa_to_template`; ``affine_transform`` is the composite
+    displacement field.
+    """
+    from neurofaune.preprocess.utils.registration_utils import register_via_anat_composition
+
+    transforms_dir = Path(output_dir) / 'transforms' / subject / session
+    anat_t2w = (Path(output_dir) / 'derivatives' / subject / session / 'anat'
+                / f'{subject}_{session}_desc-preproc_T2w.nii.gz')
+    at_aff = transforms_dir / f'{subject}_{session}_T2w_to_template_0GenericAffine.mat'
+    at_warp = transforms_dir / f'{subject}_{session}_T2w_to_template_1Warp.nii.gz'
+    if not (anat_t2w.exists() and at_aff.exists()):
+        raise FileNotFoundError(
+            f"diffusion.registration.method 'anat' needs {anat_t2w.name} and {at_aff.name}")
+    prefix = transforms_dir / 'DWI_to_template_'
+    comp = register_via_anat_composition(
+        moving_ref=moving_ref, anat_t2w=anat_t2w, anat_to_tpl_affine=at_aff,
+        anat_to_tpl_warp=at_warp if at_warp.exists() else None,
+        template_file=template_file, output_prefix=prefix, work_dir=Path(work_dir) / 'dwi_to_anat',
+        n_cores=n_cores)
+    warped_fa = Path(str(prefix) + 'FA_Warped.nii.gz')
+    subprocess.run(['antsApplyTransforms', '-d', '3', '-i', str(fa_file), '-r', str(template_file),
+                    '-t', str(comp['composite_warp']), '-o', str(warped_fa), '--interpolation', 'Linear'],
+                   check=True, capture_output=True, text=True)
+    return {
+        'template_file': template_file,
+        'transform_type': 'anat_composition',
+        'affine_transform': comp['composite_warp'],
+        'moving_to_anat_affine': comp['moving_to_anat_affine'],
+        'warped_fa': warped_fa,
+        'warped_b0': comp['warped'],
+        'fa_shape': nib.load(str(fa_file)).shape,
+        'template_shape': nib.load(str(template_file)).shape,
+        'warp_transform': None, 'inverse_warp': None, 'syn_affine_transform': None,
+        'method': 'anat_composition',
+    }
+
+
 def run_dwi_preprocessing(
     config: Dict[str, Any],
     subject: str,
@@ -612,10 +803,11 @@ def run_dwi_preprocessing(
     output_dir: Path,
     transform_registry: TransformRegistry,
     work_dir: Optional[Path] = None,
-    use_gpu: bool = True,
+    use_gpu: Optional[bool] = None,
     template_file: Optional[Path] = None,
     t2w_file: Optional[Path] = None,
-    run_registration: bool = True
+    run_registration: bool = True,
+    topup_epis: Optional[Tuple[Path, Path]] = None,
 ) -> Dict[str, Any]:
     """
     Run complete DTI/DWI preprocessing workflow.
@@ -650,14 +842,22 @@ def run_dwi_preprocessing(
         Transform registry for saving spatial transforms
     work_dir : Path, optional
         Working directory (defaults to output_dir/work/{subject}/{session}/dwi_preproc)
-    use_gpu : bool
-        Use GPU-accelerated eddy_cuda (default: True)
+    use_gpu : bool, optional
+        Use GPU-accelerated eddy_cuda. None (default) reads
+        ``diffusion.eddy.use_cuda`` (default True); see ``select_eddy``.
     template_file : Path, optional
         Cohort template for direct FA→Template registration (preferred)
     t2w_file : Path, optional
         Preprocessed T2w (deprecated, use template_file instead)
     run_registration : bool
         Whether to run FA→Template registration (default: True)
+    topup_epis : (Path, Path), optional
+        Forward and reverse phase-encode spin-echo EPIs on the DWI grid, with
+        BIDS sidecars. When given, topup estimates the susceptibility field,
+        the brain mask is made on the distortion-corrected b0, and eddy
+        corrects with ``--field`` (see :func:`run_dwi_topup`). None with
+        ``diffusion.topup.enabled`` finds the pair in the session's BIDS
+        ``fmap/`` (``utils.topup.find_topup_pair``).
 
     Returns
     -------
@@ -846,6 +1046,27 @@ def run_dwi_preprocessing(
 
     extract_b0_volume(dwi_input, bval_validated, b0_file)
 
+    n_pad_slices = config.get('diffusion', {}).get('eddy', {}).get('slice_padding', 2)
+    topup_info = None
+    if topup_epis is None and get_config_value(config, 'diffusion.topup.enabled', default=False):
+        from neurofaune.preprocess.utils.topup import find_topup_pair
+        topup_epis = find_topup_pair(Path(dwi_file))
+        if topup_epis is None:
+            print("WARNING: diffusion.topup.enabled but no reverse-PE EPI pair on the DWI grid in "
+                  "fmap/; continuing WITHOUT distortion correction")
+        else:
+            print(f"  topup pair (fmap/): {Path(topup_epis[0]).name} / {Path(topup_epis[1]).name}")
+    if topup_epis is not None:
+        print("\n  Susceptibility field from the reverse-PE pair (topup)...")
+        topup_info = run_dwi_topup(dwi_file, b0_file, tuple(topup_epis), work_dir / 'topup_dwi',
+                                   n_pad=n_pad_slices)
+        b0_distorted = work_dir / f'{subject}_{session}_b0_distorted.nii.gz'
+        import shutil as _sh
+        _sh.copy(b0_file, b0_distorted)
+        _sh.copy(topup_info['b0_corrected'], b0_file)
+        print(f"  topup field |Hz| p99: {topup_info['field_hz_p99_abs']:.0f}; "
+              f"mask and QC use the corrected b0")
+
     # Create brain mask using unified skull strip dispatcher
     # DTI has 11 slices (>=10), so will auto-select atropos_bet two-pass method
     print(f"\nCreating brain mask (auto-selects method based on slice count)...")
@@ -869,15 +1090,37 @@ def run_dwi_preprocessing(
     cohort = session.split('-')[1] if '-' in session else 'p60'
     dwi_ss_method = get_config_value(config, 'diffusion.skull_strip.method', default='atropos_bet')
     dwi_ss_n_classes = get_config_value(config, 'diffusion.skull_strip.n_classes', default=3)
-    _, _, skull_strip_info = skull_strip(
-        input_file=b0_strip_file,
-        output_file=b0_brain_file,
-        mask_file=brain_mask_file,
-        work_dir=skull_strip_work_dir,
-        method=dwi_ss_method,
-        cohort=cohort,
-        n_classes=dwi_ss_n_classes,
-    )
+    if dwi_ss_method == 'anat':
+        # Same-session T2w brain mask registered into the b0, vetoed by b0 signal
+        # (as functional.skull_strip_method 'anat'). Needs anat_preprocess.
+        from neurofaune.preprocess.utils.registration_utils import anat_guided_mask
+        _anat = output_dir / 'derivatives' / subject / session / 'anat'
+        _t2w = _anat / f'{subject}_{session}_desc-preproc_T2w.nii.gz'
+        _amask = _anat / f'{subject}_{session}_desc-brain_mask.nii.gz'
+        if not (_t2w.exists() and _amask.exists()):
+            raise FileNotFoundError(
+                f"diffusion.skull_strip.method 'anat' needs {_t2w.name} and {_amask.name}; "
+                f"run anat_preprocess first")
+        skull_strip_info = anat_guided_mask(
+            moving_ref=b0_file, signal_ref=b0_file, anat_t2w=_t2w, anat_mask=_amask,
+            out_mask=brain_mask_file, work_dir=skull_strip_work_dir / 'anat_mask',
+            foreground_k=float(get_config_value(config, 'diffusion.skull_strip.foreground_k', default=4.0)),
+            nonlinear=bool(get_config_value(config, 'diffusion.skull_strip.nonlinear', default=False)),
+        )
+        skull_strip_info.pop('moving_to_anat_affine', None)
+        skull_strip_info.pop('inverse_warp', None)
+        print(f"  T2w brain mask in b0: {skull_strip_info['anat_voxels']} voxels; signal veto removed "
+              f"{skull_strip_info['low_signal_removed']} -> {skull_strip_info['total_voxels']}")
+    else:
+        _, _, skull_strip_info = skull_strip(
+            input_file=b0_strip_file,
+            output_file=b0_brain_file,
+            mask_file=brain_mask_file,
+            work_dir=skull_strip_work_dir,
+            method=dwi_ss_method,
+            cohort=cohort,
+            n_classes=dwi_ss_n_classes,
+        )
     print(f"  Method: {skull_strip_info.get('method', 'unknown')}")
     print(f"  Extraction ratio: {skull_strip_info.get('extraction_ratio', 0):.3f}")
 
@@ -897,8 +1140,7 @@ def run_dwi_preprocessing(
     print("Step 4: Eddy Correction (Motion + Distortion)")
     print("="*80)
 
-    # Get slice padding config (default: 2 slices on each side)
-    n_pad_slices = config.get('diffusion', {}).get('eddy', {}).get('slice_padding', 2)
+    # Slice padding (default: 2 slices on each side), set at Step 3 so topup pads alike
 
     # Pad DWI and mask to prevent edge slice loss during eddy
     # This is critical for thin-slice acquisitions where motion correction
@@ -913,32 +1155,22 @@ def run_dwi_preprocessing(
     )
     pad_mask_for_eddy(brain_mask_file, mask_padded_file, n_pad=n_pad_slices)
 
-    # Check for eddy_cuda availability
-    eddy_cmd = 'eddy_cuda' if use_gpu else 'eddy'
-
-    try:
-        # eddy_cuda doesn't support --version, so just check the binary exists
-        import shutil
-        if shutil.which(eddy_cmd) is not None:
-            print(f"Using {eddy_cmd} for eddy correction")
-        else:
-            raise FileNotFoundError(f"{eddy_cmd} not found in PATH")
-    except (FileNotFoundError,):
-        print(f"Warning: {eddy_cmd} not available, falling back to eddy")
-        eddy_cmd = 'eddy'
+    eddy_cmd = select_eddy(config, use_gpu)
+    print(f"Using {eddy_cmd} for eddy correction")
 
     # Create index file (all volumes use same phase encoding)
     index_file = work_dir / 'index.txt'
     with open(index_file, 'w') as f:
         f.write(' '.join(['1'] * n_volumes))
 
-    # Create acquisition parameters file from config
-    pe_direction = get_config_value(config, 'diffusion.eddy.phase_encoding_direction', default='0 -1 0')
-    readout_time = get_config_value(config, 'diffusion.eddy.readout_time',
-                                    default=get_config_value(config, 'diffusion.topup.readout_time', default=0.05))
+    # Acquisition parameters: config or sidecar (dwi_acqparams_row); with topup
+    # the field's sign convention is the sidecar's, so the sidecar row is used.
+    acq_row = (topup_info['dwi_acqparams_row'] if topup_info is not None
+               else dwi_acqparams_row(config, dwi_file))
     acqparams_file = work_dir / 'acqparams.txt'
     with open(acqparams_file, 'w') as f:
-        f.write(f'{pe_direction} {readout_time}\n')
+        f.write(f'{acq_row}\n')
+    print(f"  acqparams: {acq_row}")
 
     # Run eddy on PADDED data
     eddy_basename = work_dir / 'eddy_corrected'
@@ -959,9 +1191,17 @@ def run_dwi_preprocessing(
         eddy_cmd_full.append('--repol')
     if get_config_value(config, 'diffusion.eddy.data_is_shelled', default=True):
         eddy_cmd_full.append('--data_is_shelled')
+    if topup_info is not None:
+        eddy_cmd_full.append(f"--field={str(topup_info['field_padded']).replace('.nii.gz', '')}")
 
-    if use_gpu and eddy_cmd == 'eddy_cuda':
+    if eddy_cmd == 'eddy_cuda':
         eddy_cmd_full.append('--very_verbose')
+    else:
+        # CPU eddy is single-threaded unless told otherwise (~3 h for the 75-volume
+        # FAC600 mouse DWI); a machine setting, so it lives in the study config.
+        n_thr = int(get_config_value(config, 'diffusion.eddy.n_threads', default=1) or 1)
+        if n_thr > 1:
+            eddy_cmd_full.append(f'--nthr={n_thr}')
 
     print(f"\nRunning eddy correction on padded data...")
     print(f"Command: {' '.join(eddy_cmd_full)}")
@@ -1119,6 +1359,11 @@ def run_dwi_preprocessing(
             brain_file=b0_brain_file,
             mask_file=brain_mask_file,
             skull_strip_info=skull_strip_info,
+            radius=float(get_config_value(
+                config, 'diffusion.motion_qc.head_radius_mm',
+                default=get_config_value(config, 'functional.motion_qc.head_radius_mm', default=5.0)))
+            * float(get_config_value(config, 'bids.voxel_scale', default=10.0)),
+            voxel_scale=float(get_config_value(config, 'bids.voxel_scale', default=10.0)),
         )
         qc_results['eddy_qc'] = eddy_qc
     else:
@@ -1179,17 +1424,35 @@ def run_dwi_preprocessing(
                         config, 'diffusion.registration.transform_type', default='a')
                     reg_metric = get_config_value(
                         config, 'diffusion.registration.metric', default='MI')
-                    registration_results = register_fa_to_template(
-                        fa_file=fa_file,
-                        template_file=template_file,
-                        output_dir=output_dir,
-                        subject=subject,
-                        session=session,
-                        work_dir=work_dir,
-                        n_cores=4,
-                        transform_type=reg_transform_type,
-                        metric=reg_metric,
-                    )
+                    reg_method = get_config_value(
+                        config, 'diffusion.registration.method', default='fa')
+                    if reg_method == 'anat':
+                        mean_b0_reg = work_dir / f'{subject}_{session}_meanb0_eddy_brain.nii.gz'
+                        _ec = nib.load(str(dwi_eddy_file))
+                        _b0i = np.atleast_1d(np.loadtxt(bval_output)) < 100
+                        _m = nib.load(str(brain_mask_file)).get_fdata() > 0
+                        nib.save(nib.Nifti1Image(
+                            (_ec.get_fdata()[..., _b0i].mean(-1) * _m).astype(np.float32),
+                            _ec.affine, _ec.header), mean_b0_reg)
+                        registration_results = register_dwi_via_anat(
+                            moving_ref=mean_b0_reg, fa_file=fa_file, template_file=template_file,
+                            output_dir=output_dir, subject=subject, session=session,
+                            work_dir=work_dir, n_cores=4)
+                    elif reg_method != 'fa':
+                        raise ValueError(f"diffusion.registration.method must be 'fa' or 'anat', "
+                                         f"got {reg_method!r}")
+                    else:
+                        registration_results = register_fa_to_template(
+                            fa_file=fa_file,
+                            template_file=template_file,
+                            output_dir=output_dir,
+                            subject=subject,
+                            session=session,
+                            work_dir=work_dir,
+                            n_cores=4,
+                            transform_type=reg_transform_type,
+                            metric=reg_metric,
+                        )
 
                     # Save registration metadata to JSON
                     reg_metadata_file = derivatives_dir / f'{subject}_{session}_FA_to_template_registration.json'
@@ -1365,7 +1628,13 @@ def run_dwi_preprocessing(
     # Record which neurofaune and which settings produced these outputs. A
     # derivative that cannot name its code cannot be reproduced, and the
     # question always arrives later than the run does.
-    write_provenance(derivatives_dir, subject, session, 'dwi', config=config)
+    # The eddy build is recorded because CPU and GPU eddy disagree measurably
+    # (see select_eddy), so a study must not mix them.
+    write_provenance(derivatives_dir, subject, session, 'dwi', config=config,
+                     extra={"Eddy": eddy_cmd,
+                            "Topup": ({"Applied": True, "Pair": [Path(p).name for p in topup_epis],
+                                       "FieldHzP99Abs": round(topup_info['field_hz_p99_abs'], 1)}
+                                      if topup_info is not None else {"Applied": False})})
     write_dataset_description(output_dir / 'derivatives', config=config)
 
     return results
@@ -1399,9 +1668,10 @@ def fit_dti(
         assumes mono-exponential (Gaussian) decay, which only holds at low b;
         above ~1000-1500 the signal is non-Gaussian (kurtosis), so including
         high-b shells biases the tensor (deflates diffusivity, inflates FA). When
-        set, only b0 + volumes with b <= max_bval are used for the fit. None keeps
-        all volumes (legacy behaviour; correct only for single-shell b<=1000 data).
-        Higher shells remain available to DKI/NODDI, which model non-Gaussianity.
+        set, only b0 + shells with nominal b <= max_bval are used for the fit
+        (see ``dti_shell_keep``). None keeps all volumes (legacy behaviour;
+        correct only for single-shell b<=1000 data). Higher shells remain
+        available to DKI/NODDI, which model non-Gaussianity.
 
     Returns
     -------
@@ -1413,7 +1683,7 @@ def fit_dti(
     # Restrict the tensor fit to the Gaussian regime (b0 + b <= max_bval).
     if max_bval is not None:
         bvals = np.atleast_1d(np.loadtxt(bval_file))
-        keep = bvals <= float(max_bval)
+        keep = dti_shell_keep(bvals, max_bval)
         n_keep, n_tot = int(keep.sum()), keep.size
         if n_keep < n_tot:
             import tempfile

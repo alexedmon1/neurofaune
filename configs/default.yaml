@@ -297,13 +297,18 @@ diffusion:
 
   # TOPUP distortion correction (if reverse PE images available)
   topup:
+    # true: find the reverse-PE spin-echo pair on the DWI grid in the session's BIDS fmap/
+    # (utils.topup.find_topup_pair) when dwi_preprocess is not given topup_epis. Warns and
+    # continues uncorrected if there is none; dwi-provenance records "Topup".
+    enabled: false
     readout_time: 0.05  # Study-specific, check protocol
     pe_direction: "AP"  # or "PA", "LR", "RL"
     config: "b02b0.cnf"  # FSL config file
 
   # Eddy current and motion correction
   eddy:
-    use_cuda: true  # GPU acceleration (10-50x faster)
+    use_cuda: true  # GPU eddy_cuda (FAC600 mouse: 11.6 min vs ~40 min CPU). Pin per study: CPU and GPU
+                    # outputs differ (median |dFA| 4e-3), so never mix them; the build is in dwi-provenance
     flm: "linear"
     slm: "linear"
     fwhm: 0
@@ -315,6 +320,7 @@ diffusion:
     readout_time: 0.05                 # Total readout time (seconds)
     data_is_shelled: true              # Skip shell auto-detection (Bruker multi-shell data)
     slice_padding: 2                   # Pad N slices on each side before eddy
+    n_threads: 1                       # CPU eddy only (--nthr; eddy_cuda rejects >1); machine setting
 
   # DTI fitting
   dti:
@@ -401,6 +407,24 @@ functional:
   tr: 1.0  # Repetition time (seconds) - study-specific
   te: 30.0  # Echo time (ms) - study-specific, or list for multi-echo
 
+  # Keep the input's BIDS task/acq/ce/rec/dir/run entities in every func output name
+  # (derivatives, work, QC subdir, BOLD_to_* transforms, provenance). false: {sub}_{ses}_* names,
+  # so a session with several BOLD runs overwrites itself in one study root. Downstream
+  # consumers that build {sub}_{ses}_desc-preproc_bold names (roi_extraction, batch_fc_analysis,
+  # templates.builder, SIGMA warp) do not yet understand per-run names.
+  output_entities: false
+
+  # Susceptibility distortion correction with topup (STEP 2.2, before masking, motion
+  # correction and registration). Needs a reverse-PE EPI pair on the BOLD grid with the BOLD's
+  # TotalReadoutTime; found in the session's BIDS fmap/ (utils.topup.find_topup_pair) unless
+  # passed as topup_epis. Every echo of a multi-echo run is unwarped with the same field.
+  # Warns and continues uncorrected if no pair exists; func-provenance records "Topup".
+  # Does not recover T2* signal dropout, only geometric distortion.
+  topup:
+    enabled: false
+    config: b02b0.cnf
+    n_threads: 1
+
   # Slice timing correction (run BEFORE motion correction)
   # Corrects for temporal differences in slice acquisition within each TR
   slice_timing:
@@ -418,6 +442,11 @@ functional:
   skull_strip_template_dilation: 2   # in-plane dilation in BOLD voxels (safety margin)
 
   # Adaptive per-slice BET parameters (skull_strip_method: adaptive)
+  # Erode masks within slices only (BOLD mask erosion, ICA edge band, aCompCor rim).
+  # 3D erosion of a thick-slice slab empties the first and last slice (and the
+  # ICA edge band swallows the first and last two). false = the old 3D erosion.
+  erode_inplane: true
+
   skull_strip_adaptive:
     target_ratio: 0.15           # Target 15% extraction per slice
     frac_range: [0.30, 0.90]     # Wide range accommodates all protocols (2× voxel size requires 2× frac)

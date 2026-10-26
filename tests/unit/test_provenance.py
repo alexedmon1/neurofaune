@@ -94,3 +94,10 @@ def test_dataset_description_is_bids_derivative(tmp_path):
     d = json.loads(out.read_text())
     assert d["DatasetType"] == "derivative"
     assert d["GeneratedBy"][0]["Version"]
+
+
+def test_write_provenance_records_arm_specific_extras(tmp_path):
+    """The dwi arm records which eddy build ran; CPU and GPU eddy differ."""
+    out = provenance.write_provenance(tmp_path, "sub-1", "ses-1", "dwi", extra={"Eddy": "eddy_cuda"})
+    rec = json.loads(out.read_text())
+    assert rec["Eddy"] == "eddy_cuda" and rec["Modality"] == "dwi"
