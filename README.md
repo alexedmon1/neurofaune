@@ -1,6 +1,6 @@
 # Neurofaune
 
-Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles multi-modal rat brain imaging with age-cohort templates and standardized normalization to the SIGMA rat brain atlas.
+Rodent MRI preprocessing and analysis pipeline built on ANTs and FSL. Handles multi-modal **rat and mouse** brain imaging: rat with age-cohort templates and normalization to the SIGMA rat atlas, mouse with registration to the Antwerp C57BL/6 template carrying Allen CCFv3 labels (see [Species support](#species-support)).
 
 ## Prerequisites
 
@@ -73,6 +73,38 @@ git clone https://github.com/alexedmon1/neurofaune.git
 cd neurofaune
 uv pip install -e ".[dev]"
 ```
+
+## Species support
+
+The species is selected by `study.species` in the study config (`rat` or `mouse`; default `rat`).
+Configs merge in this order:
+
+```
+configs/default.yaml  <  configs/species/<species>.yaml  <  study config.yaml
+```
+
+so a species profile only overrides values that depend on brain size or on the reference atlas
+(see `neurofaune/species.py`).
+
+| | rat | mouse |
+|---|---|---|
+| Reference space | SIGMA (study-space, reoriented per study) | Antwerp C57BL/6 in vivo T2w template; CCFv3 labels via the Perens et al. 2023 template (allen26/32/64 parcels) |
+| BIDS geometry | identity affine, 10x voxel scale | scanner affines (mixed slice orientations), 10x voxel scale |
+| Stereotaxic frame | — | skull-derived bregma frame (Perens micro-CT sutures) |
+| Size-dependent parameters | rat defaults | profile values in `configs/species/mouse.yaml` (bet4animal radii and long axis, FD head radius, erosion, N4) |
+
+Mouse-specific behaviour, all config-gated so rat processing is unchanged:
+
+- **Anatomical:** bet4animal with automatic long-axis detection, atlas-seeded mask refinement, native 3D grid.
+- **Functional:** anatomy-guided BOLD mask, atlas-derived WM/CSF masks for aCompCor and ICA
+  classification, in-plane erosion, topup from reverse phase-encode pairs (`functional.topup.enabled`),
+  per-run output names (`functional.output_entities`).
+- **Diffusion:** topup + `eddy --field`, acquisition parameters from the BIDS sidecar, anatomy-guided
+  mask with an empirical noise floor, registration to template via the T2w,
+  `diffusion.dti.max_bval` selection by nominal shell.
+
+BIDS b-vectors are written in FSL convention (x negated for det > 0) for both species.
+The mouse profile values are starting points tuned on a pilot; check the QC output on a new cohort.
 
 ## Developer Gate
 
