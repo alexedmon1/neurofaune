@@ -223,6 +223,83 @@ def calculate_motion_correlation(
     return max(correlations)
 
 
+#: The six motion parameters every functional run writes to the derivatives (and the motion-only
+#: first pass, ``run_functional_preprocessing(stop_after="motion")``): the source of the
+#: other-animal null for the ICA motion criterion.
+MOTION_PARAMS_SUFFIX = "_desc-motion_params.tsv"
+MOTION_COLUMNS = ["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z"]
+
+
+def write_motion_params(par_file: Path, out_file: Path) -> Path:
+    """MCFLIRT's ``.par`` (three rotations, three translations) as a 6-column TSV with a header."""
+    par = np.loadtxt(par_file, ndmin=2)
+    if par.shape[1] != 6:
+        raise ValueError(f"{par_file}: {par.shape[1]} columns, expected 6 motion parameters")
+    out_file = Path(out_file)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    np.savetxt(out_file, par, delimiter="\t", header="\t".join(MOTION_COLUMNS), comments="", fmt="%.8g")
+    return out_file
+
+
+def load_other_animal_motion(
+    derivatives_root: Path,
+    subject: str,
+    min_sessions: int = 20,
+) -> Dict[str, Any]:
+    """Every other animal's motion parameters under ``derivatives_root``: the ICA motion null.
+
+    A component's time course can correlate with its own animal's motion parameters
+    because both are slow, not because it is motion. Another animal's motion has the same
+    kind of slowness but no temporal relation to this scan, so the correlations a
+    component reaches with it are what slowness alone produces. Sessions of ``subject``
+    are left out (the same animal's other scans are not "another rat").
+
+    Files are ``<derivatives_root>/sub-*/ses-*/func/*_desc-motion_params.tsv``, written by
+    every functional run and by the motion-only first pass. Raises when fewer than
+    ``min_sessions`` are found: on a from-scratch cohort run, run the first pass
+    (``stop_after="motion"``) for every session before the full run. There is no
+    fallback to a fixed threshold.
+    """
+    files = sorted(Path(derivatives_root).glob(f"sub-*/ses-*/func/*{MOTION_PARAMS_SUFFIX}"))
+    motion, sessions = [], []
+    for f in files:
+        sub, ses = f.parts[-4], f.parts[-3]
+        if sub == subject:
+            continue
+        motion.append(np.loadtxt(f, skiprows=1, ndmin=2))
+        sessions.append(f"{sub}_{ses}")
+    if len(motion) < min_sessions:
+        raise RuntimeError(
+            f"ICA motion null: {len(motion)} other-animal sessions with motion parameters under "
+            f"{derivatives_root} (need {min_sessions}). Run the motion-only first pass for the cohort "
+            f"(run_functional_preprocessing(..., stop_after='motion')) before the full run."
+        )
+    return {"motion": motion, "sessions": sessions}
+
+
+def motion_null_thresholds(
+    mix: np.ndarray,
+    null_motion: List[np.ndarray],
+    quantile: float = 0.95,
+) -> np.ndarray:
+    """Per component, the ``quantile`` of its max |r| against each null session's motion.
+
+    ``mix`` is (timepoints, components); every null array must have at least as many
+    rows (only the first ``len(mix)`` are used). Same statistic as
+    :func:`calculate_motion_correlation`: the largest absolute Pearson r over the six
+    parameters.
+    """
+    n = len(mix)
+    a = (mix - mix.mean(0)) / mix.std(0)
+    null = np.empty((len(null_motion), mix.shape[1]))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for i, m in enumerate(null_motion):
+            m = m[:n]
+            b = (m - m.mean(0)) / m.std(0)
+            null[i] = np.nanmax(np.abs(a.T @ b / n), axis=1)
+    return np.quantile(null, quantile, axis=0)
+
+
 def calculate_frequency_content(
     component_timecourse: np.ndarray,
     tr: float,
@@ -282,9 +359,21 @@ def classify_ica_components(
     freq_threshold: float = 0.60,
     classification_mode: str = 'score',
     edge_inplane: bool = True,
+    motion_null: Optional[List[np.ndarray]] = None,
+    motion_null_quantile: float = 0.95,
+    motion_null_min_sessions: int = 20,
 ) -> Dict[str, Any]:
     """
     Automatically classify ICA components as signal or noise.
+
+    With ``motion_null`` (other animals' motion parameters, :func:`load_other_animal_motion`)
+    the motion criterion is calibrated per component: a component is motion only if its
+    max |r| with its own animal's motion exceeds the ``motion_null_quantile`` of its max |r|
+    with each other animal's motion. In 'score' mode that replaces the fixed 0.5 automatic
+    rule, and motion no longer adds to the score (it has been decided); in 'threshold' mode
+    it replaces ``motion_threshold``. Edge, CSF and frequency criteria are unchanged.
+    Without it the fixed thresholds below apply, as before (on anaesthetised rats a fixed
+    0.5 flagged a median 38% of components, and another animal's motion 23%).
 
     Two classification modes:
 
@@ -348,6 +437,17 @@ def classify_ica_components(
     motion = motion[:min_len]
     mix = mix[:min_len]
     
+    # Per-component motion thresholds from the other-animal null
+    null_thr = None
+    if motion_null is not None:
+        usable = [m for m in motion_null if len(m) >= min_len]
+        if len(usable) < motion_null_min_sessions:
+            raise RuntimeError(f"ICA motion null: {len(usable)} null sessions with >= {min_len} timepoints "
+                               f"(need {motion_null_min_sessions})")
+        null_thr = motion_null_thresholds(mix, usable, motion_null_quantile)
+        print(f"  Motion criterion: other-animal null, {len(usable)} sessions, quantile {motion_null_quantile} "
+              f"(per-component thresholds {np.min(null_thr):.2f}-{np.max(null_thr):.2f})")
+
     # Load brain mask
     brain_mask = nib.load(brain_mask_file).get_fdata().astype(bool)
     
@@ -359,7 +459,12 @@ def classify_ica_components(
     # Calculate features for each component
     results = {
         'n_components': n_components,
-        'components': []
+        'components': [],
+        'motion_null': None if null_thr is None else {
+            'sessions': len(usable), 'quantile': motion_null_quantile,
+            'threshold_min': float(np.min(null_thr)), 'threshold_median': float(np.median(null_thr)),
+            'threshold_max': float(np.max(null_thr)),
+        },
     }
     
     for ic_idx in range(n_components):
@@ -377,12 +482,13 @@ def classify_ica_components(
         csf_frac = 0.0
         if csf_mask is not None:
             csf_frac = calculate_csf_overlap(spatial_map, csf_mask)
+        motion_cut = float(null_thr[ic_idx]) if null_thr is not None else motion_threshold
 
         # Classify component based on mode
         if classification_mode == 'threshold':
             # Old aggressive mode: ANY criterion triggers noise classification
             is_noise = (
-                motion_corr > motion_threshold or
+                motion_corr > motion_cut or
                 edge_frac > edge_threshold or
                 csf_frac > csf_threshold or
                 freq_frac > freq_threshold
@@ -392,16 +498,17 @@ def classify_ica_components(
         elif classification_mode == 'score':
             # New scoring mode: need multiple bad features to be noise
 
-            # Automatic noise if very high motion
-            if motion_corr > 0.5:
+            # Automatic noise if very high motion: above the other-animal null when
+            # given, else the fixed 0.5
+            if motion_corr > (motion_cut if null_thr is not None else 0.5):
                 is_noise = True
                 noise_score = 999.0  # Extremely high score
             else:
                 # Calculate weighted score
                 noise_score = 0.0
 
-                # Motion contribution (weight: 1.5)
-                if motion_corr > motion_threshold:
+                # Motion contribution (weight: 1.5); with the null, motion is decided above
+                if null_thr is None and motion_corr > motion_threshold:
                     noise_score += 1.5 * (motion_corr - motion_threshold) / (1.0 - motion_threshold)
 
                 # Edge contribution (weight: 1.0)
@@ -431,6 +538,7 @@ def classify_ica_components(
             'csf_fraction': csf_frac,
             'high_freq_power': freq_frac,
             'noise_score': noise_score,
+            'motion_null_threshold': None if null_thr is None else motion_cut,
             'classification_reason': []
         }
 
@@ -440,9 +548,10 @@ def classify_ica_components(
                 component_result['classification_reason'].append(
                     f'noise_score={noise_score:.3f} >= 2.0'
                 )
-                if motion_corr > motion_threshold:
+                if motion_corr > motion_cut:
                     component_result['classification_reason'].append(
-                        f'motion_corr={motion_corr:.3f} > {motion_threshold}'
+                        f'motion_corr={motion_corr:.3f} > {motion_cut:.3f}'
+                        + (f' (other-animal null, q{motion_null_quantile})' if null_thr is not None else '')
                     )
                 if edge_frac > edge_threshold:
                     component_result['classification_reason'].append(
@@ -458,9 +567,10 @@ def classify_ica_components(
                     )
             else:
                 # Threshold mode
-                if motion_corr > motion_threshold:
+                if motion_corr > motion_cut:
                     component_result['classification_reason'].append(
-                        f'motion_corr={motion_corr:.3f} > {motion_threshold}'
+                        f'motion_corr={motion_corr:.3f} > {motion_cut:.3f}'
+                        + (f' (other-animal null, q{motion_null_quantile})' if null_thr is not None else '')
                     )
                 if edge_frac > edge_threshold:
                     component_result['classification_reason'].append(
