@@ -699,10 +699,25 @@ def temporal_filter(
     output_file: Path,
     tr: float,
     highpass: Optional[float] = None,
-    lowpass: Optional[float] = None
+    lowpass: Optional[float] = None,
+    method: str = "butterworth",
+    order: int = 2,
 ) -> Path:
     """
     Apply temporal filtering to fMRI timeseries.
+
+    The cutoffs mean what they say only with ``method="butterworth"`` (the
+    default): a zero-phase Butterworth (``sosfiltfilt``), the same design as
+    ``neurofaune.analysis.func.hub_rest.bandpass``. Its amplitude gain is
+    1/sqrt(2) at each cutoff in each direction, so 1/2 after the forward and
+    backward passes.
+
+    ``method="fsl_bptf"`` reproduces outputs made before 2026-10-27
+    (``fslmaths -bptf`` with both sigmas set to 1/(2*f*TR)). That formula is
+    FSL's high-pass convention. Applied to the Gaussian low-pass it puts the
+    -3 dB point about four times lower than asked: a configured 0.1 Hz
+    low-pass at TR 2 s passes 0.69 at 0.027 Hz, 0.15 at 0.062 Hz and 0.01 at
+    0.1 Hz. Use it only to reproduce old results.
 
     Parameters
     ----------
@@ -715,43 +730,66 @@ def temporal_filter(
     highpass : float, optional
         Highpass filter cutoff (Hz)
     lowpass : float, optional
-        Lowpass filter cutoff (Hz)
+        Lowpass filter cutoff (Hz). At or above Nyquist it is ignored.
+    method : {"butterworth", "fsl_bptf"}
+        Filter implementation (``functional.filtering.method``).
+    order : int
+        Butterworth order per pass (``functional.filtering.order``).
 
     Returns
     -------
     Path
-        Path to filtered timeseries
+        Path to filtered timeseries. As with ``-bptf``, a high-pass or
+        band-pass removes the voxel means and a pure low-pass keeps them.
     """
     if highpass is None and lowpass is None:
         print("Skipping temporal filtering")
         return input_file
 
-    print(f"Applying temporal filter (TR={tr}s)...")
+    print(f"Applying temporal filter (TR={tr}s, method={method})...")
 
-    # FSL's fslmaths for temporal filtering
-    # Highpass: -bptf <hp_sigma> <lp_sigma>
-    # sigma = 1 / (2 * cutoff_freq * TR)
+    if method == "fsl_bptf":
+        hp_sigma = 1.0 / (2.0 * highpass * tr) if highpass is not None else -1
+        lp_sigma = 1.0 / (2.0 * lowpass * tr) if lowpass is not None else -1
+        print(f"  fslmaths -bptf {hp_sigma:.2f} {lp_sigma:.2f} (legacy; low-pass cutoff is not {lowpass} Hz)")
+        subprocess.run(["fslmaths", str(input_file), "-bptf", str(hp_sigma), str(lp_sigma), str(output_file)],
+                       check=True)
+        print(f"  Filtered timeseries: {output_file}")
+        return output_file
+    if method != "butterworth":
+        raise ValueError(f"functional.filtering.method must be 'butterworth' or 'fsl_bptf', not {method!r}")
 
-    if highpass is not None:
-        hp_sigma = 1.0 / (2.0 * highpass * tr)
-        print(f"  Highpass: {highpass} Hz (sigma={hp_sigma:.2f} volumes)")
+    from scipy.signal import butter, sosfiltfilt
+
+    nyq = 0.5 / tr
+    if lowpass is not None and lowpass >= nyq:
+        print(f"  Lowpass {lowpass} Hz is at or above Nyquist ({nyq:.3f} Hz); not applied")
+        lowpass = None
+    if highpass is not None and lowpass is not None and highpass >= lowpass:
+        raise ValueError(f"highpass ({highpass} Hz) must be below lowpass ({lowpass} Hz)")
+    if highpass is not None and lowpass is not None:
+        sos = butter(order, [highpass, lowpass], btype="band", fs=1.0 / tr, output="sos")
+    elif highpass is not None:
+        sos = butter(order, highpass, btype="high", fs=1.0 / tr, output="sos")
+    elif lowpass is not None:
+        sos = butter(order, lowpass, btype="low", fs=1.0 / tr, output="sos")
     else:
-        hp_sigma = -1  # No highpass
+        shutil.copy(str(input_file), str(output_file))
+        return output_file
+    print(f"  Butterworth order {order}, zero-phase: highpass {highpass} Hz, lowpass {lowpass} Hz")
 
-    if lowpass is not None:
-        lp_sigma = 1.0 / (2.0 * lowpass * tr)
-        print(f"  Lowpass: {lowpass} Hz (sigma={lp_sigma:.2f} volumes)")
-    else:
-        lp_sigma = -1  # No lowpass
-
-    cmd = [
-        "fslmaths",
-        str(input_file),
-        "-bptf", str(hp_sigma), str(lp_sigma),
-        str(output_file)
-    ]
-
-    subprocess.run(cmd, check=True)
+    img = nib.load(str(input_file))
+    data = np.asarray(img.dataobj, dtype=np.float32)
+    out = np.empty_like(data)
+    for i in range(data.shape[0]):                       # one x-plane at a time keeps memory flat
+        plane = data[i].astype(np.float64)
+        mean = plane.mean(-1, keepdims=True)
+        y = sosfiltfilt(sos, plane - mean, axis=-1)
+        y -= y.mean(-1, keepdims=True)                   # edge transients leave a small sample mean
+        out[i] = y + mean if highpass is None else y
+    hdr = img.header.copy()
+    hdr.set_data_dtype(np.float32)
+    nib.save(nib.Nifti1Image(out, img.affine, hdr), str(output_file))
 
     print(f"  Filtered timeseries: {output_file}")
 
@@ -1638,6 +1676,8 @@ def run_functional_preprocessing(
     smoothing_fwhm = func_config.get('smoothing', {}).get('fwhm', 0.5)
     highpass_freq = func_config.get('filtering', {}).get('highpass', 0.01)
     lowpass_freq = func_config.get('filtering', {}).get('lowpass', None)
+    filter_method = func_config.get('filtering', {}).get('method', 'butterworth')
+    filter_order = int(func_config.get('filtering', {}).get('order', 2))
 
     # TEDANA config (for multi-echo)
     tedana_config = func_config.get('tedana', {})
@@ -2522,7 +2562,9 @@ def run_functional_preprocessing(
         bold_filtered,
         tr,
         highpass=highpass_freq,
-        lowpass=lowpass_freq
+        lowpass=lowpass_freq,
+        method=filter_method,
+        order=filter_order,
     )
 
     # =========================================================================
@@ -2665,7 +2707,9 @@ def run_functional_preprocessing(
         },
         'temporal_filtering': {
             'highpass_hz': highpass_freq,
-            'lowpass_hz': lowpass_freq
+            'lowpass_hz': lowpass_freq,
+            'method': filter_method,
+            'order': filter_order if filter_method == 'butterworth' else None,
         },
         'denoising': denoising_meta,
         'acompcor': {

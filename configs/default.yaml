@@ -472,6 +472,9 @@ functional:
   filtering:
     highpass: 0.01  # Hz
     lowpass: 0.1    # Hz
+    method: butterworth  # zero-phase Butterworth; 'fsl_bptf' reproduces pre-2026-10-27 outputs, whose
+                         # low-pass was about 4x lower than configured (0.1 Hz -> ~0.027 Hz at TR 2 s)
+    order: 2             # Butterworth order per pass
 
   # TEDANA multi-echo ICA denoising (auto-enabled for multi-echo input)
   tedana:
