@@ -35,7 +35,10 @@ from neurofaune.preprocess.utils.func.ica_denoising import (
     run_melodic_ica,
     classify_ica_components,
     remove_noise_components,
-    generate_ica_denoising_qc
+    generate_ica_denoising_qc,
+    write_motion_params,
+    load_other_animal_motion,
+    MOTION_PARAMS_SUFFIX,
 )
 from neurofaune.preprocess.utils.func.meica_classify import (
     classify_meica_components,
@@ -1512,6 +1515,23 @@ def func_output_entities(bold_file: Union[Path, List[Path]], config: Dict[str, A
 
 
 
+def ica_motion_null_kwargs(ica_config: Dict[str, Any], output_dir: Path, subject: str) -> Dict[str, Any]:
+    """classify_ica_components arguments for ``denoising.ica.motion_null`` (empty when it is off).
+
+    ``motion_null: {enabled, quantile, min_sessions}``: the motion criterion becomes "above the
+    ``quantile`` of what other animals' motion parameters give", per component, instead of a fixed
+    correlation. The other animals' parameters are read from ``<output_dir>/derivatives``; on a
+    from-scratch cohort run they come from the motion-only first pass (``stop_after="motion"``).
+    """
+    mn = ica_config.get('motion_null') or {}
+    if not mn.get('enabled', False):
+        return {}
+    min_sessions = int(mn.get('min_sessions', 20))
+    null = load_other_animal_motion(Path(output_dir) / 'derivatives', subject, min_sessions=min_sessions)
+    return {'motion_null': null['motion'], 'motion_null_quantile': float(mn.get('quantile', 0.95)),
+            'motion_null_min_sessions': min_sessions}
+
+
 def run_functional_preprocessing(
     config: Dict[str, Any],
     subject: str,
@@ -1526,9 +1546,16 @@ def run_functional_preprocessing(
     run_registration: bool = True,
     echo_times: Optional[List[float]] = None,
     topup_epis: Optional[Tuple[Path, Path]] = None,
+    stop_after: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run complete functional fMRI preprocessing workflow.
+
+    ``stop_after="motion"`` runs only through motion correction and writes the motion
+    parameters (``<stem>_desc-motion_params.tsv`` in the derivatives; every full run writes
+    it too). It is the first pass of a cohort run whose ICA motion criterion uses the
+    other-animal null (``functional.denoising.ica.motion_null``): every session's motion
+    must exist before any session is classified.
 
     Supports both single-echo (SE) and multi-echo (ME) fMRI data.
     Multi-echo is auto-detected when bold_file is a list of paths.
@@ -1622,6 +1649,9 @@ def run_functional_preprocessing(
         print(f"Input BOLD: {bold_file}")
     print(f"Output directory: {output_dir}")
     print("="*80)
+
+    if stop_after not in (None, 'motion'):
+        raise ValueError(f"stop_after must be None or 'motion', not {stop_after!r}")
 
     # Setup directories
     derivatives_dir = output_dir / 'derivatives' / subject / session / 'func'
@@ -1844,6 +1874,12 @@ def run_functional_preprocessing(
 
         me_corrected_echoes = me_results['corrected_echoes']
         motion_params = me_results['motion_params']
+
+        motion_params_tsv = write_motion_params(motion_params, derivatives_dir / f"{stem}{MOTION_PARAMS_SUFFIX}")
+        if stop_after == 'motion':
+            print(f"\nStopped after motion correction (stop_after='motion'): {motion_params_tsv}")
+            return {'subject': subject, 'session': session, 'stopped_after': 'motion',
+                    'motion_params': motion_params, 'motion_params_tsv': motion_params_tsv}
         brain_ref = me_results['brain_ref']
         skull_strip_info = me_results['skull_strip_info']
 
@@ -2017,7 +2053,9 @@ def run_functional_preprocessing(
                     edge_threshold=ica_config.get('edge_threshold', 0.80),
                     csf_threshold=ica_config.get('csf_threshold', 0.70),
                     freq_threshold=ica_config.get('freq_threshold', 0.60),
-                    classification_mode=ica_config.get('classification_mode', 'score')
+                    classification_mode=ica_config.get('classification_mode', 'score'),
+                    edge_inplane=erode_inplane,
+                    **ica_motion_null_kwargs(ica_config, output_dir, subject),
                 )
 
                 bold_denoised = work_dir / f"{stem}_desc-ica_denoised_bold.nii.gz"
@@ -2278,6 +2316,12 @@ def run_functional_preprocessing(
         bold_mcf = motion_results['motion_corrected']
         motion_params = motion_results['motion_params']
 
+        motion_params_tsv = write_motion_params(motion_params, derivatives_dir / f"{stem}{MOTION_PARAMS_SUFFIX}")
+        if stop_after == 'motion':
+            print(f"\nStopped after motion correction (stop_after='motion'): {motion_params_tsv}")
+            return {'subject': subject, 'session': session, 'stopped_after': 'motion',
+                    'motion_params': motion_params, 'motion_params_tsv': motion_params_tsv}
+
         # Step 5: ICA Denoising
         ica_config = func_config.get('denoising', {}).get('ica', {})
         ica_enabled = ica_config.get('enabled', False)
@@ -2335,6 +2379,7 @@ def run_functional_preprocessing(
                 freq_threshold=ica_config.get('freq_threshold', 0.60),
                 classification_mode=ica_config.get('classification_mode', 'score'),
                 edge_inplane=erode_inplane,
+                **ica_motion_null_kwargs(ica_config, output_dir, subject),
             )
 
             bold_denoised = work_dir / f"{stem}_desc-ica_denoised_bold.nii.gz"
@@ -2665,6 +2710,7 @@ def run_functional_preprocessing(
             'classification_mode': ica_config_local.get('classification_mode', 'score'),
             'n_signal_components': classification['summary']['n_signal'],
             'n_noise_components': classification['summary']['n_noise'],
+            'motion_null': classification.get('motion_null'),
         }
 
     if denoise_method_label not in ('tedana', 'meica', 'optcom_melodic') and ica_enabled and classification:
@@ -2674,6 +2720,7 @@ def run_functional_preprocessing(
             'classification_mode': ica_config_local.get('classification_mode', 'score'),
             'n_signal_components': classification['summary']['n_signal'],
             'n_noise_components': classification['summary']['n_noise'],
+            'motion_null': classification.get('motion_null'),
         }
 
     metadata = {

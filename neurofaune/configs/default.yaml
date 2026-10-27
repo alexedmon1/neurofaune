@@ -493,6 +493,16 @@ functional:
       edge_threshold: 0.80  # Edge fraction threshold
       csf_threshold: 0.70  # CSF overlap threshold
       freq_threshold: 0.60  # High-frequency power threshold
+      # Calibrate the motion criterion against other animals' motion instead of a fixed
+      # correlation: a component is motion only if its max |r| with its own animal's motion
+      # parameters exceeds this quantile of its max |r| with each other animal's. A fixed 0.5
+      # flagged a median 38% of components on anaesthetised rats, and another animal's motion
+      # flagged 23%. Needs every session's motion first: on a from-scratch cohort run, run
+      # run_functional_preprocessing(stop_after="motion") for the cohort, then the full run.
+      motion_null:
+        enabled: false
+        quantile: 0.95
+        min_sessions: 20  # other-animal sessions required; fewer stops the run (no fallback)
 
     # ACompCor (anatomical nuisance regression)
     # Extracts principal components from CSF/WM to remove physiological noise
