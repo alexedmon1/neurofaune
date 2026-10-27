@@ -913,7 +913,7 @@ def main():
         # Try default locations
         default_configs = [
             Path('config.yaml'),
-            Path('configs/default.yaml'),
+            Path('neurofaune/configs/default.yaml'),
             args.output_dir / 'config.yaml'
         ]
         config = None

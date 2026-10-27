@@ -1,4 +1,4 @@
-"""Unit tests for species profiles (configs/species/*.yaml, neurofaune.species)."""
+"""Unit tests for species profiles (neurofaune/configs/species/*.yaml, neurofaune.species)."""
 
 import pytest
 import yaml

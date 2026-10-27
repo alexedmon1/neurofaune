@@ -270,8 +270,8 @@ def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:
     # Look for default.yaml in same directory as study config
     default_path = config_path.parent / 'default.yaml'
     if not default_path.exists():
-        # Try relative to package
-        package_dir = Path(__file__).parent.parent
+        # The package's own, shipped inside it (neurofaune/configs/) so installs carry it
+        package_dir = Path(__file__).parent
         default_path = package_dir / 'configs' / 'default.yaml'
 
     from neurofaune.species import apply_species_profile
