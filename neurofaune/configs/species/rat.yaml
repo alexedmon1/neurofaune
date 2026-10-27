@@ -1,9 +1,9 @@
 # Species profile: rat
 #
-# Empty on purpose. configs/default.yaml is tuned for rat (SIGMA, 10x voxel
+# Empty on purpose. neurofaune/configs/default.yaml is tuned for rat (SIGMA, 10x voxel
 # scale, rat brain-volume QC, rat-sized skull-strip radii), so selecting rat
 # changes nothing and existing studies keep producing identical outputs.
 #
-# Merge order: configs/default.yaml < configs/species/<species>.yaml < study config.
+# Merge order: neurofaune/configs/default.yaml < neurofaune/configs/species/<species>.yaml < study config.
 # See neurofaune/species.py.
 {}

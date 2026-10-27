@@ -1,8 +1,8 @@
 # Species profile: mouse
 #
-# Overrides the rat-tuned values in configs/default.yaml that depend on brain
+# Overrides the rat-tuned values in neurofaune/configs/default.yaml that depend on brain
 # size or on the reference atlas. Merge order:
-#   configs/default.yaml < configs/species/mouse.yaml < study config
+#   neurofaune/configs/default.yaml < neurofaune/configs/species/mouse.yaml < study config
 #
 # Scale: 10x, the same as rat and as the Antwerp template's inflated headers
 # (decided 2026-10; fall back to 20x only if FSL/ANTs misbehave at mouse size).

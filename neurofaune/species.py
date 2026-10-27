@@ -1,15 +1,15 @@
 """Species profiles: the layer between package defaults and a study config.
 
-``configs/default.yaml`` is tuned for rat -- SIGMA, a 10x voxel scale chosen
+``neurofaune/configs/default.yaml`` is tuned for rat -- SIGMA, a 10x voxel scale chosen
 for rat brain size, brain-volume QC ranges in rat mm3, skull-strip radii for a
 rat brain. A mouse brain is about a quarter of the volume, so those values are
 wrong for it, not merely suboptimal.
 
 Rather than fork the defaults, each species has a profile
-(``configs/species/<name>.yaml``) that overrides only what differs. The merge
+(``neurofaune/configs/species/<name>.yaml``) that overrides only what differs. The merge
 order is::
 
-    configs/default.yaml  <  configs/species/<species>.yaml  <  study config.yaml
+    neurofaune/configs/default.yaml  <  neurofaune/configs/species/<species>.yaml  <  study config.yaml
 
 so a study can still override anything its profile sets. The species is read
 from the study config's ``study.species`` (default ``rat``). The rat profile is
@@ -26,7 +26,8 @@ import yaml
 #: predates species profiles is a rat study.
 DEFAULT_SPECIES = "rat"
 
-SPECIES_DIR = Path(__file__).parent.parent / "configs" / "species"
+#: Inside the package (declared package data), so an installed copy carries the profiles.
+SPECIES_DIR = Path(__file__).parent / "configs" / "species"
 
 
 class UnknownSpeciesError(ValueError):

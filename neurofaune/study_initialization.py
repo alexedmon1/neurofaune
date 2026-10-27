@@ -567,7 +567,7 @@ def _write_commented_yaml(config: Dict[str, Any], output_path: Path,
         "# It contains all preprocessing parameters with sensible defaults.",
         "# Edit any values below to customize for your study.",
         "#",
-        "# Parameter defaults come from configs/default.yaml (shipped with neurofaune).",
+        "# Parameter defaults come from neurofaune/configs/default.yaml (shipped with neurofaune).",
         "# Only parameters you override here will differ from defaults.",
         "#",
     ]
@@ -599,7 +599,7 @@ def generate_config(
     """
     Generate a comprehensive study configuration file.
 
-    Loads package defaults from configs/default.yaml, applies study-specific
+    Loads package defaults from neurofaune/configs/default.yaml, applies study-specific
     overrides (paths, atlas, cohorts), and writes a well-commented config
     to the study root directory.
 
@@ -642,8 +642,8 @@ def generate_config(
             'p90': {'age_days': 90, 'description': 'Postnatal day 90'},
         }
 
-    # Load package defaults
-    package_dir = Path(__file__).parent.parent
+    # Load package defaults (neurofaune/configs/, shipped inside the package)
+    package_dir = Path(__file__).parent
     default_path = package_dir / 'configs' / 'default.yaml'
 
     if default_path.exists():
