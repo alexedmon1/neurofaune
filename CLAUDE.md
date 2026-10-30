@@ -281,6 +281,13 @@ Designs built here for VBM/TBSS are read directly by `murinet.design`, so the sa
 design drives the mass-univariate and multivariate analyses and they cannot disagree
 about group membership.
 
+`network/classification`, `network/regression.py` and `network/mcca.py` have not moved
+yet, and they cross-validate and permute by row. So their data preparation refuses a
+table in which an animal has more than one row (`RepeatedAnimalError`; `run()` returns
+`status: "refused"` and writes nothing) -- run one cohort at a time. There is no override:
+grouped cross-validation is the fix, not a flag. This covers repeated animals only;
+scaling, imputation and PCA-component choice still see all rows before CV.
+
 ### Morphometry vs ROI extraction
 
 `network/roi_extraction.py` answers "what is the mean of this metric in this region".

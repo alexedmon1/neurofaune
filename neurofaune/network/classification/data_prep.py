@@ -29,6 +29,38 @@ _SESSION_TO_AUC = {
 }
 
 
+class RepeatedAnimalError(ValueError):
+    """The rows of a pooled analysis are not independent animals."""
+
+
+def check_independent_animals(sample_info: pd.DataFrame, analysis: str) -> None:
+    """Refuse a table in which any animal has more than one row.
+
+    Classification and regression here cross-validate with LeaveOneOut, so an
+    animal's other sessions stay in training when one is tested, and PERMANOVA
+    and MCCA permute rows as though each were its own animal. Both overstate the
+    result. Called on the rows that will actually be analysed, after every
+    filter, so one session per animal passes however it was arrived at.
+
+    Raises
+    ------
+    RepeatedAnimalError
+        Naming how many animals repeat, and an example.
+    """
+    counts = sample_info["subject"].value_counts()
+    repeated = counts[counts > 1]
+    if repeated.empty:
+        return
+    example = repeated.index[0]
+    sessions = sample_info.loc[sample_info["subject"] == example, "session"].tolist()
+    raise RepeatedAnimalError(
+        f"{analysis}: {len(repeated)} of {len(counts)} animals have more than one "
+        f"row among these {len(sample_info)} (e.g. {example}: {', '.join(sessions)}). "
+        f"Rows of one animal are not independent, so this analysis would overstate "
+        f"its result. Run one cohort at a time (cohort_filter / cohort=)."
+    )
+
+
 def _load_filter_select(
     wide_csv: Union[str, Path],
     feature_set: str = "bilateral",
@@ -41,14 +73,16 @@ def _load_filter_select(
 ) -> dict:
     """Shared data loading, filtering, feature selection, and scaling.
 
-    Returns dict with: df, X, feature_names, scaler.
+    Returns dict with: df, X, feature_names, scaler, dropped_sessions.
     """
     # This module is dose/sex-shaped by design (it filters cohorts and targets
     # dose), so it declares those as metadata. Generalising THIS layer -- the
     # loaders -- is separate follow-up work; the declaration is what stops the
     # columns being correlated as if they were ROIs.
+    dropped_sessions: list = []
     df, roi_cols = load_and_prepare_data(
-        wide_csv, exclusion_csv, meta_cols=list(meta_cols or ("dose", "sex")))
+        wide_csv, exclusion_csv, meta_cols=list(meta_cols or ("dose", "sex")),
+        dropped_sessions=dropped_sessions)
 
     # Filter to known cohorts (drop ses-unknown)
     df = df[df["cohort"].isin(["p30", "p60", "p90"])].copy()
@@ -56,6 +90,7 @@ def _load_filter_select(
     # Cohort filter
     if cohort_filter is not None:
         df = df[df["cohort"] == cohort_filter].copy()
+        dropped_sessions = [d for d in dropped_sessions if d["cohort"] == cohort_filter]
         if len(df) == 0:
             raise ValueError(f"No subjects remaining after cohort filter '{cohort_filter}'")
         logger.info("Cohort filter '%s': n=%d", cohort_filter, len(df))
@@ -105,6 +140,7 @@ def _load_filter_select(
         "X": X,
         "feature_names": feature_names,
         "scaler": scaler,
+        "dropped_sessions": dropped_sessions,
     }
 
 
@@ -116,6 +152,28 @@ def prepare_classification_data(
     standardize: bool = True,
 ) -> dict:
     """Load, filter, and scale ROI data for classification.
+
+    Raises :class:`RepeatedAnimalError` if an animal has more than one row. See
+    :func:`load_classification_rows` for parameters and return value.
+    """
+    data = load_classification_rows(
+        wide_csv, feature_set, cohort_filter, exclusion_csv, standardize,
+    )
+    check_independent_animals(data["sample_info"], "Classification")
+    return data
+
+
+def load_classification_rows(
+    wide_csv: Union[str, Path],
+    feature_set: str = "bilateral",
+    cohort_filter: Optional[str] = None,
+    exclusion_csv: Optional[Union[str, Path]] = None,
+    standardize: bool = True,
+) -> dict:
+    """Load, filter, and scale ROI data, without the independence check.
+
+    For a caller that combines tables and checks the rows it ends up with, as
+    MCCA does after intersecting its views.
 
     Parameters
     ----------
@@ -143,6 +201,7 @@ def prepare_classification_data(
         feature_names : list[str]
         sample_info : DataFrame — subject, session, dose, cohort per row
         scaler : StandardScaler or None
+        dropped_sessions : list[dict] — sessions the loader removed for zero ROIs
     """
     loaded = _load_filter_select(
         wide_csv, feature_set, cohort_filter, exclusion_csv, standardize,
@@ -189,6 +248,7 @@ def prepare_classification_data(
         "feature_names": feature_names,
         "sample_info": sample_info,
         "scaler": loaded["scaler"],
+        "dropped_sessions": loaded["dropped_sessions"],
     }
 
 
@@ -223,6 +283,11 @@ def prepare_regression_data(
         - ``'dose'``: ordinal encoding (C=0, L=1, M=2, H=3)
         - ``'auc'``: session-matched AUC from ROI CSV columns
 
+    Raises
+    ------
+    RepeatedAnimalError
+        If an animal has more than one row.
+
     Returns
     -------
     dict with keys:
@@ -234,6 +299,7 @@ def prepare_regression_data(
         target_name : str — e.g. "AUC" or "Dose (ordinal)"
         sample_info : DataFrame — subject, session, dose, cohort per row
         scaler : StandardScaler or None
+        dropped_sessions : list[dict] — sessions the loader removed for zero ROIs
     """
     loaded = _load_filter_select(
         wide_csv, feature_set, cohort_filter, exclusion_csv, standardize,
@@ -312,6 +378,7 @@ def prepare_regression_data(
     if "sex" in df.columns:
         info_cols.append("sex")
     sample_info = df[info_cols].reset_index(drop=True)
+    check_independent_animals(sample_info, "Regression")
 
     logger.info(
         "Regression data: n=%d, features=%d, target=%s, y range=[%.2f, %.2f]",
@@ -327,4 +394,5 @@ def prepare_regression_data(
         "target_name": target_name,
         "sample_info": sample_info,
         "scaler": loaded["scaler"],
+        "dropped_sessions": loaded["dropped_sessions"],
     }
