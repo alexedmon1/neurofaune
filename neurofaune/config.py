@@ -233,6 +233,19 @@ def validate_config(config: Dict[str, Any], validate_workflows: bool = False) ->
                       f"{len(missing_opt)} keys")
 
 
+def default_config_path(config_path: Optional[Path] = None) -> Path:
+    """The ``default.yaml`` a study config is layered on.
+
+    A ``default.yaml`` beside the study config wins; otherwise the package's own,
+    shipped inside it (``neurofaune/configs/``) so installs carry it.
+    """
+    if config_path is not None:
+        local = Path(config_path).parent / 'default.yaml'
+        if local.exists():
+            return local
+    return Path(__file__).parent / 'configs' / 'default.yaml'
+
+
 def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:
     """
     Load and process configuration file.
@@ -266,13 +279,7 @@ def load_config(config_path: Path, validate: bool = True) -> Dict[str, Any]:
     # Load study config
     study_config = load_yaml(config_path)
 
-    # Find and load default config
-    # Look for default.yaml in same directory as study config
-    default_path = config_path.parent / 'default.yaml'
-    if not default_path.exists():
-        # The package's own, shipped inside it (neurofaune/configs/) so installs carry it
-        package_dir = Path(__file__).parent
-        default_path = package_dir / 'configs' / 'default.yaml'
+    default_path = default_config_path(config_path)
 
     from neurofaune.species import apply_species_profile
 
@@ -327,3 +334,160 @@ def get_config_value(config: Dict[str, Any], key_path: str, default: Any = None)
         return value
     except (KeyError, TypeError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# Study configs hold overrides only
+# ---------------------------------------------------------------------------
+#
+# A study config.yaml is layered on default.yaml and the species profile when it
+# is loaded (load_config). A value copied into it from default.yaml is not an
+# override: it is a stale copy, and because the study config is the top layer it
+# hides whatever the species profile sets for that key. init used to copy all of
+# default.yaml in, so a mouse study resolved 21 of the mouse profile's 40 keys to
+# rat values. Study configs therefore list only what differs from the defaults;
+# slim_study_config repairs a config written the old way.
+
+#: Sections kept whole even where they match the defaults: they say which study
+#: this is, which species it is, and where it lives.
+KEEP_SECTIONS = ("study", "paths")
+
+_MISSING = object()
+
+
+def _strip_matching(study: Dict[str, Any], defaults: Dict[str, Any],
+                    prefix: str = "") -> tuple:
+    """``study`` without the values equal to ``defaults``, and the dotted keys removed."""
+    kept: Dict[str, Any] = {}
+    removed = []
+    for key, value in study.items():
+        dotted = f"{prefix}{key}"
+        default = defaults.get(key, _MISSING) if isinstance(defaults, dict) else _MISSING
+        if isinstance(value, dict) and isinstance(default, dict):
+            sub, sub_removed = _strip_matching(value, default, dotted + ".")
+            removed += sub_removed
+            if sub:
+                kept[key] = sub
+            elif not value:
+                removed.append(dotted)
+        elif value == default:
+            removed.append(dotted)
+        else:
+            kept[key] = value
+    return kept, removed
+
+
+def strip_defaults(study_config: Dict[str, Any], defaults: Dict[str, Any]) -> tuple:
+    """Remove every value a study config shares with ``defaults``.
+
+    Sections in :data:`KEEP_SECTIONS` are kept whole. Returns ``(overrides,
+    removed)``, where ``removed`` lists the dotted keys dropped; key order is kept.
+    """
+    rest = {k: v for k, v in study_config.items() if k not in KEEP_SECTIONS}
+    stripped, removed = _strip_matching(rest, defaults)
+    overrides = {}
+    for key, value in study_config.items():
+        if key in KEEP_SECTIONS:
+            overrides[key] = value
+        elif key in stripped:
+            overrides[key] = stripped[key]
+    return overrides, removed
+
+
+def _flatten(config: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    flat = {}
+    for key, value in config.items():
+        if isinstance(value, dict) and value:
+            flat.update(_flatten(value, f"{prefix}{key}."))
+        else:
+            flat[f"{prefix}{key}"] = value
+    return flat
+
+
+def resolved_differences(before: Dict[str, Any], after: Dict[str, Any],
+                         defaults: Dict[str, Any]) -> list:
+    """Keys whose loaded value differs between two study configs.
+
+    Each config is resolved the way :func:`load_config` resolves it (defaults <
+    species profile < study, then variable substitution). Returns
+    ``[(dotted_key, value_before, value_after), ...]``; a missing key is ``None``.
+    """
+    from neurofaune.species import apply_species_profile
+
+    def resolve(cfg):
+        return _flatten(substitute_variables(apply_species_profile(defaults, cfg)))
+
+    a, b = resolve(before), resolve(after)
+    return [(k, a.get(k), b.get(k)) for k in sorted(set(a) | set(b))
+            if a.get(k, _MISSING) != b.get(k, _MISSING)]
+
+
+def slim_study_config(study_config: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """Reduce a study config to its overrides and report what that changes.
+
+    Returns a dict with ``config`` (the slimmed config), ``removed`` (dotted keys
+    dropped because they equal ``defaults``) and ``changed`` (keys whose *loaded*
+    value moves, from :func:`resolved_differences`). For a rat study ``changed`` is
+    empty: the rat profile is empty, so a copy of a default resolves to the same
+    value. For any other species, ``changed`` lists the profile values the copied
+    defaults were hiding -- the values the study was meant to have.
+    """
+    slim, removed = strip_defaults(study_config, defaults)
+    return {
+        "config": slim,
+        "removed": removed,
+        "changed": resolved_differences(study_config, slim, defaults),
+    }
+
+
+def write_study_config(config: Dict[str, Any], output_path: Path,
+                       notes: Optional[list] = None) -> Path:
+    """Write a study config with the header that says how it is layered."""
+    header = [
+        "# Neurofaune study configuration",
+        "#",
+        "# Lists only what this study sets. Everything else comes from the package",
+        "# defaults (neurofaune/configs/default.yaml) and, above them, the species",
+        "# profile named by study.species (neurofaune/configs/species/<species>.yaml).",
+        "# Merge order: default.yaml < species profile < this file.",
+        "#",
+        "# Add a key here only to change it. A value copied from default.yaml",
+        "# would hide the species profile's value for that key.",
+    ]
+    if notes:
+        header += ["#"] + [f"# {line}" if line else "#" for line in notes]
+    output_path = Path(output_path)
+    with open(output_path, 'w') as f:
+        f.write('\n'.join(header) + '\n\n')
+        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+    return output_path
+
+
+def slim_config_file(config_path: Path, write: bool = False) -> Dict[str, Any]:
+    """:func:`slim_study_config` on a config file, optionally rewriting it.
+
+    With ``write=True`` the original is kept beside it as
+    ``<name>.pre-slim[.N]`` and the slimmed config replaces it. Comments in the
+    original are not carried over (the backup keeps them). The result dict gains
+    ``backup`` (path or None).
+    """
+    from datetime import date
+
+    config_path = Path(config_path)
+    defaults = load_yaml(default_config_path(config_path))
+    result = slim_study_config(load_yaml(config_path), defaults)
+    result["backup"] = None
+    if write:
+        backup = config_path.with_name(config_path.name + ".pre-slim")
+        n = 1
+        while backup.exists():
+            backup = config_path.with_name(f"{config_path.name}.pre-slim.{n}")
+            n += 1
+        backup.write_bytes(config_path.read_bytes())
+        write_study_config(result["config"], config_path, notes=[
+            f"Slimmed by `neurofaune config slim` on {date.today().isoformat()}:",
+            f"{len(result['removed'])} values equal to the defaults removed;",
+            f"the original is {backup.name}.",
+        ])
+        result["backup"] = backup
+    return result

@@ -2,7 +2,7 @@
 
 _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit by hand — run `make capabilities`.
 
-**CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `mrs`, `results`
+**CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `config`, `mrs`, `results`
 
 **Entry points:** 200 across 11 stages.
 

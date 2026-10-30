@@ -86,6 +86,13 @@ neurofaune/configs/default.yaml  <  neurofaune/configs/species/<species>.yaml  <
 so a species profile only overrides values that depend on brain size or on the reference atlas
 (see `neurofaune/species.py`).
 
+The study config is the top layer, so it must hold **only the study's own settings**: a value
+copied from `default.yaml` hides the profile's value for that key. `init_study.py` writes
+overrides only. Configs written by it before this fix carry a full copy of the defaults
+(a mouse study then loaded rat values); `neurofaune config slim config.yaml` lists the copied
+values and which loaded values removing them changes, and `--write` applies it (the original
+is kept as `config.yaml.pre-slim`). For a rat study nothing changes.
+
 | | rat | mouse |
 |---|---|---|
 | Reference space | SIGMA (study-space, reoriented per study) | Antwerp C57BL/6 in vivo T2w template; CCFv3 labels via the Perens et al. 2023 template (allen26/32/64 parcels) |
@@ -173,11 +180,14 @@ uv run python scripts/init_study.py /path/to/study \
     --validate-workflows
 ```
 
-This creates the directory structure, generates `config.yaml` with all preprocessing parameters, sets up the study-space SIGMA atlas, and discovers available BIDS data:
+`--species mouse` selects the mouse profile (use `--no-atlas`: the SIGMA study-space setup is
+rat-only). This creates the directory structure, generates `config.yaml` holding only this
+study's settings (name, species, paths, atlas), sets up the study-space SIGMA atlas, and
+discovers available BIDS data:
 
 ```
 {study_root}/
-├── config.yaml                  # Study configuration (all preprocessing params)
+├── config.yaml                  # Study settings only; defaults + species profile supply the rest
 ├── atlas/SIGMA_study_space/     # SIGMA reoriented to study acquisition orientation
 ├── raw/bids/                    # BIDS data
 ├── derivatives/                 # Preprocessed outputs (per subject/session)

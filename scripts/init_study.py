@@ -17,6 +17,13 @@ Usage:
     uv run python scripts/init_study.py /path/to/study --name "My Study" --code mystudy \
         --sigma-atlas /path/to/SIGMA
 
+    # A mouse study (selects neurofaune/configs/species/mouse.yaml)
+    uv run python scripts/init_study.py /path/to/study --name "My Study" --code mystudy \
+        --species mouse --no-atlas
+
+The generated config.yaml lists only this study's settings; every other
+parameter comes from the package defaults and the species profile.
+
     # Just discover BIDS data (no directory creation)
     uv run python scripts/init_study.py --discover-only /path/to/bids
 
@@ -32,6 +39,7 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from neurofaune.species import available_species
 from neurofaune.study_initialization import (
     setup_study,
     discover_bids_data,
@@ -63,6 +71,21 @@ def main():
         '--code', '-c',
         type=str,
         help='Short study code (e.g., bpa-rat)'
+    )
+
+    parser.add_argument(
+        '--species',
+        type=str.lower,
+        default='rat',
+        choices=available_species(),
+        help='Species; selects the parameter profile (default: rat)'
+    )
+
+    parser.add_argument(
+        '--strain',
+        type=str,
+        default=None,
+        help="Strain, e.g. Wistar (default: the species profile's)"
     )
 
     parser.add_argument(
@@ -249,6 +272,8 @@ def main():
         bruker_root=args.bruker_root,
         sigma_atlas_path=args.sigma_atlas,
         config_path=args.config,
+        species=args.species,
+        strain=args.strain,
         link_bids=not args.no_link,
         link_bruker=not args.no_link,
         setup_atlas=not args.no_atlas,
