@@ -10,6 +10,7 @@ separately in template building/registration modules.
 
 import nibabel as nib
 import numpy as np
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 import subprocess
@@ -1327,28 +1328,10 @@ def run_multiecho_motion_correction(
             continue
 
         if has_mats:
-            # Use applyxfm4D to apply reference echo transforms
-            print(f"  Applying transforms to echo {echo_idx}...")
-            try:
-                cmd = [
-                    'applyxfm4D',
-                    str(echo_file),
-                    str(ref_echo),  # reference image
-                    str(echo_mcf_out),
-                    str(mat_dir),
-                    '-fourdigit',
-                ]
-                subprocess.run(cmd, check=True, capture_output=True, text=True)
-                corrected_echoes.append(echo_mcf_out)
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # Fallback: split, transform each volume, merge
-                print(f"  applyxfm4D failed, using split/flirt/merge fallback...")
-                corrected_echoes.append(
-                    _apply_transforms_fallback(
-                        echo_file, ref_echo, mat_files, echo_mcf_out,
-                        mcf_dir / f'echo{echo_idx}_split', ref_vol
-                    )
-                )
+            print(f"  Applying transforms to echo {echo_idx} (end slices padded)...")
+            corrected_echoes.append(
+                _apply_transforms_padded(echo_file, mat_files, echo_mcf_out, mcf_dir, ref_vol)
+            )
         else:
             # Fallback: run MCFLIRT independently on this echo
             print(f"  Running MCFLIRT independently on echo {echo_idx}...")
@@ -1492,6 +1475,96 @@ def _apply_transforms_fallback(
         check=True
     )
 
+    return output_file
+
+
+def _largest_through_slice_shift(mat_files, shape, zooms) -> float:
+    """Largest through-slice displacement of any corner of the volume over all matrices, in slices."""
+    (nx, ny, nz), (dx, dy, dz) = shape, zooms
+    corners = np.array([[x, y, z, 1.0]
+                        for x in (0, (nx - 1) * dx)
+                        for y in (0, (ny - 1) * dy)
+                        for z in (0, (nz - 1) * dz)])
+    largest = 0.0
+    for mat_file in mat_files:
+        moved = (np.loadtxt(mat_file) @ corners.T).T
+        largest = max(largest, float(np.abs(moved[:, 2] - corners[:, 2]).max() / dz))
+    return largest
+
+
+def _pad_end_slices(echo_file: Path, output_file: Path, pad: int) -> None:
+    """Replicate the first and last slice ``pad`` times along the third axis."""
+    img = nib.load(echo_file)
+    data = np.asarray(img.dataobj, dtype=np.float32)
+    padded = np.concatenate(
+        [np.repeat(data[:, :, :1], pad, axis=2), data, np.repeat(data[:, :, -1:], pad, axis=2)],
+        axis=2,
+    )
+    affine = img.affine.copy()
+    affine[:3, 3] -= affine[:3, 2] * pad
+    padded_img = nib.Nifti1Image(padded, affine)
+    # FSL's matrices are in pixdim units, and a new header takes pixdim from the affine.
+    padded_img.header.set_zooms(img.header.get_zooms())
+    nib.save(padded_img, output_file)
+
+
+def _shift_mats_to_padded_frame(mat_files, output_dir: Path, dz: float, pad: int) -> List[Path]:
+    """T' = S T S^-1, with S a translation of pad x dz in z; same file names as the input."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shift = np.eye(4)
+    shift[2, 3] = pad * dz
+    shifted = []
+    for mat_file in mat_files:
+        out = output_dir / Path(mat_file).name
+        np.savetxt(out, shift @ np.loadtxt(mat_file) @ np.linalg.inv(shift), fmt="%.10f")
+        shifted.append(out)
+    return shifted
+
+
+def _apply_transforms_padded(
+    echo_file: Path,
+    mat_files: List[Path],
+    output_file: Path,
+    work_dir: Path,
+    ref_vol: int,
+    pad: int = 2,
+) -> Path:
+    """Apply per-volume transforms without losing the end slices.
+
+    applyxfm4D has nothing to sample outside the field of view, so the outermost slices of a slab lose
+    signal whenever a volume's through-slice shift points outward. Replicating the end slices before
+    resampling and cropping them afterwards keeps them; slices away from the ends do not change.
+    """
+    img = nib.load(echo_file)
+    shape, zooms = img.shape[:3], tuple(float(z) for z in img.header.get_zooms()[:3])
+    largest = _largest_through_slice_shift(mat_files, shape, zooms)
+    if largest >= pad:
+        pad = int(np.ceil(largest)) + 1
+        print(f"  Largest through-slice shift {largest:.2f} slices: padding {pad} slices")
+
+    pad_dir = work_dir / f"{output_file.name.split('.')[0]}_pad"
+    if pad_dir.exists():
+        shutil.rmtree(pad_dir)
+    pad_dir.mkdir(parents=True)
+    try:
+        padded = pad_dir / 'padded.nii'
+        _pad_end_slices(echo_file, padded, pad)
+        shifted = _shift_mats_to_padded_frame(mat_files, pad_dir / 'mats', zooms[2], pad)
+        resampled = pad_dir / 'resampled.nii'
+        try:
+            subprocess.run(
+                ['applyxfm4D', str(padded), str(padded), str(resampled), str(pad_dir / 'mats'), '-fourdigit'],
+                check=True, capture_output=True, text=True,
+                env={**os.environ, 'FSLOUTPUTTYPE': 'NIFTI'},
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("  applyxfm4D failed, using split/flirt/merge fallback...")
+            resampled = pad_dir / 'resampled.nii.gz'
+            _apply_transforms_fallback(padded, padded, shifted, resampled, pad_dir / 'split', ref_vol)
+        data = np.asarray(nib.load(resampled).dataobj, dtype=np.float32)[:, :, pad:-pad]
+        nib.save(nib.Nifti1Image(data, img.affine, img.header), output_file)
+    finally:
+        shutil.rmtree(pad_dir, ignore_errors=True)
     return output_file
 
 
