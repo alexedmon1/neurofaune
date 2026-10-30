@@ -230,3 +230,42 @@ def results_check(path, as_json):
     from neurofaune.results.__main__ import run_check
 
     raise SystemExit(run_check(str(path), as_json=as_json))
+
+
+@main.group("config")
+def config_group():
+    """Study config.yaml files."""
+
+
+@config_group.command("slim")
+@click.argument("config_path", metavar="CONFIG", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--write", is_flag=True, help="rewrite CONFIG (the original is kept as CONFIG.pre-slim)")
+@click.option("--show-removed", is_flag=True, help="list every key removed, not just the count")
+def config_slim(config_path, write, show_removed):
+    """Reduce a study config to the values that differ from the package defaults.
+
+    Configs written by init before this fix carry a full copy of default.yaml.
+    The copy hides the species profile (a mouse study loads rat values) and pins
+    every default as of the day it was written. This lists what slimming would
+    remove and which loaded values would change. For a rat study nothing should
+    change. Without --write nothing is written.
+    """
+    from neurofaune.config import slim_config_file
+
+    result = slim_config_file(config_path, write=write)
+    removed, changed = result["removed"], result["changed"]
+    click.echo(f"{config_path}: {len(removed)} values equal to the defaults")
+    if show_removed:
+        for key in removed:
+            click.echo(f"  - {key}")
+    if changed:
+        click.echo(f"{len(changed)} loaded values change (the copied default was hiding "
+                   "the species profile's value):")
+        for key, before, after in changed:
+            click.echo(f"  {key}: {before!r} -> {after!r}")
+    else:
+        click.echo("Loaded configuration unchanged.")
+    if write:
+        click.echo(f"Wrote {config_path} (original: {result['backup']})")
+    elif removed:
+        click.echo("Dry run; rerun with --write to apply.")
