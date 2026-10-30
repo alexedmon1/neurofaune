@@ -250,15 +250,16 @@ class ClassificationAnalysis:
             Summary dictionary with status, metrics, and results.
         """
         from neurofaune.network.classification.classifiers import run_classification
-        from neurofaune.network.classification.data_prep import prepare_classification_data
+        from neurofaune.network.classification.data_prep import (
+            RepeatedAnimalError,
+            prepare_classification_data,
+        )
         from neurofaune.network.classification.lda import run_lda
         from neurofaune.network.classification.omnibus import run_manova, run_permanova
         from neurofaune.network.classification.pca import run_pca
         from neurofaune.network.classification.visualization import (
             plot_permutation_distribution,
         )
-
-        self._check_or_clear(cohort, feature_set)
 
         cohort_label = cohort or "pooled"
         combo_dir = self._result_dir(cohort, feature_set)
@@ -278,12 +279,21 @@ class ClassificationAnalysis:
                 cohort_filter=cohort if cohort else None,
                 exclusion_csv=self.exclusion_csv,
             )
+        except RepeatedAnimalError as exc:
+            logger.error(
+                "Refusing %s/%s/%s: %s",
+                self.metric, cohort_label, feature_set, exc,
+            )
+            return {"status": "refused", "reason": str(exc)}
         except ValueError as exc:
             logger.warning(
                 "Skipping %s/%s/%s: %s",
                 self.metric, cohort_label, feature_set, exc,
             )
             return {"status": "skipped", "reason": str(exc)}
+
+        # After the load, so --force does not delete results of a run it refuses.
+        self._check_or_clear(cohort, feature_set)
 
         X, y = data["X"], data["y"]
         label_names = data["label_names"]
@@ -309,6 +319,7 @@ class ClassificationAnalysis:
             "group_sizes": {
                 name: int((y == i).sum()) for i, name in enumerate(label_names)
             },
+            "dropped_sessions": data["dropped_sessions"],
         }
 
         # Phase 2: PERMANOVA

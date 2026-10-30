@@ -19,7 +19,11 @@ from scipy import linalg
 from sklearn.covariance import LedoitWolf
 from sklearn.preprocessing import StandardScaler
 
-from neurofaune.network.classification.data_prep import prepare_classification_data
+from neurofaune.network.classification.data_prep import (
+    RepeatedAnimalError,
+    check_independent_animals,
+    load_classification_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,7 @@ def load_multiview_data(
     cohort_filter: Optional[str] = None,
     exclusion_csv: Optional[Path] = None,
     confounds: Optional[List[str]] = None,
+    dropped_sessions: Optional[List[dict]] = None,
 ) -> Tuple[List[np.ndarray], List[str], List[List[str]], pd.DataFrame]:
     """Load and align multi-view ROI data for MCCA.
 
@@ -87,6 +92,14 @@ def load_multiview_data(
     confounds : list of str, optional
         Metadata columns to residualize from features before z-scoring
         (e.g. ``["sex"]``). Categorical columns are dummy-encoded.
+    dropped_sessions : list, optional
+        Filled with one dict per session the loader removed for zero ROIs, per
+        metric (each dict also names its ``metric``).
+
+    Raises
+    ------
+    RepeatedAnimalError
+        If an animal has more than one row after the views are intersected.
 
     Returns
     -------
@@ -111,13 +124,17 @@ def load_multiview_data(
             if not csv_path.exists():
                 raise FileNotFoundError(f"ROI CSV not found: {csv_path}")
 
-            data = prepare_classification_data(
+            data = load_classification_rows(
                 wide_csv=csv_path,
                 feature_set=feature_set,
                 cohort_filter=cohort_filter,
                 exclusion_csv=exclusion_csv,
                 standardize=False,  # We standardise per-view below
             )
+            if dropped_sessions is not None:
+                dropped_sessions.extend(
+                    {"metric": metric, **d} for d in data["dropped_sessions"]
+                )
 
             info = data["sample_info"]
             keys = (info["subject"] + "_" + info["session"]).values
@@ -196,6 +213,8 @@ def load_multiview_data(
 
         if metadata_df is None:
             metadata_df = vd["info"].iloc[idx].reset_index(drop=True)
+
+    check_independent_animals(metadata_df, "MCCA")
 
     # Residualize confounds (before z-scoring)
     if confounds:
@@ -1056,11 +1075,8 @@ class MCCAAnalysis:
             plot_scores_by_sex,
         )
 
-        self._check_or_clear(cohort, feature_set)
-
         cohort_label = cohort or "pooled"
         combo_dir = self._result_dir(cohort, feature_set)
-        combo_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(
             "\n%s\n  MCCA | Cohort: %s | Features: %s\n%s",
@@ -1069,6 +1085,7 @@ class MCCAAnalysis:
 
         # Phase 1: Load multi-view data
         logger.info("[Phase 1] Loading multi-view data...")
+        dropped_sessions: list = []
         try:
             Xs, view_names, feature_names, metadata = load_multiview_data(
                 roi_dir=self.roi_dir,
@@ -1077,10 +1094,18 @@ class MCCAAnalysis:
                 cohort_filter=cohort if cohort else None,
                 exclusion_csv=self.exclusion_csv,
                 confounds=self.confounds,
+                dropped_sessions=dropped_sessions,
             )
+        except RepeatedAnimalError as exc:
+            logger.error("Refusing %s/%s: %s", cohort_label, feature_set, exc)
+            return {"status": "refused", "reason": str(exc)}
         except (ValueError, FileNotFoundError) as exc:
             logger.warning("Skipping %s/%s: %s", cohort_label, feature_set, exc)
             return {"status": "skipped", "reason": str(exc)}
+
+        # After the load, so --force does not delete results of a run it refuses.
+        self._check_or_clear(cohort, feature_set)
+        combo_dir.mkdir(parents=True, exist_ok=True)
 
         n_samples = Xs[0].shape[0]
         if n_samples < 10:
@@ -1158,6 +1183,7 @@ class MCCAAnalysis:
                 name: int((dose_labels == dose_map[name]).sum()) for name in label_names
             },
             "confounds_residualized": self.confounds if self.confounds else None,
+            "dropped_sessions": dropped_sessions,
         }
 
         # Phase 2: Fit MCCA

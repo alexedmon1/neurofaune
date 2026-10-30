@@ -32,6 +32,7 @@ def load_and_prepare_data(
     max_zero_frac: float = 0.2,
     max_subject_zero_frac: float = 0.10,
     meta_cols: Optional[Iterable[str]] = None,
+    dropped_sessions: Optional[list] = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Load ROI wide CSV, apply exclusions, and filter unreliable ROIs.
 
@@ -58,6 +59,10 @@ def load_and_prepare_data(
         since they cannot be measurements; numeric ones cannot be detected and
         MUST be declared or they are treated as ROIs.
         Default 0.10.
+    dropped_sessions : list, optional
+        Filled with one dict per session removed by ``max_subject_zero_frac``
+        (subject, session, cohort, n_zero_rois, n_valid_rois, max_zero_rois), so
+        a caller can put them in its outputs rather than leave them in the log.
 
     Returns
     -------
@@ -173,6 +178,15 @@ def load_and_prepare_data(
                     f"{n_z}/{len(valid_region_cols)} valid ROIs are zero "
                     f"(>{max_subject_zero_frac:.0%} threshold)"
                 )
+                if dropped_sessions is not None:
+                    dropped_sessions.append({
+                        "subject": row["subject"],
+                        "session": row["session"],
+                        "cohort": row["cohort"],
+                        "n_zero_rois": n_z,
+                        "n_valid_rois": len(valid_region_cols),
+                        "max_zero_rois": max_zeros,
+                    })
             df = df[~bad_mask].reset_index(drop=True)
             logger.info(
                 f"Dropped {bad_mask.sum()} subjects with >{max_subject_zero_frac:.0%} "

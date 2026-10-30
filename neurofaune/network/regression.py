@@ -538,9 +538,10 @@ class RegressionAnalysis:
         """
         import json
 
-        from neurofaune.network.classification.data_prep import prepare_regression_data
-
-        self._check_or_clear(cohort, feature_set)
+        from neurofaune.network.classification.data_prep import (
+            RepeatedAnimalError,
+            prepare_regression_data,
+        )
 
         cohort_label = cohort or "pooled"
         combo_dir = self._result_dir(cohort, feature_set)
@@ -562,12 +563,21 @@ class RegressionAnalysis:
                 exclusion_csv=self.exclusion_csv,
                 target=self.target,
             )
+        except RepeatedAnimalError as exc:
+            logger.error(
+                "Refusing %s/%s/%s: %s",
+                self.metric, cohort_label, feature_set, exc,
+            )
+            return {"status": "refused", "reason": str(exc)}
         except ValueError as exc:
             logger.warning(
                 "Skipping %s/%s/%s: %s",
                 self.metric, cohort_label, feature_set, exc,
             )
             return {"status": "skipped", "reason": str(exc)}
+
+        # After the load, so --force does not delete results of a run it refuses.
+        self._check_or_clear(cohort, feature_set)
 
         X, y = data["X"], data["y"]
         label_names = data["label_names"]
@@ -599,6 +609,7 @@ class RegressionAnalysis:
                 name: int((dose_labels == i).sum())
                 for i, name in enumerate(label_names)
             },
+            "dropped_sessions": data["dropped_sessions"],
         }
 
         # Phase 2: Regression
