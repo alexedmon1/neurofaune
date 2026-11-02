@@ -1303,6 +1303,7 @@ def run_multiecho_motion_correction(
         '-refvol', str(ref_vol),
     ]
     print(f"  Running MCFLIRT on echo {ref_echo_idx} (refvol={ref_vol})...")
+    _clear_mcflirt_mats(ref_mcf_base)
     subprocess.run(cmd, check=True)
 
     motion_params = Path(str(ref_mcf_base) + '.par')
@@ -1312,6 +1313,11 @@ def run_multiecho_motion_correction(
     n_vols = ref_img.shape[3]
     mat_files = [mat_dir / f'MAT_{i:04d}' for i in range(n_vols)]
     has_mats = all(m.exists() for m in mat_files)
+    n_found = len(list(mat_dir.glob('MAT_*')))
+    if n_found > n_vols:
+        raise RuntimeError(
+            f"{mat_dir} has {n_found} matrices for {n_vols} volumes: they are not from this run"
+        )
 
     if not has_mats:
         print(f"  WARNING: Per-volume .mat files not found in {mat_dir}")
@@ -1476,6 +1482,17 @@ def _apply_transforms_fallback(
     )
 
     return output_file
+
+
+def _clear_mcflirt_mats(mcf_base: Path) -> None:
+    """Remove earlier runs' matrices, so that <base>.mat is this run's.
+
+    MCFLIRT does not overwrite an existing <base>.mat: it writes <base>.mat+, then .mat++ and
+    so on, while its .par and image are replaced. Reading <base>.mat after a rerun therefore
+    applies the first run's matrices to data they were not estimated on.
+    """
+    for stale in mcf_base.parent.glob(f'{mcf_base.name}.mat*'):
+        shutil.rmtree(stale)
 
 
 def _largest_through_slice_shift(mat_files, shape, zooms) -> float:

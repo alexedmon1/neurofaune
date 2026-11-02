@@ -310,3 +310,100 @@ def _load_unless_mcf(on_mcf, real_load=nib.load):
         return real_load(path, *args, **kwargs)
 
     return load
+
+
+def _run_to_padded_step(echoes, work, mask, monkeypatch):
+    """Run the motion step up to the mean image; return the matrices each echo was given."""
+
+    class Stop(Exception):
+        pass
+
+    given = []
+
+    def fake_padded(echo_file, mat_files, output_file, work_dir, ref_vol):
+        given.append(list(mat_files))
+        return output_file
+
+    def stop_at_mean(path, *args, **kwargs):
+        raise Stop
+
+    monkeypatch.setattr(fp, "_apply_transforms_padded", fake_padded)
+    monkeypatch.setattr(fp.nib, "load", _load_unless_mcf(stop_at_mean))
+    with pytest.raises(Stop):
+        fp.run_multiecho_motion_correction(echoes, work, mask)
+    return given
+
+
+def _seed_earlier_runs(work: Path, n_mats: int) -> Path:
+    """What a work folder holds after earlier runs: <base>.mat and <base>.mat+."""
+    base = work / "mcflirt" / "echo1_mcf"
+    for suffix in (".mat", ".mat+"):
+        _write_mats(Path(f"{base}{suffix}"), [_translation(99.0)] * n_mats)
+    return base
+
+
+def test_rerun_with_mcflirt_behaviour_uses_this_runs_matrices(tmp_path, monkeypatch):
+    """MCFLIRT writes .mat+ when .mat exists, so a stale .mat must be gone before it runs."""
+    echoes = [_constant_slab(tmp_path / f"echo{i}.nii.gz", 2) for i in range(3)]
+    work = tmp_path / "work"
+    base = _seed_earlier_runs(work, 3)
+
+    def fake_mcflirt(cmd, *args, **kwargs):
+        out = Path(f"{base}.mat")
+        while out.exists():
+            out = Path(f"{out}+")
+        _write_mats(out, [np.eye(4)] * 2)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(fp.subprocess, "run", fake_mcflirt)
+    given = _run_to_padded_step(echoes, work, tmp_path / "mask.nii.gz", monkeypatch)
+
+    assert len(given) == 2
+    for mats in given:
+        for mat in mats:
+            np.testing.assert_array_equal(np.loadtxt(mat), np.eye(4))
+    assert [p.name for p in (work / "mcflirt").glob("echo1_mcf.mat*")] == ["echo1_mcf.mat"]
+
+
+def test_more_matrices_than_volumes_are_refused(tmp_path, monkeypatch):
+    """The cleared folder should hold one per volume; extra files mean another run's."""
+    echoes = [_constant_slab(tmp_path / f"echo{i}.nii.gz", 2) for i in range(3)]
+    work = tmp_path / "work"
+    base = work / "mcflirt" / "echo1_mcf"
+    work.mkdir()
+
+    def fake_mcflirt(cmd, *args, **kwargs):
+        _write_mats(Path(f"{base}.mat"), [np.eye(4)] * 3)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(fp.subprocess, "run", fake_mcflirt)
+    with pytest.raises(RuntimeError, match="3 matrices for 2 volumes"):
+        fp.run_multiecho_motion_correction(echoes, work, tmp_path / "mask.nii.gz")
+
+
+@pytest.mark.skipif(shutil.which("mcflirt") is None, reason="FSL not on the path")
+def test_rerun_with_real_mcflirt_uses_this_runs_matrices(tmp_path, monkeypatch):
+    echoes = [_structured_slab(tmp_path / f"echo{i}.nii.gz", 4) for i in range(3)]
+    work = tmp_path / "work"
+    _seed_earlier_runs(work, 6)
+
+    given = _run_to_padded_step(echoes, work, tmp_path / "mask.nii.gz", monkeypatch)
+
+    assert len(given) == 2
+    assert all(len(mats) == 4 for mats in given)
+    for mat in given[0]:
+        assert abs(np.loadtxt(mat)[2, 3]) < 50, "a stale matrix (99 mm in z) was used"
+    assert [p.name for p in (work / "mcflirt").glob("echo1_mcf.mat*")] == ["echo1_mcf.mat"]
+
+
+@pytest.mark.skipif(shutil.which("mcflirt") is None, reason="FSL not on the path")
+def test_mcflirt_still_keeps_an_existing_mat_folder(tmp_path):
+    """The behaviour the clearing works around; if FSL changes it, this says so."""
+    echo = _structured_slab(tmp_path / "echo.nii.gz", 3)
+    base = tmp_path / "mcf"
+    seeded = _write_mats(Path(f"{base}.mat"), [_translation(99.0)] * 3)
+    subprocess.run(
+        ["mcflirt", "-in", str(echo), "-out", str(base), "-mats"], check=True, capture_output=True
+    )
+    assert Path(f"{base}.mat+").is_dir()
+    np.testing.assert_array_equal(np.loadtxt(seeded[0]), _translation(99.0))
