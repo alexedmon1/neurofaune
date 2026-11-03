@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `config`, `mrs`, `results`
 
-**Entry points:** 200 across 11 stages.
+**Entry points:** 198 across 10 stages.
 
 
 ## analysis
@@ -181,13 +181,6 @@ _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit 
 | function | module | summary | config keys |
 |---|---|---|---|
 | `build_provenance` | `neurofaune.reporting.summarize` | Build a provenance metadata dict for embedding in summary JSONs. | — |
-
-## results
-
-| function | module | summary | config keys |
-|---|---|---|---|
-| `run_folder` | `neurofaune.results.spec` | The recommended folder of one run: ``<root>/<analysis id>/<run id>``. | — |
-| `run_id_problem` | `neurofaune.results.spec` | Why a run id is not lowercase letters, digits, '_', '.' or '-', else None. | — |
 
 ## templates
 

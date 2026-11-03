@@ -225,7 +225,8 @@ def results_check(path, as_json):
     """Check every analysis folder at or under PATH against the results specification.
 
     Exit 0 when every folder conforms, 1 otherwise (and when there is none). The same
-    checker runs without neurofaune's imaging stack as `python -m neurofaune.results check`.
+    checker runs without neurofaune's imaging stack as `python -m neurobox check`. It needs
+    the optional results package: `pip install 'neurofaune[results]'`.
     """
     from neurofaune.results.__main__ import run_check
 
