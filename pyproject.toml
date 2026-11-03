@@ -198,4 +198,4 @@ markers = [
 
 [tool.uv.sources]
 # The optional results package, pinned by commit like any other pin (see Versioning and tags).
-neurobox-dev = { git = "https://github.com/alexedmon1/neurobox-dev", rev = "d70e127b9ed812dcb9079f7e3a4dab238dd08574" }
+neurobox-dev = { git = "https://github.com/alexedmon1/neurobox-dev", rev = "4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" }
