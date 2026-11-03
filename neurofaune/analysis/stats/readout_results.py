@@ -110,7 +110,10 @@ TESTS_COLUMNS: dict[str, dict[str, Any]] = {
                                          "weighted -1 (the comparison group of a two-group contrast), "
                                          "scaled by its weight; empty for one-sample, regression and "
                                          "general contrasts, and where that mean is within one residual "
-                                         "SD of zero", "Standard": "mde_percent", "Units": "%"},
+                                         "SD of zero", "Standard": "mde_percent", "Units": "%",
+                          "PercentOf": "the whole-mask mean of the comparison group (weighted -1), on the "
+                                       "estimate's scale, of the data the test was run on: where those "
+                                       "data are changes, that group's mean change, not the measure's mean"},
     "whole_mde_note": {"Description": "empty when whole_mde is given; otherwise why not, starting "
                                       "'not computed: '", "Standard": "mde_note"},
 }
@@ -166,7 +169,8 @@ CLUSTERS_COLUMNS: dict[str, dict[str, Any]] = {
                            "voxels chosen for significance would describe the selection, not the design",
             "Standard": "mde", "Power": power.POWER, "Alpha": power.ALPHA},
     "mde_percent": {"Description": "mde as a percent of the comparison group's mean; empty, as mde is",
-                    "Standard": "mde_percent", "Units": "%"},
+                    "Standard": "mde_percent", "Units": "%",
+                    "PercentOf": "the comparison group's mean (weighted -1) of the data the test was run on"},
     "mde_note": {"Description": "why mde is not given: 'not computed: cluster selected by the test'",
                  "Standard": "mde_note"},
 }

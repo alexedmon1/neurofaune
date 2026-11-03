@@ -1473,8 +1473,8 @@ wheels = [
 
 [[package]]
 name = "neurobox-dev"
-version = "0.3.0"
-source = { git = "https://github.com/alexedmon1/neurobox-dev?rev=d70e127b9ed812dcb9079f7e3a4dab238dd08574#d70e127b9ed812dcb9079f7e3a4dab238dd08574" }
+version = "0.4.0"
+source = { git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d#4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" }
 
 [[package]]
 name = "neurofaune"
@@ -1545,8 +1545,8 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "natsort", specifier = ">=8.0.0" },
-    { name = "neurobox-dev", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/neurobox-dev?rev=d70e127b9ed812dcb9079f7e3a4dab238dd08574" },
-    { name = "neurobox-dev", marker = "extra == 'results'", git = "https://github.com/alexedmon1/neurobox-dev?rev=d70e127b9ed812dcb9079f7e3a4dab238dd08574" },
+    { name = "neurobox-dev", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" },
+    { name = "neurobox-dev", marker = "extra == 'results'", git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" },
     { name = "neurofaune", extras = ["dev", "fslmrs", "bruker", "multishell"], marker = "extra == 'all'" },
     { name = "nibabel", specifier = ">=5.3.2" },
     { name = "nifti-mrs", specifier = ">=1.2" },
