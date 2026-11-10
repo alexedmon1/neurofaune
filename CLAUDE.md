@@ -288,6 +288,17 @@ table in which an animal has more than one row (`RepeatedAnimalError`; `run()` r
 grouped cross-validation is the fix, not a flag. This covers repeated animals only;
 scaling, imputation and PCA-component choice still see all rows before CV.
 
+### The study design has no `cohort` field
+
+`neurofaune/study_design.py` (`load_study_design(config)`) reads who and what each session
+is from the participants and sessions tables, and raises rather than guesses. It has fixed
+fields `animal`, `session`, `group`, `sex`, `age_days`, `template`; every other column is
+carried through and can be filtered on, but is never interpreted. "Cohort" can mean an age
+band, a batch or a separate study, so new code asks for the thing it needs
+(`template_of`, `age_of`, `where(timepoint=...)`) instead. No workflow calls it yet: existing
+`cohort=` arguments and `templates/<modality>/<name>/` paths stay until each is converted.
+The `design:` keys stay out of `default.yaml`, whose contents go into the provenance digest.
+
 ### Morphometry vs ROI extraction
 
 `network/roi_extraction.py` answers "what is the mean of this metric in this region".
