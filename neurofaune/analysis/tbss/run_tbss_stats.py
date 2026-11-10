@@ -278,7 +278,7 @@ def run_tbss_statistical_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logging(output_dir)
-    from neurofaune.results.write import now as _now
+    from neurofaune.analysis.stats.readout_results import now as _now
     started = _now()
 
     logger.info("=" * 80)
@@ -363,7 +363,7 @@ def run_tbss_statistical_analysis(
     from neurofaune.analysis.stats.readout_results import write_readout_results
     from neurofaune.atlas.study_space import (atlas_space_name, display_plane, study_space_axes,
                                               study_space_template)
-    from neurofaune.results.spec import analysis_id
+    from neurofaune.analysis.stats.readout_results import analysis_id
     record = design.get('design_record')
     write_readout_results(
         output_dir, tests, clusters, analysis_id=analysis_id("dwi", "tbss", analysis_name), modality="dwi",

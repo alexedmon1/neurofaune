@@ -31,6 +31,14 @@ def atlas_space_name(config: Optional[Dict[str, Any]], default: str = "study atl
     return str(name) if name else default
 
 
+def _valid_axes(code: str) -> bool:
+    """Three letters, one from each of R/L, A/P, S/I, e.g. "LIA" (the same rule as the
+    results specification's ``valid_axes``, kept here so config checks need no extra)."""
+    pairs = ("RL", "AP", "SI")
+    used = [next((i for i, pair in enumerate(pairs) if ch in pair), None) for ch in code.upper()]
+    return len(code) == 3 and None not in used and sorted(used) == [0, 1, 2]
+
+
 def study_space_axes(config: Optional[Dict[str, Any]]) -> Optional[str]:
     """The anatomical direction each voxel axis of the study-space atlas runs toward
     (``atlas.study_space.axes``, e.g. "LIA"), or None when the config does not say.
@@ -39,12 +47,10 @@ def study_space_axes(config: Optional[Dict[str, Any]]) -> Optional[str]:
     orientation a reader should trust is declared, not read from the header. A value
     that is not three letters, one from each of R/L, A/P, S/I, is an error.
     """
-    from neurofaune.results.spec import valid_axes
-
     value = get_config_value(config, "atlas.study_space.axes", default=None) if config else None
     if value is None:
         return None
-    if not valid_axes(str(value)):
+    if not _valid_axes(str(value)):
         raise ValueError(f"atlas.study_space.axes = {value!r}: three letters, one from each of "
                          "R/L, A/P, S/I (S = dorsal, I = ventral)")
     return str(value).upper()

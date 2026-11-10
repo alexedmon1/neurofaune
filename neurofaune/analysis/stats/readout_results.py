@@ -21,15 +21,13 @@ caveat (``power.MAP_NOTE``).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
 from neurofaune.analysis.stats import power
-from neurofaune.results import provenance as provenance_record
-from neurofaune.results import write_analysis, write_columns
-from neurofaune.results.write import now
 
 logger = logging.getLogger("neurofaune.stats")
 
@@ -112,7 +110,10 @@ TESTS_COLUMNS: dict[str, dict[str, Any]] = {
                                          "weighted -1 (the comparison group of a two-group contrast), "
                                          "scaled by its weight; empty for one-sample, regression and "
                                          "general contrasts, and where that mean is within one residual "
-                                         "SD of zero", "Standard": "mde_percent", "Units": "%"},
+                                         "SD of zero", "Standard": "mde_percent", "Units": "%",
+                          "PercentOf": "the whole-mask mean of the comparison group (weighted -1), on the "
+                                       "estimate's scale, of the data the test was run on: where those "
+                                       "data are changes, that group's mean change, not the measure's mean"},
     "whole_mde_note": {"Description": "empty when whole_mde is given; otherwise why not, starting "
                                       "'not computed: '", "Standard": "mde_note"},
 }
@@ -168,7 +169,8 @@ CLUSTERS_COLUMNS: dict[str, dict[str, Any]] = {
                            "voxels chosen for significance would describe the selection, not the design",
             "Standard": "mde", "Power": power.POWER, "Alpha": power.ALPHA},
     "mde_percent": {"Description": "mde as a percent of the comparison group's mean; empty, as mde is",
-                    "Standard": "mde_percent", "Units": "%"},
+                    "Standard": "mde_percent", "Units": "%",
+                    "PercentOf": "the comparison group's mean (weighted -1) of the data the test was run on"},
     "mde_note": {"Description": "why mde is not given: 'not computed: cluster selected by the test'",
                  "Standard": "mde_note"},
 }
@@ -198,6 +200,21 @@ def _same_grid(a: Path, b: Path) -> bool:
 
     ia, ib = nib.load(str(a)), nib.load(str(b))
     return ia.shape[:3] == ib.shape[:3] and np.allclose(ia.affine, ib.affine, atol=1e-3)
+
+
+def now() -> str:
+    """The current UTC time as the results specification writes it (neurobox.write.now)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def analysis_id(modality: str, analysis_type: str, *name: str) -> str:
+    """An analysis id, ``<modality>/<analysis_type>/<name>``: checked by neurobox when it is
+    installed, joined as-is when it is not (the results files are then not written)."""
+    from neurofaune import results
+
+    if results.AVAILABLE:
+        return results.spec.analysis_id(modality, analysis_type, *name)
+    return "/".join((modality, analysis_type, *name))
 
 
 def write_readout_results(
@@ -276,7 +293,8 @@ def write_readout_results(
         strict: raise when the folder does not conform; otherwise log and return.
 
     Returns:
-        The conformance report.
+        The conformance report, or None when the optional results package (neurobox-dev)
+        is not installed: the tables are then written without their descriptions.
     """
     output_dir = Path(output_dir)
     if (run_dirs is None) == (run_dir_of is None):
@@ -292,6 +310,16 @@ def write_readout_results(
     clusters = clusters if len(clusters.columns) else pd.DataFrame(columns=EMPTY_CLUSTERS)
     tests.to_csv(output_dir / tests_file, index=False)
     clusters.to_csv(output_dir / clusters_file, index=False)
+    # The tables are written either way. Their column dictionaries, analysis.json and
+    # provenance.json need the optional results package (neurobox-dev).
+    from neurofaune import results
+
+    if not results.AVAILABLE:
+        logger.warning("Wrote %s and %s; not their column dictionaries, analysis.json or "
+                       "provenance.json: %s", tests_file, clusters_file, results.INSTALL_HINT)
+        return None
+    from neurofaune.results import provenance as provenance_record
+    from neurofaune.results import write_analysis, write_columns
     space_q = {"peak_xyz_mm": {**CLUSTERS_COLUMNS["peak_xyz_mm"], "Space": space}}
     write_columns(output_dir / tests_file, TESTS_COLUMNS, extra)
     write_columns(output_dir / clusters_file, CLUSTERS_COLUMNS, {**extra, **space_q})

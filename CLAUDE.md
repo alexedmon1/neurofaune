@@ -367,16 +367,19 @@ an empty "tests" is an error, not a placeholder.
 
 ### Results are written to the results specification
 
-Every analysis writes a folder any reader can use without neurofaune
-(`docs/RESULTS_SPEC.md`): `analysis.json` (what it is, the correction and what it is
-over, the effect measure, each table's role), `provenance.json`, and every table with
-a column dictionary beside it, its columns mapped to the standard vocabulary. The
-reporting contract -- magnitude, direction, extent, location, nulls -- is checked:
-`neurofaune results check <dir>`. TBSS, VBM and voxelwise fMRI write it through
-`analysis.stats.readout_results`; other analyses are listed in
-`docs/RESULTS_PRODUCERS.md`, which also says how neurovrai and study scripts produce
-it. `neurofaune/results` is standard-library only and must stay that way: other
-producers run or copy it without neurofaune's imaging stack.
+Every analysis writes a folder any reader can use without neurofaune: `analysis.json`
+(what it is, the correction and what it is over, the effect measure, each table's role),
+`provenance.json`, and every table with a column dictionary beside it, its columns mapped
+to the standard vocabulary. The reporting contract -- magnitude, direction, extent,
+location, nulls -- is checked: `neurofaune results check <dir>`. TBSS, VBM and voxelwise
+fMRI write it through `analysis.stats.readout_results`.
+
+**The specification, schemas, checker and writer live in neurobox-dev** (package
+`neurobox`, a working name; moved from here on 2026-11-03), so other tools use them
+without neurofaune. Its `docs/RESULTS_SPEC.md` and `docs/RESULTS_PRODUCERS.md` are the
+spec and the producers' guide; change the spec there, not here. `neurofaune/results` is
+now a thin re-export: `neurofaune.results.<module>` is the neurobox module itself. Keep
+it standard-library only.
 
 ## Key Design Constraints
 

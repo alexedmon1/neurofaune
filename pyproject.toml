@@ -60,7 +60,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The results specification, its checker and writer (neurofaune.results re-exports it):
+# with it, analyses also write analysis.json, provenance.json and column dictionaries.
+# Optional: neurofaune runs without it. Moved out of neurofaune on 2026-11-03.
+results = ["neurobox-dev"]
 dev = [
+    "neurobox-dev",  # tests cover both the results files and their absence
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "black>=23.0",
@@ -110,8 +115,7 @@ include = ["neurofaune*"]
 [tool.setuptools.package-data]
 # Every non-Python file under neurofaune/ must match a pattern here, or installs will not carry it
 # (tests/unit/test_packaging.py checks this).
-neurofaune = ["py.typed", "results/schemas/*.json", "results/vocab/*.json", "results/*.md",
-              "configs/*.yaml", "configs/species/*.yaml", "atlas/groups/*.yaml"]
+neurofaune = ["py.typed", "configs/*.yaml", "configs/species/*.yaml", "atlas/groups/*.yaml"]
 
 [tool.black]
 line-length = 100
@@ -191,3 +195,7 @@ markers = [
     "unit: marks tests as unit tests",
     "regression: behavior-preservation tests comparing a candidate implementation against frozen golden outputs (part of the gate)",
 ]
+
+[tool.uv.sources]
+# The optional results package, pinned by commit like any other pin (see Versioning and tags).
+neurobox-dev = { git = "https://github.com/alexedmon1/neurobox-dev", rev = "4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" }
