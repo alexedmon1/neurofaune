@@ -1,6 +1,6 @@
 """What of the results specification is neurofaune's own: its read-out writer and its study space.
 
-The specification's own tests (schemas, checker, writer) live in neurobox-dev
+The specification's own tests (schemas, checker, writer) live in Lumière
 (tests/test_spec.py), with the package, since it moved there on 2026-11-03.
 """
 import nibabel as nib

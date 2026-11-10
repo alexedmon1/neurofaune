@@ -1082,6 +1082,11 @@ wheels = [
 ]
 
 [[package]]
+name = "lumiere"
+version = "0.4.2"
+source = { git = "https://github.com/alexedmon1/lumiere?rev=50ab668636a84314c3b854b08e9c1edacc5603a6#50ab668636a84314c3b854b08e9c1edacc5603a6" }
+
+[[package]]
 name = "lxml"
 version = "6.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1472,11 +1477,6 @@ wheels = [
 ]
 
 [[package]]
-name = "neurobox-dev"
-version = "0.4.0"
-source = { git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d#4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" }
-
-[[package]]
 name = "neurofaune"
 version = "0.12.0a0"
 source = { editable = "." }
@@ -1511,8 +1511,8 @@ dependencies = [
 all = [
     { name = "black" },
     { name = "dmri-amico" },
+    { name = "lumiere" },
     { name = "mypy" },
-    { name = "neurobox-dev" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1520,8 +1520,8 @@ all = [
 ]
 dev = [
     { name = "black" },
+    { name = "lumiere" },
     { name = "mypy" },
-    { name = "neurobox-dev" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1531,7 +1531,7 @@ multishell = [
     { name = "dmri-amico" },
 ]
 results = [
-    { name = "neurobox-dev" },
+    { name = "lumiere" },
 ]
 
 [package.metadata]
@@ -1542,11 +1542,11 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "dipy", specifier = ">=1.11.0" },
     { name = "dmri-amico", marker = "extra == 'multishell'", specifier = ">=2.0.3" },
+    { name = "lumiere", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/lumiere?rev=50ab668636a84314c3b854b08e9c1edacc5603a6" },
+    { name = "lumiere", marker = "extra == 'results'", git = "https://github.com/alexedmon1/lumiere?rev=50ab668636a84314c3b854b08e9c1edacc5603a6" },
     { name = "matplotlib", specifier = ">=3.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "natsort", specifier = ">=8.0.0" },
-    { name = "neurobox-dev", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" },
-    { name = "neurobox-dev", marker = "extra == 'results'", git = "https://github.com/alexedmon1/neurobox-dev?rev=4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" },
     { name = "neurofaune", extras = ["dev", "fslmrs", "bruker", "multishell"], marker = "extra == 'all'" },
     { name = "nibabel", specifier = ">=5.3.2" },
     { name = "nifti-mrs", specifier = ">=1.2" },

@@ -62,10 +62,11 @@ dependencies = [
 [project.optional-dependencies]
 # The results specification, its checker and writer (neurofaune.results re-exports it):
 # with it, analyses also write analysis.json, provenance.json and column dictionaries.
-# Optional: neurofaune runs without it. Moved out of neurofaune on 2026-11-03.
-results = ["neurobox-dev"]
+# Optional: neurofaune runs without it. Moved out of neurofaune on 2026-11-03; the package is
+# Lumière (github.com/alexedmon1/lumiere, neurobox-dev until 2026-11-10), which also builds galleries.
+results = ["lumiere"]
 dev = [
-    "neurobox-dev",  # tests cover both the results files and their absence
+    "lumiere",  # tests cover both the results files and their absence
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "black>=23.0",
@@ -198,4 +199,4 @@ markers = [
 
 [tool.uv.sources]
 # The optional results package, pinned by commit like any other pin (see Versioning and tags).
-neurobox-dev = { git = "https://github.com/alexedmon1/neurobox-dev", rev = "4333c6a4dcbf13a82d27c456a52aebdf1c7d559d" }
+lumiere = { git = "https://github.com/alexedmon1/lumiere", rev = "50ab668636a84314c3b854b08e9c1edacc5603a6" }

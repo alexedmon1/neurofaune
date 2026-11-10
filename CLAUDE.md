@@ -390,12 +390,13 @@ to the standard vocabulary. The reporting contract -- magnitude, direction, exte
 location, nulls -- is checked: `neurofaune results check <dir>`. TBSS, VBM and voxelwise
 fMRI write it through `analysis.stats.readout_results`.
 
-**The specification, schemas, checker and writer live in neurobox-dev** (package
-`neurobox`, a working name; moved from here on 2026-11-03), so other tools use them
-without neurofaune. Its `docs/RESULTS_SPEC.md` and `docs/RESULTS_PRODUCERS.md` are the
-spec and the producers' guide; change the spec there, not here. `neurofaune/results` is
-now a thin re-export: `neurofaune.results.<module>` is the neurobox module itself. Keep
-it standard-library only.
+**The specification, schemas, checker and writer live in Lumière** (package `lumiere`,
+github.com/alexedmon1/lumiere; neurobox-dev until 2026-11-10; moved from here on
+2026-11-03), so other tools use them without neurofaune; Lumière also builds a study's
+gallery (`neurofaune gallery build`). Its `docs/RESULTS_SPEC.md` and
+`docs/RESULTS_PRODUCERS.md` are the spec and the producers' guide; change the spec there,
+not here. `neurofaune/results` is now a thin re-export: `neurofaune.results.<module>` is
+the Lumière module itself. Keep it standard-library only.
 
 ## Key Design Constraints
 
