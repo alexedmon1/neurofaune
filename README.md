@@ -154,7 +154,7 @@ Processing follows a strict order. Anatomical preprocessing must complete first 
 4. Other Modalities        → DTI, fMRI, MSME (each registers directly to template)
    MR Spectroscopy         → reads raw Bruker, not BIDS; self-contained under mrs/
 5. Analysis (voxelwise)    → TBSS, VBM, voxelwise fMRI (fALFF, ReHo)
-                             (MVPA/searchlight → murinet)
+   Decoding                → ROI, searchlight and whole-brain, folds grouped by animal
 6. Network (ROI-based)     → ROI extraction, CovNet, classification, regression, MCCA
 7. Reporting               → Unified dashboard across all analysis types
 ```
@@ -1006,29 +1006,38 @@ uv run python scripts/run_vbm_analysis.py \
     --n-permutations 5000
 ```
 
-### MVPA (Multi-Voxel Pattern Analysis) — moved to murinet
+### Decoding: ROI, searchlight and whole-brain
 
-Whole-brain decoding and searchlight mapping now live in **murinet**, the sibling
-ML/AI repo. neurofaune keeps the mass-univariate side (randomise, TBSS, VBM, cluster
-and effect-size reporting); anything that trains or cross-validates a model is
-murinet's.
+Analyses that train or cross-validate a model came back from murinet on 2026-11-10 and
+run on one harness (`neurofaune.analysis.decoding`): folds grouped by animal (and, for
+classification with fewer folds than animals, stratified, so no test fold holds one
+class), labels permuted between animals, and scaling, imputation and PCA fitted inside
+each fold.
 
-Design directories built here are read directly by `murinet.design`, so the *same*
-design drives the mass-univariate and the multivariate analyses:
+```python
+from neurofaune.analysis.decoding import (
+    coverage_report, run_decoding, run_searchlight, run_whole_brain,
+)
 
-```bash
-# in the murinet checkout, pointed at a design built here
-uv run python -m murinet.searchlight --config <cfg>                # sliding sphere
-uv run python -m murinet.searchlight --config <cfg> --whole-brain  # whole volume
-uv run python -m murinet.searchlight --config <cfg> --coverage     # plan the maps first
+run_decoding(config, out)        # ROI-level features; settings under decoding:
+coverage_report(config)          # what searchlight.maps leave of each structure: run first
+run_searchlight(config, out)     # sliding sphere, FWE by the maximum statistic
+run_whole_brain(config, out)     # one model over every usable voxel, with weight maps
 ```
 
-`prepare_mvpa_designs.py` still lives here and still needs neuroaider (see
-Prerequisites) — building designs is a neurofaune job; consuming them is murinet's.
+The searchlight reads the `space-SIGMA` maps under `paths.derivatives` and joins every map
+in `searchlight.maps` into one feature vector, so it runs only where every map has data in
+every animal (MSME-derived maps cover about half the brain). Each run writes a
+results-specification folder under `<out>/<modality>/decoding/`.
 
-Note the version removed from here cross-validated with `StratifiedKFold`/`KFold` and
-never passed `groups=`, so an animal contributing several sessions could land in
-train and test at once. murinet's replacement groups folds on animal.
+Labels come from the study design, or from a design directory built here for VBM/TBSS
+(`decoding.design_dir`, `searchlight.design_dir`), so the mass-univariate and
+multivariate analyses cannot disagree about group membership. `prepare_mvpa_designs.py`
+builds those directories and still needs neuroaider (see Prerequisites).
+
+The MVPA module removed from here earlier cross-validated with `StratifiedKFold`/`KFold`
+and never passed `groups=`, so an animal contributing several sessions could land in
+train and test at once. The harness refuses to run without groups.
 
 ---
 

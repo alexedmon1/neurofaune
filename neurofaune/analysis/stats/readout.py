@@ -116,6 +116,20 @@ class Atlas:
             return None
         return self.names.get(int(label), f"label {int(label)}")
 
+    def masked(self, mask: np.ndarray) -> MaskedAtlas:
+        """The labels of the ``mask`` voxels, in mask order, with this atlas's names."""
+        if self.parcellation.shape != mask.shape:
+            raise ValueError(f"atlas shape {self.parcellation.shape} != mask shape {mask.shape}")
+        return MaskedAtlas(self.parcellation[mask], self)
+
+
+@dataclass
+class MaskedAtlas:
+    """An atlas's labels over a mask's voxels: what cluster descriptions index into."""
+
+    labels: np.ndarray
+    atlas: Atlas
+
 
 def _record(design_dir: Path) -> dict | None:
     """The design record (design.json) beside the design, when there is one."""
@@ -155,6 +169,52 @@ def design_names(design_dir: Path, n_columns: int, n_contrasts: int) -> tuple[li
     if not contrasts or len(contrasts) != n_contrasts:
         contrasts = [f"C{i + 1}" for i in range(n_contrasts)]
     return list(columns), list(contrasts)
+
+
+# --------------------------------------------------------------- clusters ---
+def label_clusters(selected: np.ndarray, mask: np.ndarray, connectivity: int = 26,
+                   min_cluster_size: int = 1) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Connected clusters of the ``selected`` mask voxels.
+
+    Returns, over the mask's voxels, each voxel's cluster id (0 = none), the size of every
+    cluster, and the ids of those with at least ``min_cluster_size`` voxels.
+    """
+    structure = ndimage.generate_binary_structure(3, {6: 1, 18: 2, 26: 3}[connectivity])
+    vol = np.zeros(mask.shape, bool)
+    vol[mask] = selected
+    lab = ndimage.label(vol, structure=structure)[0][mask]
+    sizes = np.bincount(lab)[1:] if lab.max() else np.array([], int)
+    keep = [i + 1 for i, n in enumerate(sizes) if n >= min_cluster_size]
+    return lab, sizes, keep
+
+
+def describe_cluster(cluster: np.ndarray, stat: np.ndarray, ijk: np.ndarray, affine: np.ndarray,
+                     vox_mm3: float, atlas: MaskedAtlas | None = None) -> tuple[dict, int]:
+    """Where one cluster is: extent, peak, centre of gravity and the regions it covers.
+
+    ``cluster`` selects its voxels among the mask's, ``stat`` (over the mask) picks the peak,
+    ``ijk`` are the mask voxels' indices. Returns the columns and the peak's index.
+    """
+    peak = int(np.flatnonzero(cluster)[np.argmax(stat[cluster])])
+    p_ijk = ijk[peak]
+    row = {"n_voxels": int(cluster.sum()), "mm3": float(cluster.sum() * vox_mm3),
+           "peak_ijk": " ".join(map(str, p_ijk)),
+           "peak_xyz_mm": " ".join(f"{v:.2f}" for v in nib.affines.apply_affine(affine, p_ijk)),
+           "cog_xyz_mm": " ".join(f"{v:.2f}" for v in
+                                  nib.affines.apply_affine(affine, ijk[cluster].mean(axis=0)))}
+    if atlas is not None:
+        parc, names = atlas.labels, atlas.atlas
+        counts = pd.Series(parc[cluster]).value_counts()
+        inside = counts[counts.index > 0]
+        # largest first; ties by label id, so the order does not depend on pandas
+        inside = inside.iloc[np.lexsort((inside.index.to_numpy(), -inside.to_numpy()))]
+        row.update(peak_region=names.name(int(parc[peak])),
+                   top_region=names.name(int(inside.index[0])) if len(inside) else None,
+                   regions="; ".join(f"{names.name(int(r))}:{int(n)}" for r, n in inside.items()),
+                   n_regions=int(len(inside)), outside_atlas_vox=int(counts.get(0, 0)),
+                   crosses_midline=({"L", "R"} <= {names.hemispheres.get(int(r)) for r in inside.index})
+                   if names.hemispheres else None)
+    return row, peak
 
 
 # ---------------------------------------------------------------- contrast ---
@@ -350,8 +410,8 @@ def read_randomise(
         raise ValueError(f"{data} has {y.shape[1]} volumes, design has {X.shape[0]} rows")
     if atlas is not None and atlas.parcellation.shape != m.shape:
         raise ValueError(f"atlas shape {atlas.parcellation.shape} != mask shape {m.shape}")
-    parc = atlas.parcellation[m] if atlas is not None else None
-    structure = ndimage.generate_binary_structure(3, {6: 1, 18: 2, 26: 3}[connectivity])
+    if atlas is not None:
+        atlas = atlas.masked(m)
     labels = dict(labels or {})
     whole = np.nanmean(y, axis=0)
     n_mask = int(m.sum())
@@ -372,11 +432,7 @@ def read_randomise(
             raise FileNotFoundError(f"cluster_on='uncorrected' needs {prefix}_*_p_tstat{k + 1} "
                                     "(run randomise with --uncorrp)")
         sel = (p_fwe if cluster_on == "fwe" else p_unc) < alpha
-        vol = np.zeros(m.shape, bool)
-        vol[m] = sel
-        lab = ndimage.label(vol, structure=structure)[0][m]
-        sizes = np.bincount(lab)[1:] if lab.max() else np.array([], int)
-        keep = [i + 1 for i, s in enumerate(sizes) if s >= min_cluster_size]
+        lab, sizes, keep = label_clusters(sel, m, connectivity, min_cluster_size)
 
         base = {**labels, "contrast": k + 1, "contrast_name": cn, "contrast_vector": desc["vector"],
                 "design": desc["kind"], "tested_direction": desc["tested"],
@@ -400,27 +456,14 @@ def read_randomise(
         })
         for cid in keep:
             s = lab == cid
-            peak = np.flatnonzero(s)[np.argmax(t[s])]
-            p_ijk = ijk[peak]
-            row = {**base, "cluster": int(cid), "n_voxels": int(s.sum()), "mm3": float(s.sum() * vox_mm3),
-                   "peak_t": float(t[peak]), "peak_ijk": " ".join(map(str, p_ijk)),
-                   "peak_xyz_mm": " ".join(f"{v:.2f}" for v in nib.affines.apply_affine(affine, p_ijk)),
-                   "cog_xyz_mm": " ".join(f"{v:.2f}" for v in
-                                          nib.affines.apply_affine(affine, ijk[s].mean(axis=0))),
+            where, peak = describe_cluster(s, t, ijk, affine, vox_mm3, atlas)
+            row = {**base, "cluster": int(cid), "n_voxels": where.pop("n_voxels"),
+                   "mm3": where.pop("mm3"), "peak_t": float(t[peak]), "peak_ijk": where.pop("peak_ijk"),
+                   "peak_xyz_mm": where.pop("peak_xyz_mm"), "cog_xyz_mm": where.pop("cog_xyz_mm"),
                    "min_p_fwe": float(np.nanmin(p_fwe[s])) if corrp else np.nan,
                    "min_p_uncorr": float(np.nanmin(p_unc[s])) if uncp else np.nan,
-                   "fwe_significant": bool(np.nanmin(p_fwe[s]) < alpha) if corrp else None}
-            if parc is not None:
-                counts = pd.Series(parc[s]).value_counts()
-                inside = counts[counts.index > 0]
-                # largest first; ties by label id, so the order does not depend on pandas
-                inside = inside.iloc[np.lexsort((inside.index.to_numpy(), -inside.to_numpy()))]
-                row.update(peak_region=atlas.name(int(parc[peak])),
-                           top_region=atlas.name(int(inside.index[0])) if len(inside) else None,
-                           regions="; ".join(f"{atlas.name(int(r))}:{int(n)}" for r, n in inside.items()),
-                           n_regions=int(len(inside)), outside_atlas_vox=int(counts.get(0, 0)),
-                           crosses_midline=({"L", "R"} <= {atlas.hemispheres.get(int(r)) for r in inside.index})
-                           if atlas.hemispheres else None)
+                   "fwe_significant": bool(np.nanmin(p_fwe[s]) < alpha) if corrp else None,
+                   **where}
             eff = contrast_effect(np.nanmean(y[s], axis=0), X, c, desc, ci_level)
             # an MDE on voxels the test chose would describe the selection, not the design
             eff.update(mde=np.nan, mde_percent=np.nan, mde_note=power.CLUSTER_NOTE)
