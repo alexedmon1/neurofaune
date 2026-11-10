@@ -1083,8 +1083,8 @@ wheels = [
 
 [[package]]
 name = "lumiere"
-version = "0.4.2"
-source = { git = "https://github.com/alexedmon1/lumiere?rev=b27ca869b8c03defc39df96f09f80b8a1ab89650#b27ca869b8c03defc39df96f09f80b8a1ab89650" }
+version = "0.4.3"
+source = { git = "https://github.com/alexedmon1/lumiere?rev=7a827abb2eb27a1e99dbf9dafb87e61f9cf668b4#7a827abb2eb27a1e99dbf9dafb87e61f9cf668b4" }
 
 [[package]]
 name = "lxml"
@@ -1542,8 +1542,8 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "dipy", specifier = ">=1.11.0" },
     { name = "dmri-amico", marker = "extra == 'multishell'", specifier = ">=2.0.3" },
-    { name = "lumiere", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/lumiere?rev=b27ca869b8c03defc39df96f09f80b8a1ab89650" },
-    { name = "lumiere", marker = "extra == 'results'", git = "https://github.com/alexedmon1/lumiere?rev=b27ca869b8c03defc39df96f09f80b8a1ab89650" },
+    { name = "lumiere", marker = "extra == 'dev'", git = "https://github.com/alexedmon1/lumiere?rev=7a827abb2eb27a1e99dbf9dafb87e61f9cf668b4" },
+    { name = "lumiere", marker = "extra == 'results'", git = "https://github.com/alexedmon1/lumiere?rev=7a827abb2eb27a1e99dbf9dafb87e61f9cf668b4" },
     { name = "matplotlib", specifier = ">=3.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "natsort", specifier = ">=8.0.0" },
