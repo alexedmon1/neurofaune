@@ -203,12 +203,12 @@ def _same_grid(a: Path, b: Path) -> bool:
 
 
 def now() -> str:
-    """The current UTC time as the results specification writes it (neurobox.write.now)."""
+    """The current UTC time as the results specification writes it (lumiere.write.now)."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def analysis_id(modality: str, analysis_type: str, *name: str) -> str:
-    """An analysis id, ``<modality>/<analysis_type>/<name>``: checked by neurobox when it is
+    """An analysis id, ``<modality>/<analysis_type>/<name>``: checked by Lumière when it is
     installed, joined as-is when it is not (the results files are then not written)."""
     from neurofaune import results
 
@@ -293,7 +293,7 @@ def write_readout_results(
         strict: raise when the folder does not conform; otherwise log and return.
 
     Returns:
-        The conformance report, or None when the optional results package (neurobox-dev)
+        The conformance report, or None when the optional results package (Lumière)
         is not installed: the tables are then written without their descriptions.
     """
     output_dir = Path(output_dir)
@@ -311,7 +311,7 @@ def write_readout_results(
     tests.to_csv(output_dir / tests_file, index=False)
     clusters.to_csv(output_dir / clusters_file, index=False)
     # The tables are written either way. Their column dictionaries, analysis.json and
-    # provenance.json need the optional results package (neurobox-dev).
+    # provenance.json need the optional results package (Lumière).
     from neurofaune import results
 
     if not results.AVAILABLE:
@@ -417,4 +417,25 @@ def write_readout_results(
         logger.error(f"results spec: {e}")
     for w in report.warnings:
         logger.warning(f"results spec: {w}")
+    if report.ok:
+        report = _with_montages(output_dir, alpha, report)
     return report
+
+
+def _with_montages(output_dir: Path, alpha: float, report):
+    """Draw the folder's montages (display only) and list them; the folder's report after.
+
+    A montage that cannot be drawn never costs the results: it is logged, and the folder is
+    left as written."""
+    from neurofaune.analysis.stats.montage import add_montages
+    from neurofaune.results import check_analysis
+
+    try:
+        add_montages(output_dir, alpha=alpha)
+    except Exception as exc:  # noqa: BLE001 - figures are display only
+        logger.warning(f"results spec: no montages for {output_dir}: {exc}")
+        return report
+    after = check_analysis(output_dir)
+    for e in after.errors:
+        logger.error(f"results spec (montages): {e}")
+    return after

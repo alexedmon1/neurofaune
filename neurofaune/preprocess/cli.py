@@ -225,12 +225,77 @@ def results_check(path, as_json):
     """Check every analysis folder at or under PATH against the results specification.
 
     Exit 0 when every folder conforms, 1 otherwise (and when there is none). The same
-    checker runs without neurofaune's imaging stack as `python -m neurobox check`. It needs
+    checker runs without neurofaune's imaging stack as `lumiere check`. It needs
     the optional results package: `pip install 'neurofaune[results]'`.
     """
     from neurofaune.results.__main__ import run_check
 
     raise SystemExit(run_check(str(path), as_json=as_json))
+
+
+@results.command("montage")
+@click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--alpha", type=float, default=0.05, show_default=True, help="the corrected p a voxel is shown at")
+@click.option("--slices", type=int, default=10, show_default=True, help="coronal slices per row")
+def results_montage(paths, alpha, slices):
+    """Draw the montages of every analysis folder at or under PATHS and list them in analysis.json.
+
+    For folders written before neurofaune drew them itself (a randomise read-out or a
+    searchlight): one figure per measure, a row per contrast, the statistic where corrected
+    p < ALPHA on the folder's template. Display only: no number is recomputed, and the folder
+    is checked again after. Needs the optional results package.
+    """
+    from neurofaune import results as nr
+
+    if not nr.AVAILABLE:
+        raise click.ClickException(nr.INSTALL_HINT)
+    from neurofaune.analysis.stats.montage import add_montages
+    from neurofaune.results import check_analysis, find_analyses
+
+    failed = 0
+    for path in paths:
+        for folder in find_analyses(path):
+            entries = add_montages(folder, alpha=alpha, slices=slices)
+            report = check_analysis(folder)
+            failed += not report.ok
+            click.echo(f"{'OK  ' if report.ok else 'FAIL'} {len(entries)} montage(s)  {folder}")
+            for e in report.errors:
+                click.echo(f"     error: {e}")
+    raise SystemExit(1 if failed else 0)
+
+
+@main.group()
+def gallery():
+    """A study's gallery (Lumière): every analysis folder of the study as one static page."""
+
+
+@gallery.command("build")
+@click.argument("study", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".")
+@click.option("--settings", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
+              help="the gallery settings (default: STUDY/gallery.yaml or gallery.json)")
+@click.option("--out", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="where to write it (default: the settings' paths.gallery, normally STUDY/gallery)")
+def gallery_build(study, settings, out):
+    """Build STUDY's gallery from the analysis folders its gallery.yaml points at.
+
+    STUDY is the study's top folder, beside study.toml, where gallery.yaml sits and the gallery
+    is written (STUDY/gallery/), so Esprit and Duet find it. The analysis folders are read as
+    they are, figures included: draw figures when the analyses are written, not here. A folder
+    that does not meet the results specification is left out, and the page says why. The
+    gallery is rebuilt whole; a folder Lumière did not build is never replaced. Needs the
+    optional results package: `pip install 'neurofaune[results]'`.
+    """
+    from neurofaune import results as nr
+
+    if not nr.AVAILABLE:
+        raise click.ClickException(nr.INSTALL_HINT)
+    from neurofaune.results.gallery import GalleryError, build, load_settings
+
+    try:
+        index = build(study, load_settings(settings) if settings else None, out)
+    except (GalleryError, OSError, ValueError) as exc:
+        raise click.ClickException(f"gallery not built: {exc}") from exc
+    click.echo(index)
 
 
 @main.group("config")
