@@ -69,7 +69,7 @@ SEARCHLIGHT_TESTS = {
 
 SEARCHLIGHT_CLUSTERS = {
     **_COMMON,
-    "cluster": {"Description": "Cluster id within its contrast", "Standard": "element"},
+    "cluster": {"Description": "Cluster id within its contrast", "Standard": "element", "ElementName": "cluster"},
     "n_voxels": {"Description": "Cluster extent", "Units": "voxels", "Standard": "n_voxels"},
     "mm3": {"Description": "Cluster extent, in the maps' stored (x voxel_scale) units",
             "Units": "mm^3", "Standard": "volume_mm3"},

@@ -199,4 +199,4 @@ markers = [
 
 [tool.uv.sources]
 # The optional results package, pinned by commit like any other pin (see Versioning and tags).
-lumiere = { git = "https://github.com/alexedmon1/lumiere", rev = "50ab668636a84314c3b854b08e9c1edacc5603a6" }
+lumiere = { git = "https://github.com/alexedmon1/lumiere", rev = "b27ca869b8c03defc39df96f09f80b8a1ab89650" }

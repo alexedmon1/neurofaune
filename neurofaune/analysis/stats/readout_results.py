@@ -120,7 +120,7 @@ TESTS_COLUMNS: dict[str, dict[str, Any]] = {
 
 CLUSTERS_COLUMNS: dict[str, dict[str, Any]] = {
     **_BASE,
-    "cluster": {"Description": "cluster id within its test", "Standard": "element"},
+    "cluster": {"Description": "cluster id within its test", "Standard": "element", "ElementName": "cluster"},
     "n_voxels": {"Description": "cluster extent", "Units": "voxels", "Standard": "n_voxels"},
     "mm3": {"Description": "cluster extent", "Units": "mm^3", "Standard": "volume_mm3"},
     "peak_t": {"Description": "largest t in the cluster", "Standard": "stat", "StatName": "t",
