@@ -255,8 +255,12 @@ N_ANIMALS = 20
 SHAPE = (6, 6, 6)
 
 
-def _study(tmp_path):
-    """20 animals x 2 sessions, groups in blocks so the folds mix. FA changes in the left region of treated animals only; MWF
+def _treated(i, alternate):
+    return i % 2 == 1 if alternate else i >= N_ANIMALS // 2
+
+
+def _study(tmp_path, alternate=False):
+    """20 animals x 2 sessions, groups in blocks (or alternating by id, with ``alternate``). FA changes in the left region of treated animals only; MWF
     is a slab covering the lower half of the brain."""
     rng = np.random.default_rng(0)
     affine = np.diag([1.5, 1.5, 1.5, 1.0])
@@ -277,7 +281,7 @@ def _study(tmp_path):
     derivatives = tmp_path / "derivatives"
     animals = [f"sub-{i:02d}" for i in range(N_ANIMALS)]
     for i, animal in enumerate(animals):
-        treated = i >= N_ANIMALS // 2
+        treated = _treated(i, alternate)
         for session in ("ses-1", "ses-2"):
             fa = 0.5 + 0.1 * rng.standard_normal(SHAPE)
             if treated and session == "ses-2":
@@ -291,7 +295,8 @@ def _study(tmp_path):
                          str(d / f"{animal}_{session}_space-SIGMA_{name}.nii.gz"))
     design = StudyDesign(
         pd.DataFrame({"animal": animals,
-                      "group": ["treated" if i >= N_ANIMALS // 2 else "control" for i in range(N_ANIMALS)]}),
+                      "group": ["treated" if _treated(i, alternate) else "control"
+                                for i in range(N_ANIMALS)]}),
         pd.DataFrame([{"animal": a, "session_id": s} for a in animals for s in ("ses-1", "ses-2")]),
         control="control",
     )
@@ -331,6 +336,39 @@ def test_searchlight_finds_the_changed_region_and_writes_a_conforming_folder(tmp
     regions = pd.read_csv(folder / "regions.csv").set_index("region")
     assert regions.loc["Left tract", "n_significant"] > regions.loc["Right tract", "n_significant"]
     assert (folder / "change_FA_score.nii.gz").exists() and (folder / "change_FA_pfwe.nii.gz").exists()
+
+
+def test_ids_that_alternate_by_group_do_not_make_one_class_folds(tmp_path):
+    """GroupKFold dealt alternating ids into folds of one class each, and a labelling 60%
+    wrong then scored 1.0 under the null; stratified folds give each fold both classes."""
+    config, design = _study(tmp_path, alternate=True)
+    test = run_searchlight(config, tmp_path / "out", design=design)["summary"].iloc[0]
+    assert test["significant"] and test["n_significant"] >= 32
+
+
+def test_every_labelling_gets_folds_balanced_on_its_own_labels():
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    from neurofaune.analysis.decoding.harness import _animal_shuffles
+    from neurofaune.analysis.decoding.searchlight import label_folds
+
+    y = np.array([0, 1] * 10)
+    animals = np.array([f"sub-{i:02d}" for i in range(20)])
+    labellings = np.vstack([y, *_animal_shuffles(y, animals, 20)])
+    for labels, folds in zip(labellings, label_folds(StratifiedGroupKFold(4), labellings, animals),
+                             strict=True):
+        assert all(set(labels[test]) == {0, 1} for _, test in folds)
+
+
+def test_shared_and_per_labelling_folds_score_the_same():
+    rng = np.random.default_rng(2)
+    y = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    features = rng.standard_normal((8, 3)) + y[:, None]
+    labellings = np.vstack([y, y[::-1]])
+    estimator = _estimator(SearchlightSettings())
+    shared, _ = score_sphere(features, labellings, _FOLDS, estimator)
+    per, _ = score_sphere(features, labellings, [_FOLDS, _FOLDS], estimator)
+    assert np.array_equal(shared, per)
 
 
 def test_a_slab_map_shrinks_the_search_volume(tmp_path):

@@ -133,6 +133,27 @@ def test_groups_are_required():
         evaluate(X, y, pd.Series(["a"]), FAST)
 
 
+def test_k_fold_classification_folds_hold_both_classes():
+    """GroupKFold deals animals by sorted id; with ids alternating by group, each of its test
+    folds held one class. The harness stratifies classification folds."""
+    from neurofaune.analysis.decoding.harness import _splitter
+
+    groups = np.array([f"sub-{i:02d}" for i in range(20)])
+    y = np.array([0, 1] * 10)
+    cv, n = _splitter(DecodeSettings(cv_folds=4), groups, stratify=True)
+    assert n == 4
+    assert all(set(y[test]) == {0, 1} for _, test in cv.split(np.zeros(20), y, groups=groups))
+
+
+def test_one_animal_out_is_not_stratified():
+    from sklearn.model_selection import LeaveOneGroupOut
+
+    from neurofaune.analysis.decoding.harness import _splitter
+
+    cv, n = _splitter(DecodeSettings(cv_folds="loo"), np.arange(10), stratify=True)
+    assert isinstance(cv, LeaveOneGroupOut) and n == 10
+
+
 def test_an_animal_is_never_in_train_and_test(monkeypatch):
     """Its second session must not help: an animal's rows are identical, labels random."""
     rng = np.random.default_rng(1)

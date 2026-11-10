@@ -282,7 +282,9 @@ about half the brain); run `coverage_report` before committing hours to a run.
 
 Every model here goes through `analysis/decoding/harness.py` (`evaluate`), whose rules
 are not optional: **folds grouped by animal** (`groups` is required and no caller passes
-its own splitter), **a permutation null with labels moved between animals**, scored by
+its own splitter; with fewer folds than animals, classification folds are also stratified,
+because `GroupKFold` deals animals by sorted id and gave one-class test folds where ids
+alternate by group), **a permutation null with labels moved between animals**, scored by
 balanced accuracy or R2 rather than against 50%, and **everything fitted inside the
 fold** (imputation, scaling, PCA). These are why `analysis/mvpa/` was removed: it
 cross-validated with StratifiedKFold/KFold and never passed `groups=`, so an animal

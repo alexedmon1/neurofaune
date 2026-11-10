@@ -412,36 +412,61 @@ def _scale_in_fold(features: np.ndarray, train: np.ndarray) -> np.ndarray:
     return (features - mean) / np.where(sd > 1e-12, sd, 1.0)
 
 
+def _fold_sets(folds, n_labellings: int) -> list:
+    """One list of ``(train, test)`` per labelling, from a shared list or a list per labelling."""
+    if len(folds) and isinstance(folds[0], tuple):
+        return [folds] * n_labellings
+    if len(folds) != n_labellings:
+        raise ValueError(f"{len(folds)} fold sets for {n_labellings} labellings")
+    return folds
+
+
+def label_folds(cv, labellings: np.ndarray, animals: np.ndarray) -> list:
+    """The folds of each labelling. Stratified folds depend on the labels, so each
+    permutation gets folds balanced on its own labels, as the observed labels do; folds that
+    do not depend on them come out the same every time and their work is reused."""
+    zeros = np.zeros(len(animals))
+    return [list(cv.split(zeros, y, groups=animals)) for y in labellings]
+
+
 def score_sphere(features: np.ndarray, labellings: np.ndarray, folds, estimator
                  ) -> tuple[np.ndarray, int]:
     """Balanced accuracy for every labelling (row 0 the truth), and the degenerate fits.
 
-    A fold whose training rows hold one class cannot be fitted; its test rows get that class
-    and the fit is counted, so a run of tens of thousands of spheres does not stop on one,
-    and the count is reported.
+    ``folds`` is one list of ``(train, test)`` for every labelling, or one list per
+    labelling. Scaling and the kernel depend on the fold, not the labels, so each distinct
+    fold is prepared once. A fold whose training rows hold one class cannot be fitted; its
+    test rows get that class and the fit is counted, so a run of tens of thousands of
+    spheres does not stop on one, and the count is reported.
     """
     from sklearn.base import clone
     from sklearn.metrics import balanced_accuracy_score
 
     mode, model = estimator
-    prepared = []
-    for train, test in folds:
-        Z = _scale_in_fold(features, train)
-        if mode == "kernel":
-            K = Z @ Z[train].T
-            prepared.append((train, test, K[train], K[test]))
-        else:
-            prepared.append((train, test, Z[train], Z[test]))
+    prepared: dict[bytes, tuple] = {}
+
+    def prepare(train, test):
+        key = train.tobytes() + b"|" + test.tobytes()
+        if key not in prepared:
+            Z = _scale_in_fold(features, train)
+            if mode == "kernel":
+                K = Z @ Z[train].T
+                prepared[key] = (K[train], K[test])
+            else:
+                prepared[key] = (Z[train], Z[test])
+        return prepared[key]
 
     out = np.empty(len(labellings), dtype=np.float32)
     degenerate = 0
-    for k, y in enumerate(labellings):
+    for k, (y, fold_set) in enumerate(zip(labellings, _fold_sets(folds, len(labellings)),
+                                          strict=True)):
         pred = np.empty_like(y)
-        for train, test, x_train, x_test in prepared:
+        for train, test in fold_set:
             if len(np.unique(y[train])) < 2:
                 pred[test] = y[train][0]
                 degenerate += 1
                 continue
+            x_train, x_test = prepare(train, test)
             pred[test] = clone(model).fit(x_train, y[train]).predict(x_test)
         out[k] = balanced_accuracy_score(y, pred)
     return out, degenerate
@@ -474,10 +499,11 @@ def searchlight_scores(X: np.ndarray, y: pd.Series, neighbours: list[np.ndarray]
         found = [c for c in classes if c in found]
     y_bin = (y.values == found[1]).astype(np.int8)
     animals = np.asarray(y.index)
-    cv, n_splits = _splitter(settings, animals)
-    folds = list(cv.split(np.zeros(len(y_bin)), y_bin, groups=animals))
-    # one set of relabellings for every voxel: the max-statistic null needs it
+    cv, n_splits = _splitter(settings, animals, stratify=True)
+    # one set of relabellings, and their folds, for every voxel: the max-statistic null
+    # needs every voxel to see the same ones
     labellings = np.vstack([y_bin, *_animal_shuffles(y_bin, animals, settings.permutations)])
+    folds = label_folds(cv, labellings, animals)
 
     estimator = _estimator(settings)
     workers = max(1, settings.workers)
@@ -502,7 +528,7 @@ def _log_runtime(X, neighbours, labellings, folds, estimator, workers, sample: i
     _chunk(X, probe, labellings, folds, estimator)
     per_sphere = (time.perf_counter() - start) / len(probe)
     logger.info("[searchlight] %d spheres x %d folds x %d labellings: ~%.1f ms/sphere, "
-                "about %.1f min on %d worker(s)", len(neighbours), len(folds), len(labellings),
+                "about %.1f min on %d worker(s)", len(neighbours), len(folds[0]), len(labellings),
                 per_sphere * 1e3, per_sphere * len(neighbours) / workers / 60, workers)
 
 
@@ -521,23 +547,27 @@ def fwe_pvalues(observed: np.ndarray, null: np.ndarray) -> tuple[np.ndarray, flo
 
 # --- whole brain -------------------------------------------------------------
 
-def _fold_features(X: np.ndarray, n_components: int, folds):
+def _fold_features(X: np.ndarray, n_components: int, folds, cache: dict):
     """Per fold: scaling and PCA fitted on the training animals, applied to both sides.
 
-    Both are unsupervised, so the transformed features do not depend on the labels and are
-    computed once for all relabellings. Fitting them inside the fold is still required:
-    fitted on every row, the held-out animals would shape the components.
+    Both are unsupervised, so a fold's transformed features do not depend on the labels and
+    are computed once (``cache``) however many relabellings use that fold. Fitting them
+    inside the fold is still required: fitted on every row, the held-out animals would shape
+    the components.
     """
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
     out = []
     for train, test in folds:
-        scaler = StandardScaler().fit(X[train])
-        pca = PCA(n_components=min(n_components, len(train) - 1, X.shape[1]),
-                  random_state=RANDOM_STATE)
-        out.append((train, test, pca.fit_transform(scaler.transform(X[train])),
-                    pca.transform(scaler.transform(X[test]))))
+        key = train.tobytes() + b"|" + test.tobytes()
+        if key not in cache:
+            scaler = StandardScaler().fit(X[train])
+            pca = PCA(n_components=min(n_components, len(train) - 1, X.shape[1]),
+                      random_state=RANDOM_STATE)
+            cache[key] = (pca.fit_transform(scaler.transform(X[train])),
+                          pca.transform(scaler.transform(X[test])))
+        out.append((train, test, *cache[key]))
     return out
 
 
@@ -590,12 +620,14 @@ def whole_brain_scores(X: np.ndarray, y: pd.Series, settings: SearchlightSetting
     else:
         raise ValueError(f"analysis_type must be classification or regression: {analysis_type!r}")
 
-    cv, n_splits = _splitter(settings, animals)
-    folds = list(cv.split(X, target, groups=animals))
-    prepared = _fold_features(X, settings.pca_components, folds)
-    observed = _fold_score(estimator, target, prepared, score_fn)
-    null = np.asarray([_fold_score(estimator, shuffled, prepared, score_fn)
-                       for shuffled in _animal_shuffles(target, animals, settings.permutations)])
+    cv, n_splits = _splitter(settings, animals, stratify=analysis_type == "classification")
+    labellings = [target, *_animal_shuffles(target, animals, settings.permutations)]
+    cache: dict[bytes, tuple] = {}
+    scores = [_fold_score(estimator, labels,
+                          _fold_features(X, settings.pca_components,
+                                         cv.split(X, labels, groups=animals), cache), score_fn)
+              for labels in labellings]
+    observed, null = scores[0], np.asarray(scores[1:])
 
     scaler = StandardScaler().fit(X)
     pca = PCA(n_components=min(settings.pca_components, len(target) - 1, X.shape[1]),

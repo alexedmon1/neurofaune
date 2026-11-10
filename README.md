@@ -1009,8 +1009,10 @@ uv run python scripts/run_vbm_analysis.py \
 ### Decoding: ROI, searchlight and whole-brain
 
 Analyses that train or cross-validate a model came back from murinet on 2026-11-10 and
-run on one harness (`neurofaune.analysis.decoding`): folds grouped by animal, labels
-permuted between animals, and scaling, imputation and PCA fitted inside each fold.
+run on one harness (`neurofaune.analysis.decoding`): folds grouped by animal (and, for
+classification with fewer folds than animals, stratified, so no test fold holds one
+class), labels permuted between animals, and scaling, imputation and PCA fitted inside
+each fold.
 
 ```python
 from neurofaune.analysis.decoding import (

@@ -1,7 +1,8 @@
 """The evaluation harness. Decoding everywhere goes through it, under these rules:
 
 1. **Folds are grouped by animal.** :func:`evaluate` needs ``groups`` and refuses to run
-   without them, and no caller passes a splitter.
+   without them, and no caller passes a splitter. With fewer folds than animals,
+   classification folds are also stratified, so no test fold holds one class.
 2. **The score is reported against a permutation null**, with labels permuted between
    animals. Classes are often imbalanced, so chance is not 50%; classification is scored
    by balanced accuracy, regression by R2.
@@ -97,18 +98,29 @@ def make_pipeline(
     return Pipeline(steps)
 
 
-def _splitter(settings: DecodeSettings, groups: np.ndarray):
-    from sklearn.model_selection import GroupKFold, LeaveOneGroupOut
+def _splitter(settings: DecodeSettings, groups: np.ndarray, stratify: bool = False):
+    """``(splitter, n_splits)``: one animal out, or k folds of whole animals.
+
+    With ``stratify`` (classification), k folds are ``StratifiedGroupKFold``. ``GroupKFold``
+    deals animals into folds by sorted id and does not balance the classes, so where ids
+    follow the group (alternating, or one group's ids first) its test folds can each hold
+    one class, and a relabelling that is mostly wrong can then score perfectly. The
+    stratified splitter is given the labels being scored, so every permutation gets folds
+    balanced on its own labels, as the observed labels do.
+    """
+    from sklearn.model_selection import GroupKFold, LeaveOneGroupOut, StratifiedGroupKFold
 
     n_groups = len(np.unique(groups))
     folds = settings.cv_folds
     if folds == "loo" or int(folds) >= n_groups:
         return LeaveOneGroupOut(), n_groups
+    if stratify:
+        return StratifiedGroupKFold(n_splits=int(folds)), int(folds)
     return GroupKFold(n_splits=int(folds)), int(folds)
 
 
-def _smallest_train(cv, X: np.ndarray, groups: np.ndarray) -> int:
-    return min(len(train) for train, _ in cv.split(X, groups=groups))
+def _smallest_train(cv, X: np.ndarray, y: np.ndarray, groups: np.ndarray) -> int:
+    return min(len(train) for train, _ in cv.split(X, y, groups=groups))
 
 
 def _animal_shuffles(y: np.ndarray, groups: np.ndarray, n_perm: int) -> list[np.ndarray]:
@@ -198,10 +210,10 @@ def _evaluate_classification(X, y, groups, settings, estimator, classes):
         found = [c for c in classes if c in found]
     y_binary = (y == found[1]).astype(int).values
     group_values = np.asarray(groups)
-    cv, n_splits = _splitter(settings, group_values)
+    cv, n_splits = _splitter(settings, group_values, stratify=True)
     pipe = make_pipeline(
         settings,
-        _smallest_train(cv, X.values, group_values),
+        _smallest_train(cv, X.values, y_binary, group_values),
         estimator=estimator,
         n_features=X.shape[1],
     )
@@ -253,7 +265,7 @@ def _evaluate_regression(X, y, groups, settings, estimator):
     cv, n_splits = _splitter(settings, group_values)
     pipe = make_pipeline(
         settings,
-        _smallest_train(cv, X.values, group_values),
+        _smallest_train(cv, X.values, numeric.values, group_values),
         analysis_type="regression",
         estimator=estimator,
         n_features=X.shape[1],
