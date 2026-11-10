@@ -266,23 +266,34 @@ It also shows up downstream: group decoding from composite volumes (murinet, 34
 animals, cuprizone vs control) went from balanced accuracy 0.746 (p=0.016) to 0.887
 (p=0.001) purely by switching which posteriors morphometry integrated.
 
-### Multivariate analysis lives in murinet
+### Multivariate analysis is coming back from murinet, through one harness
 
-neurofaune owns the **mass-univariate** side: `randomise`, TBSS, VBM, cluster
-extraction and effect-size maps. Anything that trains or cross-validates a model --
-searchlight, whole-brain decoding, ROI classification -- lives in **murinet**, which
-reads this package's outputs. `analysis/mvpa/` was removed for that reason; it also
+Analyses that train or cross-validate a model are being folded back into neurofaune,
+since they use the same libraries. The line is the job, not the technique: a method that
+meets a job's contract (the harness below, the results specification) can live here.
+**murinet** stays a workbench for work not yet validated, mostly deep learning on GPU.
+ROI decoding came first (2026-11-10): `neurofaune/analysis/decoding/` (from murinet's
+`decode.py` and `design.py`, `run_decoding(config, output_dir)`, settings under
+`decoding:`). Searchlight and whole-brain decoding are still in murinet and come back
+next.
+
+Every model here goes through `analysis/decoding/harness.py` (`evaluate`), whose rules
+are not optional: **folds grouped by animal** (`groups` is required and no caller passes
+its own splitter), **a permutation null with labels moved between animals**, scored by
+balanced accuracy or R2 rather than against 50%, and **everything fitted inside the
+fold** (imputation, scaling, PCA). These are why `analysis/mvpa/` was removed: it
 cross-validated with StratifiedKFold/KFold and never passed `groups=`, so an animal
 with several sessions could appear in train and test at once. (No MVPA results on
 disk were produced by the affected code path -- the only outputs found were already
-marked corrupted from an unrelated 2026-05 event.)
+marked corrupted from an unrelated 2026-05 event.) Do not bring an analysis in with
+its own cross-validation loop; give its estimator to the harness.
 
-Designs built here for VBM/TBSS are read directly by `murinet.design`, so the same
-design drives the mass-univariate and multivariate analyses and they cannot disagree
-about group membership.
+Labels come from the StudyDesign or from a design directory built here for VBM/TBSS
+(`decoding.design_dir`), which murinet's `murinet.design` also reads, so the
+mass-univariate and multivariate analyses cannot disagree about group membership.
 
-`network/classification`, `network/regression.py` and `network/mcca.py` have not moved
-yet, and they cross-validate and permute by row. So their data preparation refuses a
+`network/classification`, `network/regression.py` and `network/mcca.py` do not use the
+harness yet, and they cross-validate and permute by row. So their data preparation refuses a
 table in which an animal has more than one row (`RepeatedAnimalError`; `run()` returns
 `status: "refused"` and writes nothing) -- run one cohort at a time. There is no override:
 grouped cross-validation is the fix, not a flag. This covers repeated animals only;
