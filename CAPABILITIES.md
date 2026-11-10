@@ -4,7 +4,7 @@ _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit 
 
 **CLI subcommands:** `bids`, `capabilities`, `check-deps`, `check-paths`, `config`, `mrs`, `results`
 
-**Entry points:** 200 across 10 stages.
+**Entry points:** 202 across 10 stages.
 
 
 ## analysis
@@ -13,6 +13,8 @@ _Generated from the code by `neurofaune capabilities` (v0.12.0a0)._ Do not edit 
 |---|---|---|---|
 | `build_design` | `neurofaune.analysis.decoding.features` | ``(X, y, groups)`` for one design; ``groups`` is the animal of each row. | — |
 | `run_decoding` | `neurofaune.analysis.decoding.pipeline` | Decode every feature set in every contrast, and write one results folder per modality. | `decoding.analysis_type`, `decoding.contrasts`, `decoding.design`, `decoding.design_dir`, `decoding.name`, `decoding.target` |
+| `run_searchlight` | `neurofaune.analysis.decoding.searchlight` | Searchlight every contrast over ``searchlight.maps``; write one results folder. | `searchlight.name` |
+| `run_whole_brain` | `neurofaune.analysis.decoding.searchlight` | Whole-brain decoding of every contrast; one results folder with the weight maps. | `searchlight.analysis_type`, `searchlight.name`, `searchlight.target` |
 | `compute_falff_map` | `neurofaune.analysis.func.falff` | Compute ALFF and fALFF maps for whole brain using vectorized FFT. | — |
 | `compute_falff_zscore` | `neurofaune.analysis.func.falff` | Standardize ALFF and fALFF maps to z-scores within the brain mask. | — |
 | `register_bold_to_t2w` | `neurofaune.analysis.func.hub_rest` | Rigid (MI) BOLD-mean -> T2w; the EPI partial coverage makes anything looser fragile. | — |

@@ -272,10 +272,13 @@ Analyses that train or cross-validate a model are being folded back into neurofa
 since they use the same libraries. The line is the job, not the technique: a method that
 meets a job's contract (the harness below, the results specification) can live here.
 **murinet** stays a workbench for work not yet validated, mostly deep learning on GPU.
-ROI decoding came first (2026-11-10): `neurofaune/analysis/decoding/` (from murinet's
-`decode.py` and `design.py`, `run_decoding(config, output_dir)`, settings under
-`decoding:`). Searchlight and whole-brain decoding are still in murinet and come back
-next.
+ROI decoding, searchlight and whole-brain decoding came back on 2026-11-10:
+`neurofaune/analysis/decoding/` (from murinet's `decode.py`, `design.py` and
+`searchlight.py`). `run_decoding(config, output_dir)` reads `decoding:`;
+`run_searchlight`, `run_whole_brain` and `coverage_report` read `searchlight:` and the
+`space-SIGMA` maps under `paths.derivatives`. A searchlight joins several maps into one
+feature vector, so it runs only where every map has data in every animal (MSME is a slab:
+about half the brain); run `coverage_report` before committing hours to a run.
 
 Every model here goes through `analysis/decoding/harness.py` (`evaluate`), whose rules
 are not optional: **folds grouped by animal** (`groups` is required and no caller passes
