@@ -255,6 +255,8 @@ def write_readout_results(
     clusters_file: str = "clusters.csv",
     axes: str | None = None,
     plane: str | None = None,
+    generated_by: Sequence[Mapping[str, Any]] = (),
+    derived_from: Sequence[Mapping[str, Any]] | None = None,
     strict: bool = False,
 ):
     """Write tests.csv, clusters.csv, their dictionaries, analysis.json and provenance.json.
@@ -279,6 +281,12 @@ def write_readout_results(
             ``neurofaune.atlas.study_space.study_space_axes``); written on every map so
             readers orient by it, not by the header.
         plane: the plane to show the maps in (axial / coronal / sagittal).
+        generated_by: the producing package when it is not neurofaune (e.g. neurovrai,
+            which reads its randomise runs with this module), as BIDS GeneratedBy entries.
+            They come first in provenance.json's generated_by; neurofaune, which wrote the
+            read-out, and FSL follow.
+        derived_from: the tools whose outputs the analysis read, upstream first
+            (provenance.json's derived_from, Lumière 0.4.5).
         mask_name: what the mask is, in words ("TBSS skeleton", "brain mask").
         space: template space of the maps (e.g. "SIGMA").
         inference: how the maps were corrected, as a noun phrase: "2-D TFCE" (skeleton),
@@ -403,15 +411,17 @@ def write_readout_results(
         **({"references": [dict(r) for r in references]} if references else {}),
         **({"run": {"id": run} if isinstance(run, str) else dict(run)} if run else {}),
     }
-    from neurofaune.provenance import generated_by
-    gen = generated_by()
+    from neurofaune.provenance import generated_by as neurofaune_generated_by
+    gen = [dict(g) for g in generated_by] + neurofaune_generated_by()
     fsl = _fsl_version()
     prov = provenance_record(gen + ([fsl] if fsl else []), status="completed",
                              start=started or now(), end=now(), inputs=[dict(i) for i in inputs],
                              subjects={"n": int((design or {}).get("n", tests["n"].iloc[0])),
                                        **({"groups": dict((design or {}).get("groups") or groups)}
                                           if (design or {}).get("groups") or groups else {})},
-                             settings=dict(settings or {}))
+                             settings=dict(settings or {}),
+                             **({"derived_from": [dict(d) for d in derived_from]}
+                                if derived_from else {}))
     report = write_analysis(output_dir, analysis, prov, strict=strict)
     for e in report.errors:
         logger.error(f"results spec: {e}")
