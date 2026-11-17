@@ -66,9 +66,9 @@ dependencies = [
 # Lumière (github.com/alexedmon1/lumiere, neurobox-dev until 2026-11-10), which also builds galleries.
 # Pinned here, in the extra itself, so a study that installs neurofaune[results] gets this commit:
 # [tool.uv.sources] is read only inside neurofaune (2026-11-10, found by the cuprizone session).
-results = ["lumiere @ git+https://github.com/alexedmon1/lumiere@98072ed371dd34b86e15d595789df8a2650a5965"]
+results = ["lumiere @ git+https://github.com/alexedmon1/lumiere@b3b6e5f5b68e12d2b5ad8ff737f816327f07d204"]
 dev = [
-    "lumiere @ git+https://github.com/alexedmon1/lumiere@98072ed371dd34b86e15d595789df8a2650a5965",  # tests cover both the results files and their absence
+    "lumiere @ git+https://github.com/alexedmon1/lumiere@b3b6e5f5b68e12d2b5ad8ff737f816327f07d204",  # tests cover both the results files and their absence
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "black>=23.0",
